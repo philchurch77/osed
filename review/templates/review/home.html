@@ -1,0 +1,74 @@
+{% extends "review/base.html" %}
+
+{% block title %}The OSED{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">The OSED</h1>
+  </header>
+
+  <section class="home-intro" aria-label="About the OSED">
+    <p>
+      The Oxlip School Evaluation Dashboard (OSED) is designed to help schools complete a clear, termly evaluation of their current position across each key Ofsted area. School leaders use the Ofsted framework, the Oxlip supporting tool and their own school evidence base to decide which judgement best reflects the school’s current position in each area. These judgements are entered into the OSED app to create a simple colour-coded and numerical overview for the school.
+    </p>
+    <p>
+      For each evaluation area, the leader responsible records a concise summary of the evidence behind the judgement, along with the key next steps needed to improve or strengthen provision. This information can then be used to support the school’s self-evaluation and can be extracted for use in SEF-style reporting. The school overview can be shared with governors, while the combined Trust dashboard provides trustees with a wider picture across schools.
+    </p>
+    <p>
+      In addition to the termly overview, each evaluation area will receive a more detailed review at least once a year. During this in-depth review, leaders assess individual framework statements, marking whether each criterion applies and adding justification. Where all expected standard criteria are met, leaders can consider whether the strong standard applies; where criteria are not met, the school is guided towards the areas that need attention.
+    </p>
+
+    <div class="rag-legend" aria-label="RAG rating scale">
+      <div class="rag-legend-item rag-legend-item--5">
+        <div class="rag-legend-badge">5</div>
+        <div class="rag-legend-text">
+          <div class="rag-legend-label">Urgent Improvement</div>
+        </div>
+      </div>
+      <div class="rag-legend-item rag-legend-item--4">
+        <div class="rag-legend-badge">4</div>
+        <div class="rag-legend-text">
+          <div class="rag-legend-label">Needs Attention</div>
+        </div>
+      </div>
+      <div class="rag-legend-item rag-legend-item--3">
+        <div class="rag-legend-badge">3</div>
+        <div class="rag-legend-text">
+          <div class="rag-legend-label">Expected Standard</div>
+        </div>
+      </div>
+      <div class="rag-legend-item rag-legend-item--2">
+        <div class="rag-legend-badge">2</div>
+        <div class="rag-legend-text">
+          <div class="rag-legend-label">Strong Standard</div>
+        </div>
+      </div>
+      <div class="rag-legend-item rag-legend-item--1">
+        <div class="rag-legend-badge">1</div>
+        <div class="rag-legend-text">
+          <div class="rag-legend-label">Exceptional</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <ul class="school-list">
+    {% for school in schools %}
+      <li class="school-card">
+        {% if school.logo %}
+          <img class="school-logo" src="{{ school.logo.url }}" alt="{{ school.name }} logo" />
+        {% else %}
+          <div class="school-logo" aria-hidden="true"></div>
+        {% endif %}
+        <div>
+          <div class="school-name">{{ school.name }}</div>
+          {% if school.phase %}
+            <div class="school-meta">{{ school.get_phase_display }}</div>
+          {% endif %}
+        </div>
+      </li>
+    {% empty %}
+      <li>No schools found.</li>
+    {% endfor %}
+  </ul>
+{% endblock %}

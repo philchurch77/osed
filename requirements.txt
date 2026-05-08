@@ -1,0 +1,10 @@
+Django==6.0.5
+openpyxl==3.1.5
+Pillow
+django-storages[azure]
+whitenoise
+dj-database-url
+
+# Render (Linux) production server + Postgres driver
+gunicorn; platform_system != "Windows"
+psycopg[binary]; platform_system != "Windows"

@@ -1,0 +1,160 @@
+{% extends "review/base.html" %}
+
+{% block title %}Evaluation{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Evaluation</h1>
+
+            {% if user.is_superuser or schools %}
+              <form method="get" class="school-select">
+                <div class="form-field">
+                  <label for="school"><strong>School:</strong></label>
+                  <select id="school" name="school">
+                    {% for s in schools %}
+                      <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+
+                <div class="form-field">
+                  <label for="year"><strong>Academic year:</strong></label>
+                  <select id="year" name="year">
+                    {% for opt in academic_year_options %}
+                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+
+                <div class="form-field">
+                  <label for="round"><strong>Round:</strong></label>
+                  <select id="round" name="round">
+                    <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
+                    <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
+                    <option value="3" {% if period.round == 3 %}selected{% endif %}>Round 3</option>
+                  </select>
+                </div>
+
+                <div class="form-actions">
+                  <button type="submit">Select</button>
+                </div>
+              </form>
+            {% else %}
+              <p><strong>School:</strong> {{ school.name }}</p>
+              <form method="get" class="school-select">
+                <div class="form-field">
+                  <label for="year"><strong>Academic year:</strong></label>
+                  <select id="year" name="year">
+                    {% for opt in academic_year_options %}
+                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+
+                <div class="form-field">
+                  <label for="round"><strong>Round:</strong></label>
+                  <select id="round" name="round">
+                    <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
+                    <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
+                    <option value="3" {% if period.round == 3 %}selected{% endif %}>Round 3</option>
+                  </select>
+                </div>
+
+                <div class="form-actions">
+                  <button type="submit">Select</button>
+                </div>
+              </form>
+            {% endif %}
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="school_id" value="{{ school.id }}" />
+    <input type="hidden" name="year" value="{{ selected_year_value }}" />
+    <input type="hidden" name="round" value="{{ period.round }}" />
+    {{ formset.management_form }}
+
+    <table class="evaluation-table">
+      <thead>
+        <tr>
+          <th style="width: 18%">Area</th>
+          <th style="width: 18%">Judgement</th>
+          <th style="width: 32%">Judgement evidence</th>
+          <th style="width: 32%">To progress</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <th class="evaluation-area">{{ row.category.name }}</th>
+            <td class="evaluation-judgement">
+              <details class="rag-picker">
+                <summary class="rag-picker-summary">
+                  {% with current=row.form.rating.value %}
+                    <span class="rag-current rag-current--{% if current %}{{ current }}{% else %}blank{% endif %}" aria-label="Select rating">
+                      {% if current %}
+                        {% for value,label in row.form.rating.field.choices %}
+                          {% if value|stringformat:'s' == current|stringformat:'s' %}({{ value }}) {{ label }}{% endif %}
+                        {% endfor %}
+                      {% else %}
+                        Select rating
+                      {% endif %}
+                    </span>
+                  {% endwith %}
+                </summary>
+
+                <div class="rag-picker-panel">
+                  <div class="rag-group">
+                    {% with current=row.form.rating.value %}
+                      {% for value,label in row.form.rating.field.choices %}
+                        <label class="rag-pill rag-pill--{{ value|default:'blank' }}">
+                          <input
+                            type="radio"
+                            name="{{ row.form.rating.html_name }}"
+                            value="{{ value }}"
+                            {% if value|stringformat:'s' == current|stringformat:'s' %}checked{% endif %}
+                          />
+                          <span class="rag-pill-text">
+                            <span class="rag-pill-value">({{ value }})</span>
+                            <span class="rag-pill-label">{{ label }}</span>
+                          </span>
+                        </label>
+                      {% endfor %}
+                    {% endwith %}
+                  </div>
+                </div>
+              </details>
+            </td>
+            <td class="evaluation-textcell">
+              {{ row.form.category_id }}
+              {{ row.form.judgement_evidence.errors }}
+              {{ row.form.judgement_evidence }}
+            </td>
+            <td class="evaluation-textcell">
+              {{ row.form.to_progress.errors }}
+              {{ row.form.to_progress }}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="actions">
+      <button type="submit">Save</button>
+    </div>
+  </form>
+{% endblock %}
+
+{% block scripts %}
+  {% load static %}
+  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260508-2"></script>
+  <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+{% endblock %}

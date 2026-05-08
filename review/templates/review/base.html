@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}OSED{% endblock %}</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260508-5" />
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          {% if branding and branding.trust_emblem %}
+            <div class="trust-emblem-wrap">
+              <img class="trust-emblem" src="{{ branding.trust_emblem.url }}" alt="OXLIP trust emblem" />
+            </div>
+          {% endif %}
+          <div class="trust-name">OXLIP</div>
+        </div>
+
+        <nav class="nav">
+          <a href="/">Home</a>
+          <a href="/review/dashboard/">Enter data</a>
+          <a href="/review/evaluation/">Evaluation</a>
+          <a href="/review/overview/">Overview</a>
+          {% if user.is_authenticated %}
+            <a href="/accounts/logout/">Logout</a>
+          {% else %}
+            <a href="/accounts/login/">Login</a>
+          {% endif %}
+
+          {% if user.is_superuser %}
+            <div class="nav-bottom">
+              <a href="/admin/">Admin</a>
+            </div>
+          {% endif %}
+        </nav>
+      </aside>
+
+      <div class="app-content">
+        <main>
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+    </div>
+
+    <script defer src="{% static 'review/word_limit.js' %}?v=20260508-1"></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

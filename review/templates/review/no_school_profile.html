@@ -1,0 +1,26 @@
+{% extends "review/base.html" %}
+
+{% block title %}Not linked to a school{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Not linked to a school</h1>
+  </header>
+
+    <p>
+      The account <strong>{{ user.username }}</strong> is not linked to a school yet, so it can’t submit statement
+      ratings.
+    </p>
+
+    <h2>How to fix</h2>
+    <ol>
+      <li>Ask your School IT admin to create your user in the Django admin.</li>
+      <li>They must also link the user to the correct school (create a School Profile for the user).</li>
+    </ol>
+
+    <p>
+      If you are the system admin, you can do this in <a href="/admin/review/schoolprofile/add/">Admin → School Profiles</a>.
+    </p>
+
+  <p><a class="button" href="/accounts/logout/">Log out</a></p>
+{% endblock %}
