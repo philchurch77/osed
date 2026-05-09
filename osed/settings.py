@@ -14,6 +14,7 @@ from pathlib import Path
 import os
 
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -127,6 +128,12 @@ if DATABASE_URL:
         conn_max_age=600,
         ssl_require=not DEBUG,
     )
+elif not DEBUG:
+    # In production (Render), falling back to SQLite means data resets on each deploy.
+    raise ImproperlyConfigured(
+        "DATABASE_URL is required when DEBUG=0 (production). "
+        "Set DATABASE_URL to your Render Postgres connection string."
+    )
 
 
 # Password validation
@@ -218,6 +225,10 @@ LOGOUT_REDIRECT_URL = "/accounts/login/"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Demo convenience: allow serving local media without enabling DEBUG.
+# (Not recommended for real production; prefer cloud storage like Azure/S3.)
+SERVE_MEDIA = _env_bool("SERVE_MEDIA", default=False)
 
 if USE_AZURE_MEDIA_STORAGE:
     DEFAULT_FILE_STORAGE = "storages.backends.azure_storage.AzureStorage"

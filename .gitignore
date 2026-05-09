@@ -14,7 +14,14 @@ ENV/
 *.log
 local_settings.py
 staticfiles/
-media/
+# Keep user uploads out of git, but allow demo media assets.
+# Important: don't ignore the `media/` directory itself, otherwise git won't scan
+# inside it to find un-ignored files.
+media/*
+!media/branding/
+!media/branding/**
+!media/school_logos/
+!media/school_logos/**
 db.sqlite3
 
 # Secrets / env
