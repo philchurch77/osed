@@ -8,6 +8,8 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
+from allauth.account.views import LoginView
+
 from .forms import DashboardRatingForm, EvaluationEntryForm
 from .models import (
 	Category,
@@ -43,10 +45,31 @@ def _parse_academic_year_start(raw_value: str | None, default_year: int) -> int:
 	return start
 
 
-@login_required
 def home(request: HttpRequest) -> HttpResponse:
-	schools = School.objects.order_by("name").all()
-	return render(request, "review/home.html", {"schools": schools})
+	if not request.user.is_authenticated:
+		# Keep the sign-in experience on the homepage.
+		return LoginView.as_view(template_name="account/login.html")(request)
+
+	if request.user.is_superuser:
+		schools = School.objects.order_by("name").all()
+		return render(request, "review/home.html", {"schools": schools})
+
+	try:
+		school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
+			"schools"
+		).get(user=request.user)
+	except SchoolProfile.DoesNotExist:
+		return render(
+			request,
+			"review/no_school_profile.html",
+			{"user": request.user},
+			status=403,
+		)
+
+	allowed_schools = list(school_profile.schools.order_by("name").all())
+	if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
+		allowed_schools.insert(0, school_profile.school)
+	return render(request, "review/home.html", {"schools": allowed_schools})
 
 
 @login_required

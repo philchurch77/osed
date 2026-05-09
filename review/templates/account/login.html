@@ -1,0 +1,55 @@
+{% extends "review/base.html" %}
+
+{% load socialaccount %}
+
+{% block title %}Sign in{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Sign in</h1>
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <p>Use your organisation Microsoft account to sign in.</p>
+
+  {% with next_url=redirect_field_value|default:"/" %}
+    <p>
+      <a class="button" href="{% provider_login_url 'microsoft' process='login' %}?{{ redirect_field_name }}={{ next_url|urlencode }}">
+        Sign in with Microsoft
+      </a>
+    </p>
+  {% endwith %}
+
+  <hr />
+
+  <p>If you have a local account, you can sign in with email and password:</p>
+
+  <form method="post" action="{% url 'account_login' %}">
+    {% csrf_token %}
+
+    <p>
+      <label for="id_login">Email</label><br />
+      {{ form.login }}
+    </p>
+
+    <p>
+      <label for="id_password">Password</label><br />
+      {{ form.password }}
+    </p>
+
+    {% if redirect_field_value %}
+      <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}" />
+    {% endif %}
+
+    <div class="actions">
+      <button type="submit">Sign in</button>
+    </div>
+  </form>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "review/base.html" %}
+
+{% load socialaccount %}
+
+{% block title %}Sign in{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Sign in</h1>
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <p>Use your organisation Microsoft account to sign in.</p>
+
+  {% with next_url=redirect_field_value|default:"/" %}
+    <p>
+      <a class="button" href="{% provider_login_url 'microsoft' process='login' %}?{{ redirect_field_name }}={{ next_url|urlencode }}">
+        Sign in with Microsoft
+      </a>
+    </p>
+  {% endwith %}
+
+  <hr />
+
+  <p><strong>Admin / Superuser sign-in:</strong></p>
+  <p>
+    <a class="button" href="/admin/login/?next=/">Sign in with username + password</a>
+  </p>
+{% endblock %}
