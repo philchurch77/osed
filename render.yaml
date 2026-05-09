@@ -7,7 +7,7 @@ services:
       pip install -r requirements.txt
       python manage.py collectstatic --noinput
       python manage.py migrate
-    startCommand: gunicorn osed.wsgi:application
+    startCommand: gunicorn osed.wsgi:application --bind 0.0.0.0:$PORT
     envVars:
       - key: DEBUG
         value: "0"
@@ -15,7 +15,7 @@ services:
         generateValue: true
       - key: DATABASE_URL
         fromDatabase:
-          name: osed-db
+          name: osed-test-db
           property: connectionString
       # Optional (only needed if you want to lock hosts explicitly)
       # - key: ALLOWED_HOSTS
@@ -29,5 +29,5 @@ services:
       #   value: "organizations"
 
 databases:
-  - name: osed-db
+  - name: osed-test-db
     plan: free
