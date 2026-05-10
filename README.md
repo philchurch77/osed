@@ -33,3 +33,44 @@ Notes
 
 - In local dev, SQLite is used by default.
 - In Render, the app uses Postgres via `DATABASE_URL`.
+
+Media uploads (logos, branding)
+
+This app uses Django `ImageField` for:
+- `School.logo` (uploads to `school_logos/`)
+- `Branding.trust_emblem` (uploads to `branding/`)
+
+Where uploaded files go depends on your storage backend:
+
+Local development
+
+- Uploading in `/admin/` saves files into the local folder `media/`.
+- You can see them on disk under:
+   - `media/school_logos/...`
+   - `media/branding/...`
+- When running `python manage.py runserver`, Django serves them at URLs like `/media/...`.
+
+Render / production
+
+On Render’s free plan, the filesystem is ephemeral. If you save uploads into `media/` on the web service, they may disappear on redeploy/restart and won’t be shared across instances.
+
+Demo logos/branding (committed assets)
+
+This repo includes demo logo + branding images committed under `media/branding/` and `media/school_logos/`, and the Render blueprint seeds the database to reference them.
+
+To make those demo images reliably visible on Render without setting up cloud storage, `render.yaml` enables `MEDIA_AS_STATIC=1` and runs `python manage.py copy_demo_media_to_static` during the build. That copies the demo media assets into `staticfiles/media/...`, and Django will generate ImageField URLs like `/static/media/...` which WhiteNoise can serve.
+
+Recommended: Azure Blob Storage for media
+
+This repo already includes `django-storages[azure]`. To make admin uploads persist in production, enable Azure media storage:
+
+1. Create an Azure Storage Account + a Blob Container (e.g. `media`).
+2. In Render, set these environment variables on your web service:
+    - `USE_AZURE_MEDIA_STORAGE=1`
+    - `AZURE_ACCOUNT_NAME=...`
+    - `AZURE_ACCOUNT_KEY=...`
+    - `AZURE_CONTAINER=media`  (or your container name)
+    - Optional: `AZURE_CUSTOM_DOMAIN=...` (if you front the container with a custom domain/CDN)
+3. Redeploy.
+
+After that, files uploaded in the Django Admin are stored in Azure, and the `.url` for each image points at the blob URL.

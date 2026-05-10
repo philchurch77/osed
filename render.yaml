@@ -6,6 +6,7 @@ services:
     buildCommand: |
       pip install -r requirements.txt
       python manage.py collectstatic --noinput
+      python manage.py copy_demo_media_to_static
       python manage.py migrate
       python manage.py seed_schools
       python manage.py seed_branding
@@ -13,7 +14,7 @@ services:
     envVars:
       - key: DEBUG
         value: "0"
-      - key: SERVE_MEDIA
+      - key: MEDIA_AS_STATIC
         value: "1"
       - key: SECRET_KEY
         generateValue: true
@@ -31,6 +32,22 @@ services:
       #   value: ""
       # - key: MICROSOFT_TENANT
       #   value: "organizations"
+
+      # Recommended for persistent media uploads (logos/branding): Azure Blob Storage
+      # When enabled, you usually don't want Django serving /media from local disk.
+      # - key: USE_AZURE_MEDIA_STORAGE
+      #   value: "1"
+      # - key: SERVE_MEDIA
+      #   value: "0"
+      # - key: AZURE_ACCOUNT_NAME
+      #   value: ""
+      # - key: AZURE_ACCOUNT_KEY
+      #   value: ""
+      # - key: AZURE_CONTAINER
+      #   value: "media"
+      # Optional:
+      # - key: AZURE_CUSTOM_DOMAIN
+      #   value: ""
 
 databases:
   - name: osed-test-db

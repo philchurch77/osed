@@ -14,10 +14,19 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         demo_filename = "thumbnail.jpg"
         demo_path = Path(settings.MEDIA_ROOT) / "branding" / demo_filename
+        use_azure_media_storage = getattr(settings, "USE_AZURE_MEDIA_STORAGE", False)
 
         obj, _created = Branding.objects.get_or_create(pk=1)
 
         if obj.trust_emblem:
+            if not use_azure_media_storage:
+                current_path = Path(settings.MEDIA_ROOT) / obj.trust_emblem.name
+                if not current_path.exists() and demo_path.exists():
+                    obj.trust_emblem.name = f"branding/{demo_filename}"
+                    obj.save(update_fields=["trust_emblem"])
+                    self.stdout.write(self.style.SUCCESS("Branding repaired (demo trust emblem re-attached)."))
+                    return
+
             self.stdout.write(self.style.SUCCESS("Branding already set; no changes."))
             return
 

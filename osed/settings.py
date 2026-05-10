@@ -173,10 +173,19 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Storage backends (Django >= 4.2)
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
 # Whitenoise static file serving (suitable for Render)
-# In local dev, keep default storage so you don't need collectstatic.
 if not DEBUG:
-    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+    STORAGES["staticfiles"]["BACKEND"] = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # Respect Render's proxy headers for https detection
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -230,9 +239,30 @@ MEDIA_ROOT = BASE_DIR / "media"
 # (Not recommended for real production; prefer cloud storage like Azure/S3.)
 SERVE_MEDIA = _env_bool("SERVE_MEDIA", default=False)
 
+# If you are using committed demo media assets (e.g. seeded logos/branding) and
+# want them served by WhiteNoise on Render, enable MEDIA_AS_STATIC=1.
+# This makes ImageField URLs resolve under STATIC_URL (e.g. /static/media/...).
+MEDIA_AS_STATIC = _env_bool("MEDIA_AS_STATIC", default=False)
+if MEDIA_AS_STATIC and not USE_AZURE_MEDIA_STORAGE:
+    MEDIA_URL = f"{STATIC_URL}media/"
+    SERVE_MEDIA = False
+
 if USE_AZURE_MEDIA_STORAGE:
-    DEFAULT_FILE_STORAGE = "storages.backends.azure_storage.AzureStorage"
-    AZURE_ACCOUNT_NAME = os.getenv("AZURE_ACCOUNT_NAME", "")
-    AZURE_ACCOUNT_KEY = os.getenv("AZURE_ACCOUNT_KEY", "")
-    AZURE_CONTAINER = os.getenv("AZURE_CONTAINER", "media")
-    AZURE_CUSTOM_DOMAIN = os.getenv("AZURE_CUSTOM_DOMAIN", "")
+    AZURE_ACCOUNT_NAME = os.getenv("AZURE_ACCOUNT_NAME", "").strip()
+    AZURE_ACCOUNT_KEY = os.getenv("AZURE_ACCOUNT_KEY", "").strip()
+    AZURE_CONTAINER = os.getenv("AZURE_CONTAINER", "media").strip() or "media"
+    AZURE_CUSTOM_DOMAIN = os.getenv("AZURE_CUSTOM_DOMAIN", "").strip()
+
+    if not AZURE_ACCOUNT_NAME or not AZURE_ACCOUNT_KEY:
+        raise ImproperlyConfigured(
+            "USE_AZURE_MEDIA_STORAGE is enabled but AZURE_ACCOUNT_NAME/AZURE_ACCOUNT_KEY are missing."
+        )
+
+    STORAGES["default"]["BACKEND"] = "storages.backends.azure_storage.AzureStorage"
+
+    # Optional convenience: make MEDIA_URL reflect the blob endpoint.
+    # FileField/ImageField URLs are generated via storage.url(...) either way.
+    if AZURE_CUSTOM_DOMAIN:
+        MEDIA_URL = f"https://{AZURE_CUSTOM_DOMAIN.rstrip('/')}/"
+    else:
+        MEDIA_URL = f"https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/{AZURE_CONTAINER}/"

@@ -33,6 +33,7 @@ class Command(BaseCommand):
             "Mendelsham Primary School": "Mendlesham_Primary_School.jpeg",
         }
         logos_dir = Path(settings.MEDIA_ROOT) / "school_logos"
+        use_azure_media_storage = getattr(settings, "USE_AZURE_MEDIA_STORAGE", False)
 
         created = 0
         updated = 0
@@ -49,12 +50,21 @@ class Command(BaseCommand):
                     updated += 1
 
             logo_filename = demo_logos.get(name)
-            if logo_filename and not obj.logo:
-                logo_path = logos_dir / logo_filename
-                if logo_path.exists():
-                    obj.logo.name = f"school_logos/{logo_filename}"
-                    obj.save(update_fields=["logo"])
-                    logos_attached += 1
+            if not logo_filename:
+                continue
+
+            desired_name = f"school_logos/{logo_filename}"
+            logo_path = logos_dir / logo_filename
+
+            current_missing_on_disk = False
+            if obj.logo and not use_azure_media_storage:
+                current_path = Path(settings.MEDIA_ROOT) / obj.logo.name
+                current_missing_on_disk = not current_path.exists()
+
+            if (not obj.logo or current_missing_on_disk) and logo_path.exists():
+                obj.logo.name = desired_name
+                obj.save(update_fields=["logo"])
+                logos_attached += 1
 
         self.stdout.write(
             self.style.SUCCESS(
