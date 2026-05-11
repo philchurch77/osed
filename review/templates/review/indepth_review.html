@@ -1,0 +1,136 @@
+{% extends "review/base.html" %}
+
+{% block title %}In-depth review{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">In-depth review</h1>
+
+    {% if user.is_superuser or schools %}
+      <form method="get" class="school-select">
+        <div class="form-field">
+          <label for="school"><strong>School:</strong></label>
+          <select id="school" name="school">
+            {% for s in schools %}
+              <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="area"><strong>Area:</strong></label>
+          <select id="area" name="area">
+            {% for a in areas %}
+              <option value="{{ a.id }}" {% if area and a.id == area.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="year"><strong>Academic year:</strong></label>
+          <select id="year" name="year">
+            {% for opt in academic_year_options %}
+              <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Select</button>
+        </div>
+      </form>
+    {% else %}
+      <p><strong>School:</strong> {{ school.name }}</p>
+      <form method="get" class="school-select">
+        <div class="form-field">
+          <label for="area"><strong>Area:</strong></label>
+          <select id="area" name="area">
+            {% for a in areas %}
+              <option value="{{ a.id }}" {% if area and a.id == area.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="year"><strong>Academic year:</strong></label>
+          <select id="year" name="year">
+            {% for opt in academic_year_options %}
+              <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Select</button>
+        </div>
+      </form>
+    {% endif %}
+
+    {% if area %}
+      <p class="sub-title"><strong>Evaluation Area:</strong> {{ area.name }}</p>
+    {% endif %}
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if formset %}
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="school_id" value="{{ school.id }}" />
+      <input type="hidden" name="year" value="{{ selected_year_value }}" />
+      <input type="hidden" name="area_id" value="{{ area.id }}" />
+      {{ formset.management_form }}
+
+      <table class="indepth-table">
+        <thead>
+          <tr>
+            <th style="width: 52%">Judgement evidence</th>
+            <th style="width: 18%">Applies / Doesn't apply</th>
+            <th style="width: 30%">Justification</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td class="indepth-statement">
+                <div class="indepth-statement-number">{{ row.statement.statement_number }}</div>
+                <div class="indepth-statement-text">{{ row.statement.text }}</div>
+              </td>
+              <td class="indepth-applies">
+                {{ row.form.statement_id }}
+                {{ row.form.applies.errors }}
+                <div class="indepth-applies-options">
+                  {% for radio in row.form.applies %}
+                    <label class="indepth-radio">
+                      {{ radio.tag }}
+                      <span>{{ radio.choice_label }}</span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </td>
+              <td class="indepth-justification">
+                {{ row.form.justification.errors }}
+                {{ row.form.justification }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="actions">
+        <button type="submit">Save</button>
+      </div>
+    </form>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {% load static %}
+  <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+{% endblock %}

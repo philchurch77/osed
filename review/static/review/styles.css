@@ -563,6 +563,75 @@ thead th {
   max-width: 180px;
 }
 
+/* In-depth review table */
+
+.indepth-table {
+  border-collapse: separate;
+  border-spacing: 10px;
+  margin-top: 18px;
+}
+
+.indepth-table th,
+.indepth-table td {
+  border-top: 0;
+  padding: 12px 10px;
+  vertical-align: top;
+}
+
+.indepth-table thead th {
+  text-align: left;
+}
+
+.indepth-table td {
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+}
+
+.indepth-statement-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  background: var(--colour-primary-light);
+  border: 1px solid var(--colour-border);
+  color: var(--colour-primary-dark);
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+
+.indepth-applies-options {
+  display: grid;
+  gap: 8px;
+}
+
+.indepth-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  background: var(--colour-white);
+}
+
+.indepth-radio input {
+  margin-top: 2px;
+}
+
+.indepth-table textarea {
+  width: 100%;
+  min-height: 140px;
+  padding: 10px 10px;
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  background: var(--colour-white);
+  resize: vertical;
+}
+
 textarea {
   width: 100%;
   max-width: 100%;
@@ -665,6 +734,7 @@ input[type="number"] {
 
 .dashboard-table thead th,
 .evaluation-table thead th,
+.indepth-table thead th,
 .overview-table thead th {
   background: var(--colour-primary-light);
   color: var(--colour-primary-dark);

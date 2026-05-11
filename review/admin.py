@@ -8,7 +8,18 @@ from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
 from django.core.exceptions import ValidationError
 
-from .models import Branding, Category, Evaluation, ReviewPeriod, School, SchoolProfile
+from .models import (
+	Branding,
+	Category,
+	Evaluation,
+	InDepthArea,
+	InDepthResponse,
+	InDepthReview,
+	InDepthStatement,
+	ReviewPeriod,
+	School,
+	SchoolProfile,
+)
 
 
 def _request_schools(request):
@@ -123,6 +134,48 @@ class EvaluationAdmin(admin.ModelAdmin):
 		qs = super().get_queryset(request)
 		school_qs = _request_schools(request)
 		return qs if school_qs is None else qs.filter(school__in=school_qs)
+
+
+@admin.register(InDepthArea)
+class InDepthAreaAdmin(admin.ModelAdmin):
+	list_display = ("order", "name")
+	ordering = ("order", "name")
+	search_fields = ("name",)
+
+
+@admin.register(InDepthStatement)
+class InDepthStatementAdmin(admin.ModelAdmin):
+	list_display = ("area", "statement_number")
+	list_filter = ("area",)
+	ordering = ("area__order", "area__name", "statement_number")
+	search_fields = ("text",)
+	list_select_related = ("area",)
+
+
+@admin.register(InDepthReview)
+class InDepthReviewAdmin(admin.ModelAdmin):
+	list_display = ("school", "year", "area", "updated_at", "updated_by")
+	list_filter = ("year", "area", "school")
+	ordering = ("-year", "school__name", "area__order", "area__name")
+	list_select_related = ("school", "area", "updated_by")
+	readonly_fields = ("created_at", "updated_at", "updated_by")
+
+	def save_model(self, request, obj, form, change):
+		obj.updated_by = request.user
+		super().save_model(request, obj, form, change)
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		school_qs = _request_schools(request)
+		return qs if school_qs is None else qs.filter(school__in=school_qs)
+
+
+@admin.register(InDepthResponse)
+class InDepthResponseAdmin(admin.ModelAdmin):
+	list_display = ("review", "statement", "applies", "updated_at")
+	list_filter = ("applies", "statement__area")
+	search_fields = ("justification", "statement__text")
+	list_select_related = ("review", "statement", "statement__area")
 
 
 class SchoolProfileInline(admin.StackedInline):

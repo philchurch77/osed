@@ -108,3 +108,80 @@ class Branding(models.Model):
 
     def __str__(self):
         return "Branding"
+
+
+class InDepthArea(models.Model):
+    name = models.CharField(max_length=200, unique=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("order", "name")
+
+    def __str__(self):
+        return self.name
+
+
+class InDepthStatement(models.Model):
+    area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
+    statement_number = models.PositiveIntegerField()
+    text = models.TextField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["area", "statement_number"],
+                name="unique_indepth_statement_per_area_number",
+            )
+        ]
+        ordering = ("area__order", "area__name", "statement_number")
+
+    def __str__(self):
+        return f"{self.area} #{self.statement_number}"
+
+
+class InDepthReview(models.Model):
+    # Stored as academic year start, displayed as YYYY/YYYY+1
+    year = models.PositiveSmallIntegerField(default=current_academic_year_start)
+    school = models.ForeignKey(School, on_delete=models.CASCADE)
+    area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_indepth_reviews",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["school", "year", "area"],
+                name="unique_indepth_review_per_school_year_area",
+            )
+        ]
+        ordering = ("-year", "school__name", "area__order", "area__name")
+
+    def __str__(self):
+        return f"{self.school} - {self.year}/{self.year + 1} - {self.area}"
+
+
+class InDepthResponse(models.Model):
+    review = models.ForeignKey(InDepthReview, on_delete=models.CASCADE)
+    statement = models.ForeignKey(InDepthStatement, on_delete=models.CASCADE)
+    applies = models.BooleanField(null=True, blank=True)
+    justification = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["review", "statement"],
+                name="unique_indepth_response_per_review_statement",
+            )
+        ]
+        ordering = ("statement__area__order", "statement__area__name", "statement__statement_number")
+
+    def __str__(self):
+        return f"{self.review} - {self.statement}"

@@ -72,3 +72,35 @@ class DashboardRatingForm(forms.Form):
             (5, "Urgent Improvement"),
         ],
     )
+
+
+class InDepthResponseForm(forms.Form):
+    statement_id = forms.IntegerField(widget=forms.HiddenInput)
+    applies = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("1", "✓ Applies"),
+            ("0", "✕ Doesn't apply"),
+        ],
+        widget=forms.RadioSelect,
+    )
+    justification = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
+
+    def clean_applies(self):
+        raw = self.cleaned_data.get("applies")
+        if raw in (None, "", " "):
+            return None
+        # RadioSelect will provide the string value from `choices`.
+        if str(raw) == "1":
+            return True
+        if str(raw) == "0":
+            return False
+        return None
+
+    def clean_justification(self) -> str:
+        value = self.cleaned_data.get("justification") or ""
+        _validate_max_words(value)
+        return value

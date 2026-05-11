@@ -10,10 +10,14 @@ from django.urls import reverse
 
 from allauth.account.views import LoginView
 
-from .forms import DashboardRatingForm, EvaluationEntryForm
+from .forms import DashboardRatingForm, EvaluationEntryForm, InDepthResponseForm
 from .models import (
 	Category,
 	Evaluation,
+	InDepthArea,
+	InDepthResponse,
+	InDepthReview,
+	InDepthStatement,
 	ReviewPeriod,
 	School,
 	SchoolProfile,
@@ -469,6 +473,183 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			"school": school,
 			"schools": schools,
 			"period": period,
+			"selected_year_value": selected_year_value,
+			"academic_year_options": academic_year_options,
+			"rows": rows,
+			"formset": formset,
+		},
+	)
+
+
+@login_required
+def indepth_review(request: HttpRequest) -> HttpResponse:
+	school = None
+	schools = None
+
+	if request.user.is_superuser:
+		schools = list(School.objects.order_by("name").all())
+		selected = request.GET.get("school") or request.POST.get("school_id")
+		if selected:
+			try:
+				school = School.objects.get(id=selected)
+			except School.DoesNotExist:
+				school = None
+		if school is None and schools:
+			school = schools[0]
+		if school is None:
+			messages.error(request, "No schools have been set up yet.")
+			return redirect("review:home")
+	else:
+		try:
+			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
+				"schools"
+			).get(
+				user=request.user
+			)
+		except SchoolProfile.DoesNotExist:
+			return render(
+				request,
+				"review/no_school_profile.html",
+				{"user": request.user},
+				status=403,
+			)
+
+		allowed_schools = list(school_profile.schools.order_by("name").all())
+		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
+			allowed_schools.insert(0, school_profile.school)
+		selected = request.GET.get("school") or request.POST.get("school_id")
+		if selected:
+			try:
+				selected_id = int(selected)
+			except (TypeError, ValueError):
+				selected_id = None
+			if selected_id is not None:
+				school = next((s for s in allowed_schools if s.id == selected_id), None)
+		if school is None:
+			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
+		schools = allowed_schools if len(allowed_schools) > 1 else None
+
+	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
+	selected_year = _parse_academic_year_start(
+		request.GET.get("year") or request.POST.get("year"),
+		default_year,
+	)
+	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
+	selected_year_value = f"{selected_year}-{selected_year + 1}"
+
+	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
+	academic_year_options = [
+		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
+		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
+	]
+
+	areas = list(InDepthArea.objects.order_by("order", "name").all())
+	area = None
+	selected_area = request.GET.get("area") or request.POST.get("area_id")
+	if selected_area:
+		try:
+			area = InDepthArea.objects.get(id=selected_area)
+		except InDepthArea.DoesNotExist:
+			area = None
+	if area is None and areas:
+		area = areas[0]
+
+	if not areas or area is None:
+		messages.error(
+			request,
+			"No in-depth review statements have been loaded yet. Ask an admin to import the Excel statements.",
+		)
+		return render(
+			request,
+			"review/indepth_review.html",
+			{
+				"school": school,
+				"schools": schools,
+				"areas": areas,
+				"area": area,
+				"selected_year_value": selected_year_value,
+				"academic_year_options": academic_year_options,
+				"rows": [],
+				"formset": None,
+			},
+		)
+
+	statements = list(
+		InDepthStatement.objects.filter(area=area).order_by("statement_number").all()
+	)
+	statement_ids = {s.id for s in statements}
+
+	review, _ = InDepthReview.objects.get_or_create(
+		school=school,
+		year=selected_year,
+		area=area,
+	)
+
+	existing = {
+		r.statement_id: r
+		for r in InDepthResponse.objects.filter(review=review, statement__in=statements)
+	}
+
+	InDepthFormSet = formset_factory(InDepthResponseForm, extra=0)
+
+	if request.method == "POST":
+		formset = InDepthFormSet(request.POST)
+		if formset.is_valid():
+			with transaction.atomic():
+				review.updated_by = request.user
+				review.save()
+				for form in formset:
+					statement_id = form.cleaned_data["statement_id"]
+					if statement_id not in statement_ids:
+						continue
+					applies = form.cleaned_data["applies"]
+					justification = form.cleaned_data["justification"]
+
+					InDepthResponse.objects.update_or_create(
+						review=review,
+						statement_id=statement_id,
+						defaults={
+							"applies": applies,
+							"justification": justification,
+						},
+					)
+
+			messages.success(request, "In-depth review saved.")
+			params = f"?year={selected_year_value}&area={area.id}"
+			if request.user.is_superuser:
+				params = f"?school={school.id}&year={selected_year_value}&area={area.id}"
+			return redirect(f"{reverse('review:indepth_review')}{params}")
+	else:
+		initial = []
+		for statement in statements:
+			current = existing.get(statement.id)
+			if current is None or current.applies is None:
+				applies_value = ""
+			elif current.applies is True:
+				applies_value = "1"
+			else:
+				applies_value = "0"
+			initial.append(
+				{
+					"statement_id": statement.id,
+					"applies": applies_value,
+					"justification": current.justification if current else "",
+				}
+			)
+		formset = InDepthFormSet(initial=initial)
+
+	rows = []
+	for statement, form in zip(statements, formset.forms):
+		rows.append({"statement": statement, "form": form})
+
+	return render(
+		request,
+		"review/indepth_review.html",
+		{
+			"school": school,
+			"schools": schools,
+			"areas": areas,
+			"area": area,
 			"selected_year_value": selected_year_value,
 			"academic_year_options": academic_year_options,
 			"rows": rows,
