@@ -57,6 +57,10 @@
     </ul>
   {% endif %}
 
+  {% if not can_edit %}
+    <p><strong>Read-only:</strong> you can view ratings, but you can’t make changes.</p>
+  {% endif %}
+
   <form method="post">
     {% csrf_token %}
     <input type="hidden" name="school_id" value="{{ school.id }}" />
@@ -105,6 +109,7 @@
                               name="{{ form.rating.html_name }}"
                               value="{{ value }}"
                               {% if value|stringformat:'s' == current|stringformat:'s' %}checked{% endif %}
+                                {% if not can_edit %}disabled{% endif %}
                             />
                             <span class="rag-pill-text">
                               <span class="rag-pill-value">({{ value }})</span>
@@ -124,7 +129,9 @@
     </table>
 
     <div class="actions">
-      <button type="submit">Save</button>
+      {% if can_edit %}
+        <button type="submit">Save</button>
+      {% endif %}
     </div>
   </form>
 {% endblock %}
@@ -132,5 +139,7 @@
 {% block scripts %}
   {% load static %}
   <script defer src="{% static 'review/rag_toggle.js' %}?v=20260508-2"></script>
-  <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+  {% if can_edit %}
+    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+  {% endif %}
 {% endblock %}

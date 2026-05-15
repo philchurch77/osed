@@ -79,6 +79,10 @@
     </ul>
   {% endif %}
 
+  {% if formset and not can_edit %}
+    <p><strong>Read-only:</strong> you can view responses, but you can’t make changes.</p>
+  {% endif %}
+
   {% if formset %}
     <form method="post">
       {% csrf_token %}
@@ -124,7 +128,9 @@
       </table>
 
       <div class="actions">
-        <button type="submit">Save</button>
+        {% if can_edit %}
+          <button type="submit">Save</button>
+        {% endif %}
       </div>
     </form>
   {% endif %}
@@ -132,5 +138,7 @@
 
 {% block scripts %}
   {% load static %}
-  <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+  {% if can_edit %}
+    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+  {% endif %}
 {% endblock %}

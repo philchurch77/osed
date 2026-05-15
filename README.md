@@ -34,6 +34,16 @@ Notes
 - In local dev, SQLite is used by default.
 - In Render, the app uses Postgres via `DATABASE_URL`.
 
+User accounts / roles
+
+- **Superuser**: full access, including `/admin/`.
+- **Staff (editors)**: sign in via Microsoft SSO, must have a `SchoolProfile`, and must be granted edit permissions (recommended: add them to the **OSED Staff** group).
+- **Viewer (trustees)**: sign in via Microsoft SSO and must have a `SchoolProfile` linking them to the school(s) they may view; they can view data but cannot save changes.
+
+To create/update the **OSED Staff** group (once):
+
+- `python manage.py ensure_osed_staff_group`
+
 Media uploads (logos, branding)
 
 This app uses Django `ImageField` for:

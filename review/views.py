@@ -23,6 +23,7 @@ from .models import (
 	SchoolProfile,
 	current_academic_year_start,
 )
+from .permissions import user_can_edit
 
 
 MIN_ACADEMIC_YEAR_START = 2025
@@ -147,8 +148,9 @@ def overview(request: HttpRequest) -> HttpResponse:
 		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
 	]
 
+	# Overview is read-only: don't create periods as a side-effect of viewing.
 	periods = {
-		r: ReviewPeriod.objects.get_or_create(year=year, round=r)[0]
+		r: ReviewPeriod.objects.filter(year=year, round=r).first()
 		for r in (1, 2, 3)
 	}
 
@@ -157,8 +159,12 @@ def overview(request: HttpRequest) -> HttpResponse:
 	for category in categories:
 		cells = []
 		for r in (1, 2, 3):
+			period = periods.get(r)
+			if period is None:
+				cells.append({"avg": None, "band": None, "label": "—"})
+				continue
 			ratings_qs = Evaluation.objects.filter(
-				period=periods[r],
+				period=period,
 				category=category,
 				rating__isnull=False,
 			)
@@ -194,6 +200,17 @@ def overview(request: HttpRequest) -> HttpResponse:
 
 @login_required
 def dashboard(request: HttpRequest) -> HttpResponse:
+	can_edit = user_can_edit(request.user)
+	if request.method == "POST" and not can_edit:
+		messages.error(request, "You have read-only access and cannot save changes.")
+		selected_year_value = request.POST.get("year") or ""
+		params = f"?year={selected_year_value}" if selected_year_value else ""
+		if request.user.is_superuser:
+			school_id = request.POST.get("school_id")
+			if school_id:
+				params = f"?school={school_id}&year={selected_year_value}" if selected_year_value else f"?school={school_id}"
+		return redirect(f"{reverse('review:dashboard')}{params}")
+
 	school = None
 	schools = None
 
@@ -254,22 +271,29 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
 	]
 
-	periods = {
-		r: ReviewPeriod.objects.get_or_create(year=selected_year, round=r)[0]
-		for r in (1, 2, 3)
-	}
+	# For viewers, avoid creating ReviewPeriods as a side-effect of viewing.
+	if can_edit:
+		periods = {
+			r: ReviewPeriod.objects.get_or_create(year=selected_year, round=r)[0]
+			for r in (1, 2, 3)
+		}
+	else:
+		periods = {
+			r: ReviewPeriod.objects.filter(year=selected_year, round=r).first()
+			for r in (1, 2, 3)
+		}
 
 	categories = list(Category.objects.filter(is_active=True).order_by("order", "name").all())
 	category_ids = {c.id for c in categories}
 
-	existing = {
-		(e.category_id, e.period.round): e
-		for e in Evaluation.objects.filter(
-			school=school,
-			period__in=list(periods.values()),
-			category__in=categories,
-		)
-	}
+	period_list = [p for p in periods.values() if p is not None]
+	existing_qs = Evaluation.objects.filter(school=school, category__in=categories)
+	if period_list:
+		existing_qs = existing_qs.filter(period__in=period_list)
+	else:
+		existing_qs = existing_qs.none()
+
+	existing = {(e.category_id, e.period.round): e for e in existing_qs}
 
 	DashboardFormSet = formset_factory(DashboardRatingForm, extra=0)
 
@@ -315,6 +339,11 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 				)
 		formset = DashboardFormSet(initial=initial)
 
+	if not can_edit:
+		for form in formset.forms:
+			for field in form.fields.values():
+				field.disabled = True
+
 	# Build a 2D structure (category -> three forms)
 	forms_iter = iter(formset.forms)
 	rows = []
@@ -332,12 +361,31 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 			"academic_year_options": academic_year_options,
 			"rows": rows,
 			"formset": formset,
+			"can_edit": can_edit,
 		},
 	)
 
 
 @login_required
 def evaluation(request: HttpRequest) -> HttpResponse:
+	can_edit = user_can_edit(request.user)
+	if request.method == "POST" and not can_edit:
+		messages.error(request, "You have read-only access and cannot save changes.")
+		year = request.POST.get("year") or ""
+		round_value = request.POST.get("round") or ""
+		params = "?"
+		params += f"year={year}" if year else ""
+		if round_value:
+			params += ("&" if params != "?" and params != "" else "") + f"round={round_value}"
+		if params == "?":
+			params = ""
+		if request.user.is_superuser:
+			school_id = request.POST.get("school_id")
+			if school_id:
+				joiner = "&" if params else "?"
+				params = f"{params}{joiner}school={school_id}"
+		return redirect(f"{reverse('review:evaluation')}{params}")
+
 	school = None
 	schools = None
 	period = None
@@ -400,7 +448,13 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 	if selected_round not in (1, 2, 3):
 		selected_round = 1
 
-	period, _ = ReviewPeriod.objects.get_or_create(year=selected_year, round=selected_round)
+	period_db = None
+	if can_edit:
+		period_db, _ = ReviewPeriod.objects.get_or_create(year=selected_year, round=selected_round)
+		period = period_db
+	else:
+		period_db = ReviewPeriod.objects.filter(year=selected_year, round=selected_round).first()
+		period = period_db or ReviewPeriod(year=selected_year, round=selected_round)
 	selected_year_value = f"{selected_year}-{selected_year + 1}"
 
 	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
@@ -412,10 +466,13 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 	categories = list(Category.objects.filter(is_active=True).order_by("order", "name").all())
 	category_ids = {c.id for c in categories}
 
-	existing = {
-		e.category_id: e
-		for e in Evaluation.objects.filter(school=school, period=period, category__in=categories)
-	}
+	if period_db is None:
+		existing = {}
+	else:
+		existing = {
+			e.category_id: e
+			for e in Evaluation.objects.filter(school=school, period=period_db, category__in=categories)
+		}
 
 	EvaluationFormSet = formset_factory(EvaluationEntryForm, extra=0)
 
@@ -462,6 +519,11 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			)
 		formset = EvaluationFormSet(initial=initial)
 
+	if not can_edit:
+		for form in formset.forms:
+			for field in form.fields.values():
+				field.disabled = True
+
 	rows = []
 	for category, form in zip(categories, formset.forms):
 		rows.append({"category": category, "form": form})
@@ -477,12 +539,31 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			"academic_year_options": academic_year_options,
 			"rows": rows,
 			"formset": formset,
+			"can_edit": can_edit,
 		},
 	)
 
 
 @login_required
 def indepth_review(request: HttpRequest) -> HttpResponse:
+	can_edit = user_can_edit(request.user)
+	if request.method == "POST" and not can_edit:
+		messages.error(request, "You have read-only access and cannot save changes.")
+		year = request.POST.get("year") or ""
+		area_id = request.POST.get("area_id") or ""
+		params = "?"
+		params += f"year={year}" if year else ""
+		if area_id:
+			params += ("&" if params != "?" and params != "" else "") + f"area={area_id}"
+		if params == "?":
+			params = ""
+		if request.user.is_superuser:
+			school_id = request.POST.get("school_id")
+			if school_id:
+				joiner = "&" if params else "?"
+				params = f"{params}{joiner}school={school_id}"
+		return redirect(f"{reverse('review:indepth_review')}{params}")
+
 	school = None
 	schools = None
 
@@ -579,16 +660,26 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	)
 	statement_ids = {s.id for s in statements}
 
-	review, _ = InDepthReview.objects.get_or_create(
-		school=school,
-		year=selected_year,
-		area=area,
-	)
+	if can_edit:
+		review, _ = InDepthReview.objects.get_or_create(
+			school=school,
+			year=selected_year,
+			area=area,
+		)
+	else:
+		review = InDepthReview.objects.filter(
+			school=school,
+			year=selected_year,
+			area=area,
+		).first()
 
-	existing = {
-		r.statement_id: r
-		for r in InDepthResponse.objects.filter(review=review, statement__in=statements)
-	}
+	if review is None:
+		existing = {}
+	else:
+		existing = {
+			r.statement_id: r
+			for r in InDepthResponse.objects.filter(review=review, statement__in=statements)
+		}
 
 	InDepthFormSet = formset_factory(InDepthResponseForm, extra=0)
 
@@ -596,8 +687,16 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		formset = InDepthFormSet(request.POST)
 		if formset.is_valid():
 			with transaction.atomic():
-				review.updated_by = request.user
-				review.save()
+				if review is None:
+					review = InDepthReview.objects.create(
+						school=school,
+						year=selected_year,
+						area=area,
+						updated_by=request.user,
+					)
+				else:
+					review.updated_by = request.user
+					review.save()
 				for form in formset:
 					statement_id = form.cleaned_data["statement_id"]
 					if statement_id not in statement_ids:
@@ -638,6 +737,11 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			)
 		formset = InDepthFormSet(initial=initial)
 
+	if not can_edit:
+		for form in formset.forms:
+			for field in form.fields.values():
+				field.disabled = True
+
 	rows = []
 	for statement, form in zip(statements, formset.forms):
 		rows.append({"statement": statement, "form": form})
@@ -654,5 +758,6 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"academic_year_options": academic_year_options,
 			"rows": rows,
 			"formset": formset,
+			"can_edit": can_edit,
 		},
 	)
