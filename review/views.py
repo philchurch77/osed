@@ -14,9 +14,7 @@ from .forms import (
 	DashboardRatingForm,
 	EvaluationEntryForm,
 	InDepthJustificationForm,
-	InDepthOverallJustificationForm,
 	InDepthResponseForm,
-	InDepthSecondaryStatementForm,
 	RATING_CHOICES_DEFAULT,
 	RATING_CHOICES_SAFEGUARDING,
 )
@@ -838,7 +836,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				.order_by("statement_number")
 			)
 			secondary_stmt_ids = {s.id for s in secondary_stmts}
-			SecondaryFormSet = formset_factory(InDepthSecondaryStatementForm, extra=0)
+			SecondaryFormSet = formset_factory(InDepthResponseForm, extra=0)
 			formset = SecondaryFormSet(request.POST)
 			if formset.is_valid():
 				with transaction.atomic():
@@ -849,10 +847,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 						InDepthResponse.objects.update_or_create(
 							review=review,
 							statement_id=stmt_id,
-							defaults={
-								"applies": form.cleaned_data["applies"],
-								"next_steps": form.cleaned_data["next_steps"],
-							},
+							defaults={"applies": form.cleaned_data["applies"]},
 						)
 					review.step = "justification"
 					review.updated_by = request.user
@@ -861,10 +856,30 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			current_step = "secondary"
 
 		elif post_step == "justification":
-			just_form = InDepthOverallJustificationForm(request.POST)
-			if just_form.is_valid():
+			determined_level = (review.secondary_level if review else "") or "expected"
+			just_stmts = list(
+				InDepthStatement.objects.filter(area=area, standard_type=determined_level)
+				.order_by("statement_number")
+			)
+			if not just_stmts:
+				just_stmts = statements
+			just_stmt_ids = {s.id for s in just_stmts}
+			JustFormSet = formset_factory(InDepthJustificationForm, extra=0)
+			formset = JustFormSet(request.POST)
+			if formset.is_valid():
 				with transaction.atomic():
-					review.justification = just_form.cleaned_data["justification"]
+					for form in formset:
+						stmt_id = form.cleaned_data["statement_id"]
+						if stmt_id not in just_stmt_ids:
+							continue
+						InDepthResponse.objects.update_or_create(
+							review=review,
+							statement_id=stmt_id,
+							defaults={
+								"justification": form.cleaned_data["justification"],
+								"next_steps": form.cleaned_data["next_steps"],
+							},
+						)
 					review.updated_by = request.user
 					review.save()
 				messages.success(request, "In-depth review saved.")
@@ -875,7 +890,6 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	formset = None
 	rows = []
 	secondary_rows = []
-	just_form = None
 	secondary_title = ""
 
 	if current_step == "expected":
@@ -899,15 +913,12 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 
 	elif current_step == "secondary":
 		secondary_level = (review.secondary_level if review else "") or "needs_attention"
-		if secondary_level == "strong_standard":
-			secondary_title = "Strong Standard"
-		else:
-			secondary_title = "Needs Attention"
+		secondary_title = "Strong Standard" if secondary_level == "strong_standard" else "Needs Attention"
 		secondary_stmts = list(
 			InDepthStatement.objects.filter(area=area, standard_type=secondary_level)
 			.order_by("statement_number")
 		)
-		SecondaryFormSet = formset_factory(InDepthSecondaryStatementForm, extra=0)
+		SecondaryFormSet = formset_factory(InDepthResponseForm, extra=0)
 		initial = []
 		for statement in secondary_stmts:
 			resp = existing.get(statement.id)
@@ -916,11 +927,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				applies_value = "1"
 			elif resp is not None and resp.applies is False:
 				applies_value = "0"
-			initial.append({
-				"statement_id": statement.id,
-				"applies": applies_value,
-				"next_steps": resp.next_steps if resp else "",
-			})
+			initial.append({"statement_id": statement.id, "applies": applies_value})
 		formset = SecondaryFormSet(initial=initial)
 		if not can_edit:
 			for form in formset.forms:
@@ -929,28 +936,34 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		secondary_rows = [{"statement": s, "form": f} for s, f in zip(secondary_stmts, formset.forms)]
 
 	elif current_step == "justification":
-		just_form = InDepthOverallJustificationForm(
-			initial={"justification": review.justification if review else ""}
-		)
-		if not can_edit:
-			for field in just_form.fields.values():
-				field.disabled = True
-		# Build read-only summary of statement responses for context
 		determined_level = (review.secondary_level if review else "") or "expected"
-		summary_stmts = list(
+		just_stmts = list(
 			InDepthStatement.objects.filter(area=area, standard_type=determined_level)
 			.order_by("statement_number")
 		)
-		if not summary_stmts:
-			# Fall back to expected standard if no secondary statements exist
-			summary_stmts = statements
+		if not just_stmts:
+			just_stmts = statements
+		JustFormSet = formset_factory(InDepthJustificationForm, extra=0)
+		initial = []
+		for statement in just_stmts:
+			resp = existing.get(statement.id)
+			initial.append({
+				"statement_id": statement.id,
+				"justification": resp.justification if resp else "",
+				"next_steps": resp.next_steps if resp else "",
+			})
+		formset = JustFormSet(initial=initial)
+		if not can_edit:
+			for form in formset.forms:
+				for field in form.fields.values():
+					field.disabled = True
 		rows = [
 			{
 				"statement": s,
+				"form": f,
 				"applies": existing.get(s.id).applies if existing.get(s.id) else None,
-				"next_steps": existing.get(s.id).next_steps if existing.get(s.id) else "",
 			}
-			for s in summary_stmts
+			for s, f in zip(just_stmts, formset.forms)
 		]
 
 	return render(
@@ -968,7 +981,6 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"rows": rows,
 			"secondary_rows": secondary_rows,
 			"formset": formset,
-			"just_form": just_form,
 			"secondary_title": secondary_title,
 			"can_edit": can_edit,
 		},
