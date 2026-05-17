@@ -124,18 +124,28 @@ class InDepthArea(models.Model):
 
 
 class InDepthStatement(models.Model):
+    class StandardType(models.TextChoices):
+        EXPECTED = "expected", "Expected Standard"
+        NEEDS_ATTENTION = "needs_attention", "Needs Attention"
+        STRONG_STANDARD = "strong_standard", "Strong Standard"
+
     area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
+    standard_type = models.CharField(
+        max_length=20,
+        choices=StandardType.choices,
+        default=StandardType.EXPECTED,
+    )
     statement_number = models.PositiveIntegerField()
     text = models.TextField()
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["area", "statement_number"],
-                name="unique_indepth_statement_per_area_number",
+                fields=["area", "standard_type", "statement_number"],
+                name="unique_indepth_statement_per_area_type_number",
             )
         ]
-        ordering = ("area__order", "area__name", "statement_number")
+        ordering = ("area__order", "area__name", "standard_type", "statement_number")
 
     def __str__(self):
         return f"{self.area} #{self.statement_number}"
@@ -154,6 +164,7 @@ class InDepthReview(models.Model):
     step = models.CharField(max_length=20, choices=Step.choices, default=Step.EXPECTED)
     secondary_level = models.CharField(max_length=20, blank=True, default="")
     secondary_applies = models.BooleanField(null=True, blank=True)
+    justification = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
