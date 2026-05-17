@@ -19,7 +19,7 @@ class Command(BaseCommand):
             ("Stowupland High School", School.Phase.SECONDARY),
             ("Bacton Primary School", School.Phase.PRIMARY),
             ("Cedars Park Primary School", School.Phase.PRIMARY),
-            ("Mendelsham Primary School", School.Phase.PRIMARY),
+            ("Mendlesham Primary School", School.Phase.PRIMARY),
         ]
 
         demo_logos = {
@@ -29,8 +29,7 @@ class Command(BaseCommand):
             "Stowupland High School": "Stowupland_High_School.jpeg",
             "Bacton Primary School": "Bacton_Primary_School.jpeg",
             "Cedars Park Primary School": "Cedars_Park_Primary_School.jpeg",
-            # Note: file on disk is spelled "Mendlesham".
-            "Mendelsham Primary School": "Mendlesham_Primary_School.jpeg",
+            "Mendlesham Primary School": "Mendlesham_Primary_School.jpeg",
         }
         logos_dir = Path(settings.MEDIA_ROOT) / "school_logos"
         use_azure_media_storage = getattr(settings, "USE_AZURE_MEDIA_STORAGE", False)
@@ -38,6 +37,9 @@ class Command(BaseCommand):
         created = 0
         updated = 0
         logos_attached = 0
+
+        # Rename any existing record with the old misspelling.
+        School.objects.filter(name="Mendelsham Primary School").update(name="Mendlesham Primary School")
 
         for name, phase in schools:
             obj, was_created = School.objects.get_or_create(name=name)

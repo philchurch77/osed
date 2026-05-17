@@ -1,0 +1,81 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Import users from CSV | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% trans "Home" %}</a>
+    &rsaquo;
+    <a href="{% url 'admin:auth_user_changelist' %}">{% trans "Users" %}</a>
+    &rsaquo; {% trans "Import users from CSV" %}
+  </div>
+{% endblock %}
+
+{% block content %}
+  <h1>Import users from CSV</h1>
+
+  <p>
+    Upload a CSV file to bulk-create user accounts and link them to schools.
+    New users are created without a password — they will log in using
+    <strong>Microsoft sign-in</strong> with their work email address.
+  </p>
+
+  <p>Expected CSV format:</p>
+  <pre style="background:#f8f8f8;border:1px solid #ddd;padding:10px;display:inline-block">email,school
+john.smith@example.com,Mendlesham Primary School
+jane.doe@example.com,Some Other School</pre>
+
+  <ul>
+    <li>A header row is required with the column names <code>email</code> and <code>school</code>.</li>
+    <li>School names must match exactly (case-insensitive) as they appear in the database.</li>
+    <li>You can have multiple rows for the same email to assign a user to multiple schools.</li>
+    <li>If a user with that email already exists, their account is updated (school added).</li>
+  </ul>
+
+  {% if results %}
+    <div class="import-results" style="margin:1.5em 0;padding:1em;border-left:4px solid {% if results.errors %}#e57373{% else %}#4caf50{% endif %};background:#fafafa">
+      <strong>Import complete.</strong>
+      {{ results.created }} user(s) created,
+      {{ results.updated }} user(s) already existed (school association updated).
+      {% if results.errors %}
+        <p style="margin-top:0.75em"><strong>{{ results.errors|length }} row(s) skipped:</strong></p>
+        <ul>
+          {% for err in results.errors %}
+            <li>{{ err }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        All rows imported successfully.
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <form method="post" enctype="multipart/form-data" style="margin-top:1.5em">
+    {% csrf_token %}
+
+    <fieldset class="module aligned">
+      {% for field in form %}
+        <div class="form-row">
+          <div>
+            <label for="{{ field.id_for_label }}"{% if field.field.required %} class="required"{% endif %}>
+              {{ field.label }}:
+            </label>
+            {{ field }}
+            {% if field.help_text %}
+              <p class="help">{{ field.help_text|safe }}</p>
+            {% endif %}
+            {% for error in field.errors %}
+              <p class="errornote">{{ error }}</p>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </fieldset>
+
+    <div class="submit-row">
+      <input type="submit" value="Import" class="default" />
+      <a href="{% url 'admin:auth_user_changelist' %}" style="margin-left:1em">Cancel</a>
+    </div>
+  </form>
+{% endblock %}

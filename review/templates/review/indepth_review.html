@@ -79,60 +79,176 @@
     </ul>
   {% endif %}
 
-  {% if formset and not can_edit %}
-    <p><strong>Read-only:</strong> you can view responses, but you can’t make changes.</p>
+  {% if not can_edit %}
+    <p><strong>Read-only:</strong> you can view responses, but you cannot make changes.</p>
   {% endif %}
 
-  {% if formset %}
-    <form method="post">
-      {% csrf_token %}
-      <input type="hidden" name="school_id" value="{{ school.id }}" />
-      <input type="hidden" name="year" value="{{ selected_year_value }}" />
-      <input type="hidden" name="area_id" value="{{ area.id }}" />
-      {{ formset.management_form }}
+  {% if area %}
 
-      <table class="indepth-table">
-        <thead>
-          <tr>
-            <th style="width: 52%">Judgement evidence</th>
-            <th style="width: 18%">Applies / Doesn't apply</th>
-            <th style="width: 30%">Justification</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
+    {# Step indicator #}
+    <nav class="indepth-steps">
+      <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step=expected"
+         class="indepth-step {% if current_step == 'expected' %}indepth-step--active{% endif %}">
+        1. Expected Standard
+      </a>
+      {% if review and review.secondary_level %}
+        <span class="indepth-step-sep">&rsaquo;</span>
+        <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step=secondary"
+           class="indepth-step {% if current_step == 'secondary' %}indepth-step--active{% endif %}">
+          2. {% if review.secondary_level == 'strong_standard' %}Strong Standard{% else %}Needs Attention{% endif %}
+        </a>
+      {% endif %}
+      {% if review and review.step == 'justification' %}
+        <span class="indepth-step-sep">&rsaquo;</span>
+        <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step=justification"
+           class="indepth-step {% if current_step == 'justification' %}indepth-step--active{% endif %}">
+          {% if review.secondary_level %}3{% else %}2{% endif %}. Justification &amp; Next Steps
+        </a>
+      {% endif %}
+    </nav>
+
+    {# STEP 1: Expected Standard #}
+    {% if current_step == 'expected' and formset %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="area_id" value="{{ area.id }}" />
+        <input type="hidden" name="step" value="expected" />
+        {{ formset.management_form }}
+
+        <h2 class="indepth-step-title">Step 1 &mdash; Expected Standard</h2>
+        <p class="indepth-step-hint">Tick Met or Not met for each statement. You will be taken to the next step automatically.</p>
+
+        <table class="indepth-table">
+          <thead>
             <tr>
-              <td class="indepth-statement">
-                <div class="indepth-statement-number">{{ row.statement.statement_number }}</div>
-                <div class="indepth-statement-text">{{ row.statement.text }}</div>
-              </td>
-              <td class="indepth-applies">
-                {{ row.form.statement_id }}
-                {{ row.form.applies.errors }}
-                <div class="indepth-applies-options">
-                  {% for radio in row.form.applies %}
-                    <label class="indepth-radio">
-                      {{ radio.tag }}
-                      <span>{{ radio.choice_label }}</span>
-                    </label>
-                  {% endfor %}
-                </div>
-              </td>
-              <td class="indepth-justification">
-                {{ row.form.justification.errors }}
-                {{ row.form.justification }}
-              </td>
+              <th style="width: 8%">#</th>
+              <th style="width: 67%">Judgement evidence</th>
+              <th style="width: 25%">Met / Not met</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td class="indepth-num">{{ row.statement.statement_number }}</td>
+                <td class="indepth-statement-text">{{ row.statement.text }}</td>
+                <td class="indepth-applies">
+                  {{ row.form.statement_id }}
+                  {{ row.form.applies.errors }}
+                  <div class="indepth-applies-options">
+                    {% for radio in row.form.applies %}
+                      <label class="indepth-radio">
+                        {{ radio.tag }}
+                        <span>{{ radio.choice_label }}</span>
+                      </label>
+                    {% endfor %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
 
-      <div class="actions">
-        {% if can_edit %}
-          <button type="submit">Save</button>
-        {% endif %}
-      </div>
-    </form>
+        <div class="actions">
+          {% if can_edit %}
+            <button type="submit">Save &amp; continue &rsaquo;</button>
+          {% endif %}
+        </div>
+      </form>
+
+    {# STEP 2: Needs Attention or Strong Standard #}
+    {% elif current_step == 'secondary' and secondary_form %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="area_id" value="{{ area.id }}" />
+        <input type="hidden" name="step" value="secondary" />
+
+        <h2 class="indepth-step-title">Step 2 &mdash; {{ secondary_title }}</h2>
+
+        <div class="indepth-secondary-block">
+          <p class="indepth-secondary-text">{{ secondary_text }}</p>
+          <div class="indepth-secondary-question">
+            <strong>Does this area meet the {{ secondary_title }} criteria?</strong>
+            {{ secondary_form.applies.errors }}
+            <div class="indepth-applies-options">
+              {% for radio in secondary_form.applies %}
+                <label class="indepth-radio">
+                  {{ radio.tag }}
+                  <span>{{ radio.choice_label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          {% if can_edit %}
+            <button type="submit">Save &amp; continue &rsaquo;</button>
+          {% endif %}
+        </div>
+      </form>
+
+    {# STEP 3: Justification and Next Steps #}
+    {% elif current_step == 'justification' and formset %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="area_id" value="{{ area.id }}" />
+        <input type="hidden" name="step" value="justification" />
+        {{ formset.management_form }}
+
+        <h2 class="indepth-step-title">Step {% if review and review.secondary_level %}3{% else %}2{% endif %} &mdash; Justification &amp; Next Steps</h2>
+
+        <table class="indepth-table indepth-table--just">
+          <thead>
+            <tr>
+              <th style="width: 5%">#</th>
+              <th style="width: 33%">Judgement evidence</th>
+              <th style="width: 10%">Result</th>
+              <th style="width: 26%">Justification</th>
+              <th style="width: 26%">Next steps</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td class="indepth-num">{{ row.statement.statement_number }}</td>
+                <td class="indepth-statement-text">{{ row.statement.text }}</td>
+                <td class="indepth-result">
+                  {% if row.applies %}
+                    <span class="indepth-met">Met</span>
+                  {% elif row.applies == False %}
+                    <span class="indepth-notmet">Not met</span>
+                  {% else %}
+                    &mdash;
+                  {% endif %}
+                </td>
+                <td class="indepth-justification">
+                  {{ row.form.statement_id }}
+                  {{ row.form.justification.errors }}
+                  {{ row.form.justification }}
+                </td>
+                <td class="indepth-next-steps">
+                  {{ row.form.next_steps.errors }}
+                  {{ row.form.next_steps }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <div class="actions">
+          {% if can_edit %}
+            <button type="submit">Save</button>
+          {% endif %}
+        </div>
+      </form>
+    {% endif %}
+
   {% endif %}
 {% endblock %}
 
@@ -140,5 +256,6 @@
   {% load static %}
   {% if can_edit %}
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+    <script defer src="{% static 'review/word_limit.js' %}?v=20260508-2"></script>
   {% endif %}
 {% endblock %}

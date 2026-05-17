@@ -113,6 +113,8 @@ class Branding(models.Model):
 class InDepthArea(models.Model):
     name = models.CharField(max_length=200, unique=True)
     order = models.PositiveIntegerField(default=0)
+    needs_attention_text = models.TextField(blank=True, default="")
+    strong_standard_text = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ("order", "name")
@@ -140,10 +142,18 @@ class InDepthStatement(models.Model):
 
 
 class InDepthReview(models.Model):
+    class Step(models.TextChoices):
+        EXPECTED = "expected", "Expected Standard"
+        SECONDARY = "secondary", "Secondary Standard"
+        JUSTIFICATION = "justification", "Justification"
+
     # Stored as academic year start, displayed as YYYY/YYYY+1
     year = models.PositiveSmallIntegerField(default=current_academic_year_start)
     school = models.ForeignKey(School, on_delete=models.CASCADE)
     area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
+    step = models.CharField(max_length=20, choices=Step.choices, default=Step.EXPECTED)
+    secondary_level = models.CharField(max_length=20, blank=True, default="")
+    secondary_applies = models.BooleanField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
@@ -172,6 +182,7 @@ class InDepthResponse(models.Model):
     statement = models.ForeignKey(InDepthStatement, on_delete=models.CASCADE)
     applies = models.BooleanField(null=True, blank=True)
     justification = models.TextField(blank=True, default="")
+    next_steps = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

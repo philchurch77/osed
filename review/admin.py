@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import csv
+import io
+
 from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
 from django.db.models import Q
-from django.core.exceptions import ValidationError
+from django.shortcuts import redirect, render
+from django.urls import path
 
 from .models import (
 	Branding,
@@ -192,7 +198,103 @@ class SchoolProfileInline(admin.StackedInline):
 		return formset
 
 
+class UserImportForm(forms.Form):
+	csv_file = forms.FileField(
+		label="CSV file",
+		help_text=(
+			"Upload a CSV with two columns: "
+			"<strong>email</strong> and <strong>school</strong>. "
+			"Include a header row. One row per user per school."
+		),
+	)
+
+
 class UserAdmin(DjangoUserAdmin):
+	change_list_template = "admin/review/user/change_list.html"
+
+	def get_urls(self):
+		urls = super().get_urls()
+		custom = [
+			path(
+				"import-users/",
+				self.admin_site.admin_view(self.import_users_view),
+				name="auth_user_import",
+			),
+		]
+		return custom + urls
+
+	def import_users_view(self, request):
+		if not request.user.is_superuser:
+			raise PermissionDenied
+
+		results = None
+		form = UserImportForm()
+
+		if request.method == "POST":
+			form = UserImportForm(request.POST, request.FILES)
+			if form.is_valid():
+				raw = request.FILES["csv_file"].read()
+				try:
+					text = raw.decode("utf-8-sig")
+				except UnicodeDecodeError:
+					text = raw.decode("latin-1")
+
+				reader = csv.DictReader(io.StringIO(text))
+				rows = list(reader)
+				created_count = 0
+				updated_count = 0
+				errors = []
+
+				with transaction.atomic():
+					for i, row in enumerate(rows, start=2):
+						norm = {k.strip().lower(): (v or "").strip() for k, v in row.items()}
+						email = norm.get("email", "").lower()
+						school_name = norm.get("school", "") or norm.get("school_name", "")
+
+						if not email:
+							errors.append(f"Row {i}: missing email \u2014 skipped.")
+							continue
+						if not school_name:
+							errors.append(f"Row {i}: missing school for {email} \u2014 skipped.")
+							continue
+
+						try:
+							school = School.objects.get(name__iexact=school_name)
+						except School.DoesNotExist:
+							errors.append(f'Row {i}: school not found: "{school_name}" \u2014 skipped.')
+							continue
+
+						user = User.objects.filter(email__iexact=email).first()
+						if user is None:
+							user = User(username=email[:150], email=email, is_active=True)
+							user.set_unusable_password()
+							user.save()
+							created_count += 1
+						else:
+							updated_count += 1
+
+						profile, _ = SchoolProfile.objects.get_or_create(
+							user=user,
+							defaults={"school": school},
+						)
+						profile.schools.add(school)
+
+				results = {
+					"created": created_count,
+					"updated": updated_count,
+					"errors": errors,
+					"total": len(rows),
+				}
+
+		context = {
+			**self.admin_site.each_context(request),
+			"opts": self.model._meta,
+			"title": "Import users from CSV",
+			"form": form,
+			"results": results,
+		}
+		return render(request, "admin/review/user/import_users.html", context)
+
 	class SSOUserCreationForm(forms.ModelForm):
 		password1 = forms.CharField(
 			label="Password",

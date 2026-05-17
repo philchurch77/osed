@@ -107,3 +107,87 @@ class StaffEditTests(TestCase):
 		self.assertEqual(resp.status_code, 302)
 		self.assertTrue(Evaluation.objects.filter(school=self.school).exists())
 
+	def test_staff_dashboard_safeguarding_allows_only_met_or_not_met(self):
+		safeguarding = Category.objects.create(name="Safeguarding", order=0, is_active=True)
+		self.client.force_login(self.staff)
+
+		# Create periods for editors.
+		resp = self.client.get(reverse("review:dashboard"), {"year": "2025-2026"})
+		self.assertEqual(resp.status_code, 200)
+
+		# Invalid: Safeguarding cannot be rated 2/3/4.
+		resp = self.client.post(
+			reverse("review:dashboard"),
+			data={
+				"school_id": str(self.school.id),
+				"year": "2025-2026",
+				"form-TOTAL_FORMS": "6",
+				"form-INITIAL_FORMS": "0",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				# Safeguarding x 3 rounds
+				"form-0-category_id": str(safeguarding.id),
+				"form-0-round": "1",
+				"form-0-rating": "2",
+				"form-1-category_id": str(safeguarding.id),
+				"form-1-round": "2",
+				"form-1-rating": "",
+				"form-2-category_id": str(safeguarding.id),
+				"form-2-round": "3",
+				"form-2-rating": "",
+				# Leadership x 3 rounds
+				"form-3-category_id": str(self.category.id),
+				"form-3-round": "1",
+				"form-3-rating": "3",
+				"form-4-category_id": str(self.category.id),
+				"form-4-round": "2",
+				"form-4-rating": "",
+				"form-5-category_id": str(self.category.id),
+				"form-5-round": "3",
+				"form-5-rating": "",
+			},
+		)
+		self.assertEqual(resp.status_code, 200)
+		self.assertEqual(Evaluation.objects.count(), 0)
+
+		# Valid: Safeguarding can be rated 1 (Met).
+		resp = self.client.post(
+			reverse("review:dashboard"),
+			data={
+				"school_id": str(self.school.id),
+				"year": "2025-2026",
+				"form-TOTAL_FORMS": "6",
+				"form-INITIAL_FORMS": "0",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				# Safeguarding x 3 rounds
+				"form-0-category_id": str(safeguarding.id),
+				"form-0-round": "1",
+				"form-0-rating": "1",
+				"form-1-category_id": str(safeguarding.id),
+				"form-1-round": "2",
+				"form-1-rating": "",
+				"form-2-category_id": str(safeguarding.id),
+				"form-2-round": "3",
+				"form-2-rating": "",
+				# Leadership x 3 rounds
+				"form-3-category_id": str(self.category.id),
+				"form-3-round": "1",
+				"form-3-rating": "3",
+				"form-4-category_id": str(self.category.id),
+				"form-4-round": "2",
+				"form-4-rating": "",
+				"form-5-category_id": str(self.category.id),
+				"form-5-round": "3",
+				"form-5-rating": "",
+			},
+		)
+		self.assertEqual(resp.status_code, 302)
+		saved = Evaluation.objects.get(
+			school=self.school,
+			category=safeguarding,
+			period__year=2025,
+			period__round=1,
+		)
+		self.assertEqual(saved.rating, 1)
+

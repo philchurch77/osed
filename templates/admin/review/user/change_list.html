@@ -1,0 +1,13 @@
+{% extends "admin/change_list.html" %}
+{% load i18n %}
+
+{% block object-tools-items %}
+  {% if user.is_superuser %}
+    <li>
+      <a href="{% url 'admin:auth_user_import' %}" class="viewsitelink">
+        {% trans "Import users from CSV" %}
+      </a>
+    </li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

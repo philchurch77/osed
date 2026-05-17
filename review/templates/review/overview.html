@@ -1,12 +1,21 @@
 {% extends "review/base.html" %}
 
-{% block title %}Overview{% endblock %}
+{% block title %}Trust Overview{% endblock %}
 
 {% block content %}
   <header class="page-header">
-    <h1 class="page-title">OSED Overview</h1>
+    <h1 class="page-title">Trust Overview</h1>
             {% if user.is_superuser %}
               <form method="get" class="school-select">
+                <div class="form-field">
+                  <label for="phase"><strong>Phase:</strong></label>
+                  <select id="phase" name="phase">
+                    {% for value, label in phase_options %}
+                      <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+
                 <div class="form-field">
                   <label for="school"><strong>School:</strong></label>
                   <select id="school" name="school">
@@ -32,6 +41,15 @@
               </form>
             {% elif schools %}
               <form method="get" class="school-select">
+                <div class="form-field">
+                  <label for="phase"><strong>Phase:</strong></label>
+                  <select id="phase" name="phase">
+                    {% for value, label in phase_options %}
+                      <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+
                 <div class="form-field">
                   <label for="school"><strong>School:</strong></label>
                   <select id="school" name="school">

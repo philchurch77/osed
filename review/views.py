@@ -10,7 +10,15 @@ from django.urls import reverse
 
 from allauth.account.views import LoginView
 
-from .forms import DashboardRatingForm, EvaluationEntryForm, InDepthResponseForm
+from .forms import (
+	DashboardRatingForm,
+	EvaluationEntryForm,
+	InDepthJustificationForm,
+	InDepthResponseForm,
+	InDepthSecondaryForm,
+	RATING_CHOICES_DEFAULT,
+	RATING_CHOICES_SAFEGUARDING,
+)
 from .models import (
 	Category,
 	Evaluation,
@@ -27,6 +35,25 @@ from .permissions import user_can_edit
 
 
 MIN_ACADEMIC_YEAR_START = 2025
+
+
+def _apply_category_specific_rating_choices(*, forms, safeguarding_category_ids: set[int]) -> None:
+	for form in forms:
+		# Works for both bound and unbound forms.
+		if form.is_bound:
+			raw_category_id = form.data.get(form.add_prefix("category_id"))
+		else:
+			raw_category_id = (form.initial or {}).get("category_id")
+
+		try:
+			category_id = int(raw_category_id)
+		except (TypeError, ValueError):
+			category_id = None
+
+		if category_id in safeguarding_category_ids:
+			form.fields["rating"].choices = RATING_CHOICES_SAFEGUARDING
+		else:
+			form.fields["rating"].choices = RATING_CHOICES_DEFAULT
 
 
 def _parse_academic_year_start(raw_value: str | None, default_year: int) -> int:
@@ -89,22 +116,37 @@ def overview(request: HttpRequest) -> HttpResponse:
 	schools = None
 	all_schools_selected = False
 
+	selected_phase = (request.GET.get("phase") or "").strip().upper()
+	valid_phases = {choice[0] for choice in School.Phase.choices}
+	if selected_phase not in valid_phases:
+		selected_phase = ""
+
+	phase_options = [("" , "All phases")] + list(School.Phase.choices)
+
 	if request.user.is_superuser:
 		schools = list(School.objects.order_by("name").all())
+		# Filter the dropdown list by phase (the aggregation query is filtered separately).
+		if selected_phase:
+			schools = [s for s in schools if s.phase == selected_phase]
 		selected = request.GET.get("school")
-		if selected == "all":
+		if selected is None:
+			# Default landing: show all schools.
+			all_schools_selected = True
+			if schools:
+				school = schools[0]
+		elif selected == "all":
 			all_schools_selected = True
 			if schools:
 				# Keep a non-None school in context for template convenience.
 				school = schools[0]
-		elif selected:
+		else:
 			try:
 				school = School.objects.get(id=selected)
 			except School.DoesNotExist:
 				school = None
 		if school is None and schools and not all_schools_selected:
 			school = schools[0]
-		if school is None:
+		if school is None and not all_schools_selected:
 			messages.error(request, "No schools have been set up yet.")
 			return redirect("review:home")
 	else:
@@ -125,6 +167,9 @@ def overview(request: HttpRequest) -> HttpResponse:
 		allowed_schools = list(school_profile.schools.order_by("name").all())
 		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
 			allowed_schools.insert(0, school_profile.school)
+		# Filter the school dropdown by phase for non-superusers too.
+		if selected_phase:
+			allowed_schools = [s for s in allowed_schools if s.phase == selected_phase]
 		selected = request.GET.get("school")
 		if selected:
 			try:
@@ -134,7 +179,7 @@ def overview(request: HttpRequest) -> HttpResponse:
 			if selected_id is not None:
 				school = next((s for s in allowed_schools if s.id == selected_id), None)
 		if school is None:
-			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
+			school = (allowed_schools[0] if allowed_schools else None)
 		schools = allowed_schools if len(allowed_schools) > 1 else None
 
 	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
@@ -168,7 +213,16 @@ def overview(request: HttpRequest) -> HttpResponse:
 				category=category,
 				rating__isnull=False,
 			)
-			if not all_schools_selected:
+			if all_schools_selected:
+				if selected_phase:
+					ratings_qs = ratings_qs.filter(school__phase=selected_phase)
+				if not ratings_qs.exists():
+					cells.append({"avg": None, "band": None, "label": "—"})
+					continue
+			else:
+				if school is None:
+					cells.append({"avg": None, "band": None, "label": "—"})
+					continue
 				ratings_qs = ratings_qs.filter(school=school)
 			ratings = list(ratings_qs.values_list("rating", flat=True))
 
@@ -194,6 +248,8 @@ def overview(request: HttpRequest) -> HttpResponse:
 			"selected_year_value": selected_year_value,
 			"academic_year_options": academic_year_options,
 			"rows": rows,
+			"phase_options": phase_options,
+			"selected_phase": selected_phase,
 		},
 	)
 
@@ -285,6 +341,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 	categories = list(Category.objects.filter(is_active=True).order_by("order", "name").all())
 	category_ids = {c.id for c in categories}
+	safeguarding_category_ids = {c.id for c in categories if (c.name or "").strip().lower() == "safeguarding"}
 
 	period_list = [p for p in periods.values() if p is not None]
 	existing_qs = Evaluation.objects.filter(school=school, category__in=categories)
@@ -299,6 +356,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 	if request.method == "POST":
 		formset = DashboardFormSet(request.POST)
+		_apply_category_specific_rating_choices(
+			forms=formset.forms,
+			safeguarding_category_ids=safeguarding_category_ids,
+		)
 		if formset.is_valid():
 			with transaction.atomic():
 				for form in formset:
@@ -338,6 +399,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 					}
 				)
 		formset = DashboardFormSet(initial=initial)
+		_apply_category_specific_rating_choices(
+			forms=formset.forms,
+			safeguarding_category_ids=safeguarding_category_ids,
+		)
 
 	if not can_edit:
 		for form in formset.forms:
@@ -465,6 +530,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 
 	categories = list(Category.objects.filter(is_active=True).order_by("order", "name").all())
 	category_ids = {c.id for c in categories}
+	safeguarding_category_ids = {c.id for c in categories if (c.name or "").strip().lower() == "safeguarding"}
 
 	if period_db is None:
 		existing = {}
@@ -478,6 +544,10 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 
 	if request.method == "POST":
 		formset = EvaluationFormSet(request.POST)
+		_apply_category_specific_rating_choices(
+			forms=formset.forms,
+			safeguarding_category_ids=safeguarding_category_ids,
+		)
 		if formset.is_valid():
 			with transaction.atomic():
 				for form in formset:
@@ -518,6 +588,10 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 				}
 			)
 		formset = EvaluationFormSet(initial=initial)
+		_apply_category_specific_rating_choices(
+			forms=formset.forms,
+			safeguarding_category_ids=safeguarding_category_ids,
+		)
 
 	if not can_edit:
 		for form in formset.forms:
@@ -551,10 +625,13 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		messages.error(request, "You have read-only access and cannot save changes.")
 		year = request.POST.get("year") or ""
 		area_id = request.POST.get("area_id") or ""
+		step = request.POST.get("step") or ""
 		params = "?"
 		params += f"year={year}" if year else ""
 		if area_id:
 			params += ("&" if params != "?" and params != "" else "") + f"area={area_id}"
+		if step:
+			params += ("&" if params not in ("?", "") else "") + f"step={step}"
 		if params == "?":
 			params = ""
 		if request.user.is_superuser:
@@ -650,8 +727,14 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				"area": area,
 				"selected_year_value": selected_year_value,
 				"academic_year_options": academic_year_options,
+				"current_step": "expected",
+				"review": None,
 				"rows": [],
 				"formset": None,
+				"secondary_form": None,
+				"secondary_text": "",
+				"secondary_title": "",
+				"can_edit": can_edit,
 			},
 		)
 
@@ -660,91 +743,179 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	)
 	statement_ids = {s.id for s in statements}
 
-	if can_edit:
-		review, _ = InDepthReview.objects.get_or_create(
-			school=school,
-			year=selected_year,
-			area=area,
-		)
+	# ── Step resolution ─────────────────────────────────────────────────────────
+	VALID_STEPS = ("expected", "secondary", "justification")
+	step_param = (request.POST.get("step") or request.GET.get("step") or "").strip().lower()
+
+	review = InDepthReview.objects.filter(
+		school=school,
+		year=selected_year,
+		area=area,
+	).first()
+
+	if step_param in VALID_STEPS:
+		current_step = step_param
+	elif review:
+		current_step = review.step
 	else:
-		review = InDepthReview.objects.filter(
-			school=school,
-			year=selected_year,
-			area=area,
-		).first()
+		current_step = "expected"
 
-	if review is None:
-		existing = {}
-	else:
-		existing = {
-			r.statement_id: r
-			for r in InDepthResponse.objects.filter(review=review, statement__in=statements)
-		}
+	existing = {} if review is None else {
+		r.statement_id: r
+		for r in InDepthResponse.objects.filter(review=review, statement__in=statements)
+	}
 
-	InDepthFormSet = formset_factory(InDepthResponseForm, extra=0)
+	def _area_has_strong_standard() -> bool:
+		text = (area.strong_standard_text or "").strip()
+		return bool(text) and not text.lower().startswith("not applicable")
 
-	if request.method == "POST":
-		formset = InDepthFormSet(request.POST)
-		if formset.is_valid():
-			with transaction.atomic():
-				if review is None:
-					review = InDepthReview.objects.create(
-						school=school,
-						year=selected_year,
-						area=area,
-						updated_by=request.user,
+	def _build_params(step: str) -> str:
+		base = f"?year={selected_year_value}&area={area.id}&step={step}"
+		if request.user.is_superuser:
+			return f"?school={school.id}&year={selected_year_value}&area={area.id}&step={step}"
+		return base
+
+	# ── POST handlers ───────────────────────────────────────────────────────────
+	if request.method == "POST" and can_edit:
+		post_step = (request.POST.get("step") or "").strip().lower()
+
+		if post_step == "expected":
+			ExpectedFormSet = formset_factory(InDepthResponseForm, extra=0)
+			formset = ExpectedFormSet(request.POST)
+			if formset.is_valid():
+				with transaction.atomic():
+					if review is None:
+						review = InDepthReview.objects.create(
+							school=school,
+							year=selected_year,
+							area=area,
+							updated_by=request.user,
+						)
+					else:
+						review.updated_by = request.user
+					for form in formset:
+						stmt_id = form.cleaned_data["statement_id"]
+						if stmt_id not in statement_ids:
+							continue
+						InDepthResponse.objects.update_or_create(
+							review=review,
+							statement_id=stmt_id,
+							defaults={"applies": form.cleaned_data["applies"]},
+						)
+					# Determine next step from saved responses.
+					saved_applies = list(
+						InDepthResponse.objects.filter(
+							review=review, statement__in=statements
+						).values_list("applies", flat=True)
 					)
-				else:
+					has_not_met = any(v is False for v in saved_applies)
+					if has_not_met:
+						review.secondary_level = "needs_attention"
+						review.step = "secondary"
+					elif _area_has_strong_standard():
+						review.secondary_level = "strong_standard"
+						review.step = "secondary"
+					else:
+						review.secondary_level = ""
+						review.step = "justification"
+					review.save()
+				return redirect(f"{reverse('review:indepth_review')}{_build_params(review.step)}")
+			current_step = "expected"
+
+		elif post_step == "secondary":
+			secondary_form = InDepthSecondaryForm(request.POST)
+			if secondary_form.is_valid():
+				with transaction.atomic():
+					review.secondary_applies = secondary_form.cleaned_data["applies"]
+					review.step = "justification"
 					review.updated_by = request.user
 					review.save()
-				for form in formset:
-					statement_id = form.cleaned_data["statement_id"]
-					if statement_id not in statement_ids:
-						continue
-					applies = form.cleaned_data["applies"]
-					justification = form.cleaned_data["justification"]
+				return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
+			current_step = "secondary"
 
-					InDepthResponse.objects.update_or_create(
-						review=review,
-						statement_id=statement_id,
-						defaults={
-							"applies": applies,
-							"justification": justification,
-						},
-					)
+		elif post_step == "justification":
+			JustFormSet = formset_factory(InDepthJustificationForm, extra=0)
+			formset = JustFormSet(request.POST)
+			if formset.is_valid():
+				with transaction.atomic():
+					for form in formset:
+						stmt_id = form.cleaned_data["statement_id"]
+						if stmt_id not in statement_ids:
+							continue
+						InDepthResponse.objects.update_or_create(
+							review=review,
+							statement_id=stmt_id,
+							defaults={
+								"justification": form.cleaned_data["justification"],
+								"next_steps": form.cleaned_data["next_steps"],
+							},
+						)
+					review.updated_by = request.user
+					review.save()
+				messages.success(request, "In-depth review saved.")
+				return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
+			current_step = "justification"
 
-			messages.success(request, "In-depth review saved.")
-			params = f"?year={selected_year_value}&area={area.id}"
-			if request.user.is_superuser:
-				params = f"?school={school.id}&year={selected_year_value}&area={area.id}"
-			return redirect(f"{reverse('review:indepth_review')}{params}")
-	else:
+	# ── Build context for GET (or a POST with invalid form) ──────────────────────
+	formset = None
+	rows = []
+	secondary_form = None
+	secondary_text = ""
+	secondary_title = ""
+
+	if current_step == "expected":
+		ExpectedFormSet = formset_factory(InDepthResponseForm, extra=0)
 		initial = []
 		for statement in statements:
-			current = existing.get(statement.id)
-			if current is None or current.applies is None:
+			resp = existing.get(statement.id)
+			if resp is None or resp.applies is None:
 				applies_value = ""
-			elif current.applies is True:
+			elif resp.applies is True:
 				applies_value = "1"
 			else:
 				applies_value = "0"
-			initial.append(
-				{
-					"statement_id": statement.id,
-					"applies": applies_value,
-					"justification": current.justification if current else "",
-				}
-			)
-		formset = InDepthFormSet(initial=initial)
+			initial.append({"statement_id": statement.id, "applies": applies_value})
+		formset = ExpectedFormSet(initial=initial)
+		if not can_edit:
+			for form in formset.forms:
+				for field in form.fields.values():
+					field.disabled = True
+		rows = [{"statement": s, "form": f} for s, f in zip(statements, formset.forms)]
 
-	if not can_edit:
-		for form in formset.forms:
-			for field in form.fields.values():
+	elif current_step == "secondary":
+		secondary_level = (review.secondary_level if review else "") or "needs_attention"
+		if secondary_level == "strong_standard":
+			secondary_text = area.strong_standard_text
+			secondary_title = "Strong Standard"
+		else:
+			secondary_text = area.needs_attention_text
+			secondary_title = "Needs Attention"
+		current_applies = review.secondary_applies if review else None
+		initial_applies = "1" if current_applies is True else ("0" if current_applies is False else "")
+		secondary_form = InDepthSecondaryForm(initial={"applies": initial_applies})
+		if not can_edit:
+			for field in secondary_form.fields.values():
 				field.disabled = True
 
-	rows = []
-	for statement, form in zip(statements, formset.forms):
-		rows.append({"statement": statement, "form": form})
+	elif current_step == "justification":
+		JustFormSet = formset_factory(InDepthJustificationForm, extra=0)
+		initial = []
+		for statement in statements:
+			resp = existing.get(statement.id)
+			initial.append({
+				"statement_id": statement.id,
+				"justification": resp.justification if resp else "",
+				"next_steps": resp.next_steps if resp else "",
+			})
+		formset = JustFormSet(initial=initial)
+		if not can_edit:
+			for form in formset.forms:
+				for field in form.fields.values():
+					field.disabled = True
+		rows = [
+			{"statement": s, "form": f, "applies": existing.get(s.id).applies if existing.get(s.id) else None}
+			for s, f in zip(statements, formset.forms)
+		]
 
 	return render(
 		request,
@@ -756,8 +927,13 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"area": area,
 			"selected_year_value": selected_year_value,
 			"academic_year_options": academic_year_options,
+			"current_step": current_step,
+			"review": review,
 			"rows": rows,
 			"formset": formset,
+			"secondary_form": secondary_form,
+			"secondary_text": secondary_text,
+			"secondary_title": secondary_title,
 			"can_edit": can_edit,
 		},
 	)

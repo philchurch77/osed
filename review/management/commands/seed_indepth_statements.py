@@ -52,12 +52,17 @@ class Command(BaseCommand):
 			)
 
 		area_order: dict[str, int] = {}
+		# First non-empty D/E value per area, keyed by area name
+		area_needs_attention: dict[str, str] = {}
+		area_strong_standard: dict[str, str] = {}
 		statements: list[tuple[str, int, str]] = []
 
 		for r in range(header_row + 1, ws.max_row + 1):
 			area = ws.cell(r, 1).value
 			num = ws.cell(r, 2).value
 			text = ws.cell(r, 3).value
+			needs_attn_raw = ws.cell(r, 4).value
+			strong_std_raw = ws.cell(r, 5).value
 
 			if area is None and num is None and text is None:
 				continue
@@ -79,6 +84,12 @@ class Command(BaseCommand):
 
 			if area_name not in area_order:
 				area_order[area_name] = len(area_order) + 1
+
+			if area_name not in area_needs_attention and needs_attn_raw:
+				area_needs_attention[area_name] = str(needs_attn_raw).strip()
+			if area_name not in area_strong_standard and strong_std_raw:
+				area_strong_standard[area_name] = str(strong_std_raw).strip()
+
 			statements.append((area_name, statement_number, statement_text))
 
 		created_areas = 0
@@ -91,7 +102,11 @@ class Command(BaseCommand):
 			for name, order in area_order.items():
 				obj, created = InDepthArea.objects.update_or_create(
 					name=name,
-					defaults={"order": order},
+					defaults={
+						"order": order,
+						"needs_attention_text": area_needs_attention.get(name, ""),
+						"strong_standard_text": area_strong_standard.get(name, ""),
+					},
 				)
 				areas_by_name[name] = obj
 				if created:
