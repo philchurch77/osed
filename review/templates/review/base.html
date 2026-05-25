@@ -4,8 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{% block title %}OSED{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% load static %}
-    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260508-5" />
+    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260525-1" />
     {% block head %}{% endblock %}
   </head>
   <body>
@@ -21,23 +23,23 @@
         </div>
 
         <nav class="nav">
-          <a href="/">Home</a>
-          <a href="/review/dashboard/">Enter data</a>
-          <a href="/review/evaluation/">Evaluation</a>
-          <a href="/review/in-depth/">In-depth review</a>
-          <a href="/review/overview/">Overview</a>
-          {% if user.is_authenticated %}
-            <a href="/accounts/logout/">Logout</a>
-          {% else %}
-            <a href="/accounts/login/">Login</a>
-          {% endif %}
-
-          {% if user.is_superuser %}
-            <div class="nav-bottom">
-              <a href="/admin/">Admin</a>
-            </div>
-          {% endif %}
+          <a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Home</a>
+          <a href="/review/dashboard/" {% if '/review/dashboard/' in request.path %}aria-current="page"{% endif %}>Enter data</a>
+          <a href="/review/evaluation/" {% if '/review/evaluation/' in request.path %}aria-current="page"{% endif %}>Evaluation</a>
+          <a href="/review/in-depth/" {% if '/review/in-depth/' in request.path %}aria-current="page"{% endif %}>In-depth review</a>
+          <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>Overview</a>
         </nav>
+
+        <div class="nav-bottom">
+          {% if user.is_superuser %}
+            <a href="/admin/" {% if '/admin/' in request.path %}aria-current="page"{% endif %}>Admin</a>
+          {% endif %}
+          {% if user.is_authenticated %}
+            <a href="/accounts/logout/" class="nav-signout">Sign out</a>
+          {% else %}
+            <a href="/accounts/login/" {% if '/accounts/login/' in request.path %}aria-current="page"{% endif %}>Sign in</a>
+          {% endif %}
+        </div>
       </aside>
 
       <div class="app-content">
@@ -47,7 +49,7 @@
       </div>
     </div>
 
-    <script defer src="{% static 'review/word_limit.js' %}?v=20260508-1"></script>
+    <script defer src="{% static 'review/word_limit.js' %}?v=20260525-1"></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

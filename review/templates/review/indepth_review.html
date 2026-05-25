@@ -9,7 +9,7 @@
     {% if user.is_superuser or schools %}
       <form method="get" class="school-select">
         <div class="form-field">
-          <label for="school"><strong>School:</strong></label>
+          <label for="school">School</label>
           <select id="school" name="school">
             {% for s in schools %}
               <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
@@ -18,7 +18,7 @@
         </div>
 
         <div class="form-field">
-          <label for="area"><strong>Area:</strong></label>
+          <label for="area">Area</label>
           <select id="area" name="area">
             {% for a in areas %}
               <option value="{{ a.id }}" {% if area and a.id == area.id %}selected{% endif %}>{{ a.name }}</option>
@@ -27,7 +27,7 @@
         </div>
 
         <div class="form-field">
-          <label for="year"><strong>Academic year:</strong></label>
+          <label for="year">Academic year</label>
           <select id="year" name="year">
             {% for opt in academic_year_options %}
               <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
@@ -40,10 +40,10 @@
         </div>
       </form>
     {% else %}
-      <p><strong>School:</strong> {{ school.name }}</p>
+      <p style="margin: 10px 0 4px; font-size: 14px; color: var(--colour-muted);">{{ school.name }}</p>
       <form method="get" class="school-select">
         <div class="form-field">
-          <label for="area"><strong>Area:</strong></label>
+          <label for="area">Area</label>
           <select id="area" name="area">
             {% for a in areas %}
               <option value="{{ a.id }}" {% if area and a.id == area.id %}selected{% endif %}>{{ a.name }}</option>
@@ -52,7 +52,7 @@
         </div>
 
         <div class="form-field">
-          <label for="year"><strong>Academic year:</strong></label>
+          <label for="year">Academic year</label>
           <select id="year" name="year">
             {% for opt in academic_year_options %}
               <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
@@ -67,7 +67,7 @@
     {% endif %}
 
     {% if area %}
-      <p class="sub-title"><strong>Evaluation Area:</strong> {{ area.name }}</p>
+      <p class="sub-title">Evaluation Area: {{ area.name }}</p>
     {% endif %}
   </header>
 

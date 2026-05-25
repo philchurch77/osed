@@ -17,39 +17,39 @@
     </ul>
   {% endif %}
 
-  <p>Use your organisation Microsoft account to sign in.</p>
+  <div class="login-wrap">
+    <p style="color: var(--colour-muted); font-size: 14px; margin: 0 0 16px;">Use your organisation Microsoft account to sign in.</p>
 
-  {% with next_url=redirect_field_value|default:"/" %}
-    <p>
-      <a class="button" href="{% provider_login_url 'microsoft' process='login' %}?{{ redirect_field_name }}={{ next_url|urlencode }}">
+    {% with next_url=redirect_field_value|default:"/" %}
+      <a class="btn-primary" href="{% provider_login_url 'microsoft' process='login' %}?{{ redirect_field_name }}={{ next_url|urlencode }}">
         Sign in with Microsoft
       </a>
-    </p>
-  {% endwith %}
+    {% endwith %}
 
-  <hr />
+    <div class="login-divider">or</div>
 
-  <p>If you have a local account, you can sign in with email and password:</p>
+    <p style="font-size: 13px; color: var(--colour-muted); margin: 0 0 14px;">Sign in with email and password:</p>
 
-  <form method="post" action="{% url 'account_login' %}">
-    {% csrf_token %}
+    <form method="post" action="{% url 'account_login' %}">
+      {% csrf_token %}
 
-    <p>
-      <label for="id_login">Email</label><br />
-      {{ form.login }}
-    </p>
+      <div class="login-form-field">
+        <label for="id_login">Email</label>
+        {{ form.login }}
+      </div>
 
-    <p>
-      <label for="id_password">Password</label><br />
-      {{ form.password }}
-    </p>
+      <div class="login-form-field">
+        <label for="id_password">Password</label>
+        {{ form.password }}
+      </div>
 
-    {% if redirect_field_value %}
-      <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}" />
-    {% endif %}
+      {% if redirect_field_value %}
+        <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}" />
+      {% endif %}
 
-    <div class="actions">
-      <button type="submit">Sign in</button>
-    </div>
-  </form>
+      <div class="actions" style="justify-content: flex-start;">
+        <button type="submit" class="btn-primary">Sign in</button>
+      </div>
+    </form>
+  </div>
 {% endblock %}

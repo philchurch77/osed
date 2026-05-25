@@ -8,7 +8,7 @@
             {% if user.is_superuser %}
               <form method="get" class="school-select">
                 <div class="form-field">
-                  <label for="phase"><strong>Phase:</strong></label>
+                  <label for="phase">Phase</label>
                   <select id="phase" name="phase">
                     {% for value, label in phase_options %}
                       <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
@@ -17,7 +17,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="school"><strong>School:</strong></label>
+                  <label for="school">School</label>
                   <select id="school" name="school">
                     <option value="all" {% if all_schools_selected %}selected{% endif %}>All schools</option>
                     {% for s in schools %}
@@ -27,7 +27,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="year"><strong>Academic year:</strong></label>
+                  <label for="year">Academic year</label>
                   <select id="year" name="year">
                     {% for opt in academic_year_options %}
                       <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
@@ -42,7 +42,7 @@
             {% elif schools %}
               <form method="get" class="school-select">
                 <div class="form-field">
-                  <label for="phase"><strong>Phase:</strong></label>
+                  <label for="phase">Phase</label>
                   <select id="phase" name="phase">
                     {% for value, label in phase_options %}
                       <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
@@ -51,7 +51,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="school"><strong>School:</strong></label>
+                  <label for="school">School</label>
                   <select id="school" name="school">
                     {% for s in schools %}
                       <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
@@ -60,7 +60,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="year"><strong>Academic year:</strong></label>
+                  <label for="year">Academic year</label>
                   <select id="year" name="year">
                     {% for opt in academic_year_options %}
                       <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
@@ -73,10 +73,10 @@
                 </div>
               </form>
             {% else %}
-              <p><strong>School:</strong> {{ school.name }} &nbsp; <strong>Academic year:</strong> {{ year }}/{{ year|add:1 }}</p>
+              <p style="margin: 10px 0 4px; font-size: 14px; color: var(--colour-muted);">{{ school.name }} &nbsp; {{ year }}/{{ year|add:1 }}</p>
               <form method="get" class="school-select">
                 <div class="form-field">
-                  <label for="year"><strong>Academic year:</strong></label>
+                  <label for="year">Academic year</label>
                   <select id="year" name="year">
                     {% for opt in academic_year_options %}
                       <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>

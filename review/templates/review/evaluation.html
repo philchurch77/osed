@@ -9,7 +9,7 @@
             {% if user.is_superuser or schools %}
               <form method="get" class="school-select">
                 <div class="form-field">
-                  <label for="school"><strong>School:</strong></label>
+                  <label for="school">School</label>
                   <select id="school" name="school">
                     {% for s in schools %}
                       <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
@@ -18,7 +18,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="year"><strong>Academic year:</strong></label>
+                  <label for="year">Academic year</label>
                   <select id="year" name="year">
                     {% for opt in academic_year_options %}
                       <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
@@ -27,7 +27,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="round"><strong>Round:</strong></label>
+                  <label for="round">Round</label>
                   <select id="round" name="round">
                     <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
                     <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
@@ -40,10 +40,10 @@
                 </div>
               </form>
             {% else %}
-              <p><strong>School:</strong> {{ school.name }}</p>
+              <p style="margin: 10px 0 4px; font-size: 14px; color: var(--colour-muted);">{{ school.name }}</p>
               <form method="get" class="school-select">
                 <div class="form-field">
-                  <label for="year"><strong>Academic year:</strong></label>
+                  <label for="year">Academic year</label>
                   <select id="year" name="year">
                     {% for opt in academic_year_options %}
                       <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
@@ -52,7 +52,7 @@
                 </div>
 
                 <div class="form-field">
-                  <label for="round"><strong>Round:</strong></label>
+                  <label for="round">Round</label>
                   <select id="round" name="round">
                     <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
                     <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
