@@ -56,6 +56,7 @@
     var textareas = document.getElementsByTagName("textarea");
     for (var i = 0; i < textareas.length; i++) {
       (function (el) {
+        if (el.disabled || el.readOnly) return;
         var maxWords = parseMaxWords(el);
         if (!maxWords || maxWords <= 0) return;
 
