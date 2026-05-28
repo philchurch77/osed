@@ -73,7 +73,7 @@
                 </div>
               </form>
             {% else %}
-              <p style="margin: 10px 0 4px; font-size: 14px; color: var(--colour-muted);">{{ school.name }} &nbsp; {{ year }}/{{ year|add:1 }}</p>
+              <p class="page-subtitle">{{ school.name }} &nbsp; {{ year }}/{{ year|add:1 }}</p>
               <form method="get" class="school-select">
                 <div class="form-field">
                   <label for="year">Academic year</label>
@@ -91,13 +91,21 @@
             {% endif %}
   </header>
 
+  {% if all_schools_selected %}
+    <p class="overview-aggregate-note">
+      Showing averages across
+      {% if schools %}{{ schools|length }} school{% if schools|length != 1 %}s{% endif %}{% else %}all schools{% endif %}{% if selected_phase %} ({{ selected_phase|title }} phase){% endif %}.
+      Each cell is the mean rating across all schools that have submitted data for that round.
+    </p>
+  {% endif %}
+
   <table class="overview-table">
     <thead>
       <tr>
         <th>Area</th>
-        <th>Round 1</th>
-        <th>Round 2</th>
-        <th>Round 3</th>
+        <th>Round 1{% if all_schools_selected %} <span class="overview-avg-label">avg</span>{% endif %}</th>
+        <th>Round 2{% if all_schools_selected %} <span class="overview-avg-label">avg</span>{% endif %}</th>
+        <th>Round 3{% if all_schools_selected %} <span class="overview-avg-label">avg</span>{% endif %}</th>
       </tr>
     </thead>
     <tbody>
@@ -111,6 +119,14 @@
           {% endfor %}
         </tr>
       {% endfor %}
+      {% if not has_any_data %}
+        <tr>
+          <td colspan="4" class="overview-empty">
+            No evaluation data has been entered for {{ year }}/{{ year|add:1 }}.
+            Go to <a href="/review/dashboard/">School Dashboard</a> to add ratings.
+          </td>
+        </tr>
+      {% endif %}
     </tbody>
   </table>
 {% endblock %}

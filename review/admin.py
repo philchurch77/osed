@@ -29,9 +29,9 @@ from .models import (
 
 
 def _request_schools(request):
-	"""Return a queryset of schools the user may access (or None for superusers)."""
+	"""Return a queryset of schools the user may access."""
 	if request.user.is_superuser:
-		return None
+		return School.objects.all()
 	try:
 		profile = (
 			SchoolProfile.objects.select_related("school")
@@ -62,8 +62,7 @@ class SchoolAdmin(admin.ModelAdmin):
 
 	def get_queryset(self, request):
 		qs = super().get_queryset(request)
-		school_qs = _request_schools(request)
-		return qs if school_qs is None else qs.filter(id__in=school_qs)
+		return qs.filter(id__in=_request_schools(request))
 
 
 @admin.register(SchoolProfile)
@@ -78,21 +77,17 @@ class SchoolProfileAdmin(admin.ModelAdmin):
 	def get_queryset(self, request):
 		qs = super().get_queryset(request)
 		school_qs = _request_schools(request)
-		if school_qs is None:
-			return qs
 		return qs.filter(Q(school__in=school_qs) | Q(schools__in=school_qs)).distinct()
 
 	def get_form(self, request, obj=None, **kwargs):
 		form = super().get_form(request, obj, **kwargs)
-		school_qs = _request_schools(request)
-		if school_qs is not None and "school" in form.base_fields:
+		if not request.user.is_superuser and "school" in form.base_fields:
 			form.base_fields["school"].disabled = True
 		return form
 
 	def save_model(self, request, obj, form, change):
-		school_qs = _request_schools(request)
-		if school_qs is not None:
-			first = school_qs.order_by("name").first()
+		if not request.user.is_superuser:
+			first = _request_schools(request).order_by("name").first()
 			if first is not None:
 				obj.school = first
 		super().save_model(request, obj, form, change)
@@ -138,15 +133,23 @@ class EvaluationAdmin(admin.ModelAdmin):
 
 	def get_queryset(self, request):
 		qs = super().get_queryset(request)
-		school_qs = _request_schools(request)
-		return qs if school_qs is None else qs.filter(school__in=school_qs)
+		return qs.filter(school__in=_request_schools(request))
 
 
 @admin.register(InDepthArea)
 class InDepthAreaAdmin(admin.ModelAdmin):
-	list_display = ("order", "name")
+	list_display = ("order", "name", "is_safeguarding")
 	ordering = ("order", "name")
 	search_fields = ("name",)
+	fieldsets = (
+		(None, {
+			"fields": ("name", "order", "is_safeguarding"),
+		}),
+		("Standard-level context text", {
+			"description": "Optional text shown to reviewers at the top of the Justification step, based on the determined standard level.",
+			"fields": ("needs_attention_text", "strong_standard_text"),
+		}),
+	)
 
 
 @admin.register(InDepthStatement)
@@ -172,8 +175,7 @@ class InDepthReviewAdmin(admin.ModelAdmin):
 
 	def get_queryset(self, request):
 		qs = super().get_queryset(request)
-		school_qs = _request_schools(request)
-		return qs if school_qs is None else qs.filter(school__in=school_qs)
+		return qs.filter(school__in=_request_schools(request))
 
 
 @admin.register(InDepthResponse)
@@ -192,8 +194,7 @@ class SchoolProfileInline(admin.StackedInline):
 
 	def get_formset(self, request, obj=None, **kwargs):
 		formset = super().get_formset(request, obj, **kwargs)
-		school_qs = _request_schools(request)
-		if school_qs is not None and "school" in formset.form.base_fields:
+		if not request.user.is_superuser and "school" in formset.form.base_fields:
 			formset.form.base_fields["school"].widget = forms.HiddenInput()
 		return formset
 
@@ -207,6 +208,51 @@ class UserImportForm(forms.Form):
 			"Include a header row. One row per user per school."
 		),
 	)
+
+
+class SSOUserCreationForm(forms.ModelForm):
+	password1 = forms.CharField(
+		label="Password",
+		required=False,
+		strip=False,
+		widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
+	)
+	password2 = forms.CharField(
+		label="Password confirmation",
+		required=False,
+		strip=False,
+		widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
+	)
+
+	class Meta:
+		model = User
+		fields = ("username", "email", "first_name", "last_name", "is_active")
+
+	def clean(self):
+		cleaned_data = super().clean()
+		password1 = cleaned_data.get("password1")
+		password2 = cleaned_data.get("password2")
+
+		# If left blank, we will create an unusable password (SSO-only).
+		if not password1 and not password2:
+			return cleaned_data
+
+		if password1 != password2:
+			raise ValidationError("Passwords do not match")
+		if password1:
+			validate_password(password1)
+		return cleaned_data
+
+	def save(self, commit=True):
+		user = super().save(commit=False)
+		password1 = self.cleaned_data.get("password1")
+		if password1:
+			user.set_password(password1)
+		else:
+			user.set_unusable_password()
+		if commit:
+			user.save()
+		return user
 
 
 class UserAdmin(DjangoUserAdmin):
@@ -295,50 +341,6 @@ class UserAdmin(DjangoUserAdmin):
 		}
 		return render(request, "admin/review/user/import_users.html", context)
 
-	class SSOUserCreationForm(forms.ModelForm):
-		password1 = forms.CharField(
-			label="Password",
-			required=False,
-			strip=False,
-			widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
-		)
-		password2 = forms.CharField(
-			label="Password confirmation",
-			required=False,
-			strip=False,
-			widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
-		)
-
-		class Meta:
-			model = User
-			fields = ("username", "email", "first_name", "last_name", "is_active")
-
-		def clean(self):
-			cleaned_data = super().clean()
-			password1 = cleaned_data.get("password1")
-			password2 = cleaned_data.get("password2")
-
-			# If left blank, we will create an unusable password (SSO-only).
-			if not password1 and not password2:
-				return cleaned_data
-
-			if password1 != password2:
-				raise ValidationError("Passwords do not match")
-			if password1:
-				validate_password(password1)
-			return cleaned_data
-
-		def save(self, commit=True):
-			user = super().save(commit=False)
-			password1 = self.cleaned_data.get("password1")
-			if password1:
-				user.set_password(password1)
-			else:
-				user.set_unusable_password()
-			if commit:
-				user.save()
-			return user
-
 	@admin.display(description="Schools")
 	def schools_access(self, obj: User):
 		try:
@@ -373,7 +375,7 @@ class UserAdmin(DjangoUserAdmin):
 		if request.user.is_superuser:
 			return qs
 		school_qs = _request_schools(request)
-		if school_qs is None or not school_qs.exists():
+		if not school_qs.exists():
 			return qs.none()
 		return qs.filter(
 			Q(schoolprofile__school__in=school_qs) | Q(schoolprofile__schools__in=school_qs)
@@ -404,8 +406,7 @@ class UserAdmin(DjangoUserAdmin):
 
 	def save_formset(self, request, form, formset, change):
 		instances = formset.save(commit=False)
-		school_qs = _request_schools(request)
-		first = None if school_qs is None else school_qs.order_by("name").first()
+		first = None if request.user.is_superuser else _request_schools(request).order_by("name").first()
 		for inst in instances:
 			if isinstance(inst, SchoolProfile) and first is not None:
 				inst.school = first

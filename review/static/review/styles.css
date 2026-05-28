@@ -64,6 +64,11 @@ html, body {
   border-right: 1px solid var(--colour-border);
   display: flex;
   flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 .sidebar-brand {
@@ -91,7 +96,7 @@ html, body {
   border-top: 1px solid var(--colour-border);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
 .nav a,
@@ -148,7 +153,7 @@ main {
 }
 
 .page-title {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
 }
 
 .school-select {
@@ -156,8 +161,8 @@ main {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
   align-items: end;
-  margin: 12px auto 0;
-  padding: 14px 16px;
+  margin: 0;
+  padding: 16px;
   border-radius: var(--radius-lg);
   background: var(--colour-surface);
   box-shadow: var(--shadow-card);
@@ -166,7 +171,7 @@ main {
 .school-select .form-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -199,7 +204,7 @@ main {
 }
 
 .school-select button {
-  padding: 9px 18px;
+  padding: 10px 20px;
   border-color: var(--colour-primary-dark);
   background: var(--colour-primary);
   color: var(--colour-white);
@@ -265,10 +270,10 @@ h2 {
   font-size: 18px;
   font-weight: 600;
   color: var(--colour-primary-dark);
-  margin: 0 0 8px;
+  margin: 20px 0 12px;
 }
 
-p { margin: 10px 0; }
+p { margin: 0 0 14px; }
 
 a { color: inherit; }
 
@@ -317,11 +322,13 @@ input[type="password"]:focus {
 .actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 28px;
 }
 
 .actions button {
-  padding: 11px 22px;
+  padding: 10px 20px;
   border-color: var(--colour-primary-dark);
   background: var(--colour-primary);
   color: var(--colour-white);
@@ -344,11 +351,15 @@ input[type="password"]:focus {
 }
 
 .home-intro p {
-  margin: 10px 0;
+  margin: 0 0 14px;
+}
+
+.home-intro p:last-child {
+  margin-bottom: 0;
 }
 
 .rag-legend {
-  margin-top: 14px;
+  margin-top: 20px;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
@@ -401,17 +412,12 @@ input[type="password"]:focus {
 
 .school-card {
   border-radius: var(--radius-md);
-  padding: 14px;
+  padding: 16px;
   background: var(--colour-surface);
   box-shadow: var(--shadow-card);
   display: flex;
-  gap: 14px;
+  gap: 16px;
   align-items: center;
-  transition: box-shadow 150ms ease;
-}
-
-.school-card:hover {
-  box-shadow: var(--shadow-lift);
 }
 
 .school-logo {
@@ -487,7 +493,7 @@ thead th {
 .overview-table {
   border-collapse: separate;
   border-spacing: 10px;
-  margin-top: 18px;
+  margin-top: 24px;
 }
 
 .overview-table th,
@@ -613,7 +619,7 @@ thead th {
 
 .evaluation-table textarea {
   width: 100%;
-  min-height: 340px;
+  min-height: 220px;
   padding: 10px 10px;
   border: 1px solid var(--colour-border);
   border-radius: var(--radius-md);
@@ -643,6 +649,11 @@ thead th {
   border-top: 0;
   padding: 12px 10px;
   vertical-align: top;
+}
+
+td.indepth-applies,
+td.indepth-num {
+  vertical-align: middle;
 }
 
 .indepth-table thead th {
@@ -700,11 +711,145 @@ thead th {
   resize: vertical;
 }
 
+/* RAG inline buttons for in-depth review */
+
+.indepth-rag-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0 16px;
+}
+
+.indepth-rag-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.indepth-rag-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--colour-white);
+}
+
+.indepth-rag-legend-item--red .indepth-rag-badge { background: var(--rag-red); }
+.indepth-rag-legend-item--amber .indepth-rag-badge { background: var(--rag-amber); color: var(--colour-black); }
+.indepth-rag-legend-item--green .indepth-rag-badge { background: var(--rag-green); }
+
+.indepth-rag-legend-desc {
+  color: var(--colour-muted);
+}
+
+.indepth-rag-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.indepth-rag-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: var(--radius-md);
+  border: 2px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity 0.1s, border-color 0.1s;
+  user-select: none;
+}
+
+.indepth-rag-btn input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.indepth-rag-btn--red {
+  background: #fce9e9;
+  color: var(--rag-red);
+  border-color: #f5c6c6;
+}
+.indepth-rag-btn--red:has(input:checked),
+.indepth-rag-btn--red input:checked ~ span {
+  background: var(--rag-red);
+  color: var(--colour-white);
+  border-color: var(--rag-red);
+}
+.indepth-rag-btn--red:has(input:checked) {
+  background: var(--rag-red);
+  color: var(--colour-white);
+  border-color: var(--rag-red);
+}
+
+.indepth-rag-btn--amber {
+  background: #fef8eb;
+  color: #9a6c00;
+  border-color: #f7dda0;
+}
+.indepth-rag-btn--amber:has(input:checked) {
+  background: var(--rag-amber);
+  color: var(--colour-black);
+  border-color: var(--rag-amber);
+}
+
+.indepth-rag-btn--green {
+  background: #eaf5ef;
+  color: #226b40;
+  border-color: #b2ddc4;
+}
+.indepth-rag-btn--green:has(input:checked) {
+  background: var(--rag-green);
+  color: var(--colour-white);
+  border-color: var(--rag-green);
+}
+
+.indepth-rag-btn:focus-within {
+  outline: 2px solid var(--colour-primary);
+  outline-offset: 2px;
+}
+
+/* RAG chips used in justification table */
+.indepth-rag-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--colour-white);
+}
+.indepth-rag-chip--red { background: var(--rag-red); }
+.indepth-rag-chip--amber { background: var(--rag-amber); color: var(--colour-black); }
+.indepth-rag-chip--green { background: var(--rag-green); }
+
 textarea {
   width: 100%;
   max-width: 100%;
   font-family: var(--font-main);
   font-size: 14px;
+}
+
+.indepth-reflection {
+  margin-top: 18px;
+  max-width: 800px;
+}
+
+.indepth-reflection textarea {
+  min-height: 160px;
+  padding: 12px;
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  background: var(--colour-surface);
+  resize: vertical;
 }
 
 input[type="number"] {
@@ -1030,7 +1175,7 @@ details.rag-picker:not([open]) .rag-picker-panel {
 .login-form-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
   margin-bottom: 16px;
 }
 
@@ -1074,4 +1219,262 @@ details.rag-picker:not([open]) .rag-picker-panel {
 
 .btn-primary:hover {
   background: var(--colour-primary-dark);
+}
+
+/* Page subtitle (school name label beneath page title for non-superusers) */
+
+.page-subtitle {
+  margin: 6px 0 12px;
+  font-size: 14px;
+  color: var(--colour-muted);
+}
+
+/* Sub-title label (evaluation area label inside filter header) */
+
+.sub-title {
+  margin: 10px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--colour-muted);
+  letter-spacing: 0.2px;
+}
+
+/* Sidebar rating scale legend */
+
+.sidebar-ratings {
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--colour-border);
+  margin-bottom: 4px;
+}
+
+.sidebar-ratings-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--colour-muted);
+  padding: 0 12px;
+  margin-bottom: 8px;
+}
+
+.sidebar-rating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  font-size: 12px;
+  color: var(--colour-text);
+}
+
+.sidebar-rating-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.sidebar-rating--5 .sidebar-rating-num { background: var(--rag-red); color: var(--colour-white); }
+.sidebar-rating--4 .sidebar-rating-num { background: var(--rag-amber); color: var(--colour-black); }
+.sidebar-rating--3 .sidebar-rating-num { background: var(--rag-teal); color: var(--colour-white); }
+.sidebar-rating--2 .sidebar-rating-num { background: var(--rag-green); color: var(--colour-white); }
+.sidebar-rating--1 .sidebar-rating-num { background: var(--rag-blue); color: var(--colour-white); }
+
+/* Auto-submit filter forms: hide the Select button when JS is active */
+
+.school-select.auto-submit .form-actions {
+  display: none;
+}
+
+/* Unsaved changes indicator (appears inside .actions bar) */
+
+.unsaved-indicator {
+  display: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #f59e0b;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  align-self: center;
+}
+
+.unsaved-indicator--visible {
+  display: inline-block;
+}
+
+/* Overview aggregate note */
+
+.overview-aggregate-note {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  background: var(--colour-primary-light);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--colour-muted);
+}
+
+.overview-avg-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--colour-muted);
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+/* Overview empty state */
+
+.overview-empty {
+  text-align: center;
+  padding: 28px 16px !important;
+  color: var(--colour-muted);
+  font-size: 14px;
+  border: 1px dashed var(--colour-border) !important;
+  border-radius: var(--radius-md);
+  background: var(--colour-surface) !important;
+}
+
+.overview-empty a {
+  color: var(--colour-primary);
+  text-decoration: underline;
+}
+
+/* Live word counter */
+
+.word-counter {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--colour-muted);
+  text-align: right;
+}
+
+.word-counter--near { color: var(--rag-amber); font-weight: 500; }
+.word-counter--limit { color: var(--rag-red); font-weight: 600; }
+
+/* In-depth review step navigation */
+
+.indepth-steps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 16px 0 20px;
+}
+
+.indepth-step {
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--colour-muted);
+  text-decoration: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.indepth-step:hover {
+  background: var(--colour-primary-light);
+  color: var(--colour-primary-dark);
+}
+
+.indepth-step--active {
+  background: var(--colour-primary-light);
+  color: var(--colour-primary-dark);
+  font-weight: 600;
+}
+
+.indepth-step-sep {
+  color: var(--colour-muted);
+  font-size: 13px;
+  padding: 0 2px;
+}
+
+.indepth-step--locked {
+  color: var(--colour-muted);
+  opacity: 0.45;
+  cursor: default;
+  font-style: italic;
+}
+
+.indepth-step--locked:hover {
+  background: transparent;
+  color: var(--colour-muted);
+}
+
+/* Review outcome / completion banner */
+
+.review-outcome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 11px 16px;
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-card);
+}
+
+.review-outcome-label {
+  font-size: 13px;
+  color: var(--colour-muted);
+  font-weight: 500;
+}
+
+.review-outcome-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.review-outcome-badge--needs_attention { background: var(--rag-amber); color: var(--colour-black); }
+.review-outcome-badge--expected { background: var(--rag-teal); color: var(--colour-white); }
+.review-outcome-badge--strong_standard { background: var(--rag-green); color: var(--colour-white); }
+.review-outcome-badge--exceptional { background: var(--rag-blue); color: var(--colour-white); }
+
+.review-outcome-complete {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rag-green);
+}
+
+/* In-depth step hint text */
+
+.indepth-step-hint {
+  margin: 0 0 16px;
+  color: var(--colour-muted);
+  font-size: 14px;
+}
+
+/* In-depth justification result badges */
+
+.indepth-met {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--rag-green);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.indepth-notmet {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--rag-red);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
 }

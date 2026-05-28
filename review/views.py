@@ -14,9 +14,11 @@ from .forms import (
 	DashboardRatingForm,
 	EvaluationEntryForm,
 	InDepthJustificationForm,
+	InDepthRAGForm,
 	InDepthResponseForm,
 	RATING_CHOICES_DEFAULT,
 	RATING_CHOICES_SAFEGUARDING,
+	ReflectionForm,
 )
 from .models import (
 	Category,
@@ -236,6 +238,8 @@ def overview(request: HttpRequest) -> HttpResponse:
 
 		rows.append({"category": category, "cells": cells})
 
+	has_any_data = any(cell["band"] is not None for row in rows for cell in row["cells"])
+
 	return render(
 		request,
 		"review/overview.html",
@@ -249,6 +253,7 @@ def overview(request: HttpRequest) -> HttpResponse:
 			"rows": rows,
 			"phase_options": phase_options,
 			"selected_phase": selected_phase,
+			"has_any_data": has_any_data,
 		},
 	)
 
@@ -640,6 +645,10 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				params = f"{params}{joiner}school={school_id}"
 		return redirect(f"{reverse('review:indepth_review')}{params}")
 
+	# ── RAG step helpers ─────────────────────────────────────────────────────────
+	_RAG_STEPS = ("expected", "urgent_improvement", "strong_standard", "exceptional")
+	_VALID_STEPS = _RAG_STEPS + ("justification", "reflection")
+
 	school = None
 	schools = None
 
@@ -730,21 +739,26 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				"review": None,
 				"rows": [],
 				"formset": None,
-				"secondary_form": None,
-				"secondary_text": "",
-				"secondary_title": "",
 				"can_edit": can_edit,
+				"is_safeguarding": False,
 			},
 		)
 
+	is_safeguarding = area.is_safeguarding
+
+	# Expected-standard statements for this area
 	statements = list(
-		InDepthStatement.objects.filter(area=area).order_by("statement_number").all()
+		InDepthStatement.objects.filter(
+			area=area, standard_type=InDepthStatement.StandardType.EXPECTED
+		).order_by("statement_number")
 	)
 	statement_ids = {s.id for s in statements}
 
 	# ── Step resolution ─────────────────────────────────────────────────────────
-	VALID_STEPS = ("expected", "secondary", "justification")
 	step_param = (request.POST.get("step") or request.GET.get("step") or "").strip().lower()
+	# Map legacy "secondary" value from old data
+	if step_param == "secondary":
+		step_param = "justification"
 
 	review = InDepthReview.objects.filter(
 		school=school,
@@ -752,115 +766,206 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		area=area,
 	).first()
 
-	if step_param in VALID_STEPS:
+	# Resolve current_step from param, then saved review step, then default
+	effective_review_step = (review.step if review else "expected")
+	if effective_review_step == "secondary":
+		effective_review_step = "justification"
+
+	if step_param in _VALID_STEPS:
 		current_step = step_param
-	elif review:
-		current_step = review.step
 	else:
-		current_step = "expected"
+		current_step = effective_review_step
 
 	existing = {} if review is None else {
 		r.statement_id: r
 		for r in InDepthResponse.objects.filter(review=review, statement__area=area)
 	}
 
-	def _area_has_strong_standard() -> bool:
-		return InDepthStatement.objects.filter(
-			area=area,
-			standard_type=InDepthStatement.StandardType.STRONG_STANDARD,
-		).exists()
+	# ── Area capability helpers ──────────────────────────────────────────────────
+	def _has_type(standard_type: str) -> bool:
+		return InDepthStatement.objects.filter(area=area, standard_type=standard_type).exists()
 
-	def _area_has_needs_attention() -> bool:
-		return InDepthStatement.objects.filter(
-			area=area,
-			standard_type=InDepthStatement.StandardType.NEEDS_ATTENTION,
-		).exists()
+	def _stmts_for(standard_type: str):
+		return list(
+			InDepthStatement.objects.filter(area=area, standard_type=standard_type)
+			.order_by("statement_number")
+		)
 
 	def _build_params(step: str) -> str:
-		base = f"?year={selected_year_value}&area={area.id}&step={step}"
 		if request.user.is_superuser:
 			return f"?school={school.id}&year={selected_year_value}&area={area.id}&step={step}"
-		return base
+		return f"?year={selected_year_value}&area={area.id}&step={step}"
 
 	# ── POST handlers ───────────────────────────────────────────────────────────
 	if request.method == "POST" and can_edit:
 		post_step = (request.POST.get("step") or "").strip().lower()
 
+		# ── Expected Standard ──
 		if post_step == "expected":
-			ExpectedFormSet = formset_factory(InDepthResponseForm, extra=0)
-			formset = ExpectedFormSet(request.POST)
-			if formset.is_valid():
-				with transaction.atomic():
-					if review is None:
-						review = InDepthReview.objects.create(
-							school=school,
-							year=selected_year,
-							area=area,
-							updated_by=request.user,
-						)
-					else:
-						review.updated_by = request.user
-					for form in formset:
-						stmt_id = form.cleaned_data["statement_id"]
-						if stmt_id not in statement_ids:
-							continue
-						InDepthResponse.objects.update_or_create(
-							review=review,
-							statement_id=stmt_id,
-							defaults={"applies": form.cleaned_data["applies"]},
-						)
-					# Determine next step from saved responses.
-					saved_applies = list(
-						InDepthResponse.objects.filter(
-							review=review, statement__in=statements
-						).values_list("applies", flat=True)
-					)
-					has_not_met = any(v is False for v in saved_applies)
-					if has_not_met and _area_has_needs_attention():
-						review.secondary_level = "needs_attention"
-						review.step = "secondary"
-					elif not has_not_met and _area_has_strong_standard():
-						review.secondary_level = "strong_standard"
-						review.step = "secondary"
-					else:
-						review.secondary_level = ""
+			if is_safeguarding:
+				# Safeguarding: Met / Not met
+				FormSetClass = formset_factory(InDepthResponseForm, extra=0)
+				formset = FormSetClass(request.POST)
+				if formset.is_valid():
+					with transaction.atomic():
+						if review is None:
+							review = InDepthReview.objects.create(
+								school=school, year=selected_year, area=area, updated_by=request.user,
+							)
+						else:
+							review.updated_by = request.user
+						for form in formset:
+							stmt_id = form.cleaned_data["statement_id"]
+							if stmt_id not in statement_ids:
+								continue
+							InDepthResponse.objects.update_or_create(
+								review=review, statement_id=stmt_id,
+								defaults={"applies": form.cleaned_data["applies"]},
+							)
+						review.secondary_level = "expected"
 						review.step = "justification"
-					review.save()
-				return redirect(f"{reverse('review:indepth_review')}{_build_params(review.step)}")
-			current_step = "expected"
+						review.save()
+					return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
+				current_step = "expected"
+			else:
+				# Standard areas: RAG
+				FormSetClass = formset_factory(InDepthRAGForm, extra=0)
+				formset = FormSetClass(request.POST)
+				if formset.is_valid():
+					with transaction.atomic():
+						if review is None:
+							review = InDepthReview.objects.create(
+								school=school, year=selected_year, area=area, updated_by=request.user,
+							)
+						else:
+							review.updated_by = request.user
+						for form in formset:
+							stmt_id = form.cleaned_data["statement_id"]
+							if stmt_id not in statement_ids:
+								continue
+							InDepthResponse.objects.update_or_create(
+								review=review, statement_id=stmt_id,
+								defaults={"rag": form.cleaned_data["rag"]},
+							)
+						# Determine next step
+						saved_rags = list(
+							InDepthResponse.objects.filter(review=review, statement__in=statements)
+							.values_list("rag", flat=True)
+						)
+						has_red = any(r == "red" for r in saved_rags)
+						if has_red:
+							if _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT):
+								review.step = "urgent_improvement"
+							else:
+								review.secondary_level = "needs_attention"
+								review.step = "justification"
+						else:
+							# All green/amber
+							if _has_type(InDepthStatement.StandardType.STRONG_STANDARD):
+								review.step = "strong_standard"
+							else:
+								review.secondary_level = "expected"
+								review.step = "justification"
+						review.save()
+					return redirect(f"{reverse('review:indepth_review')}{_build_params(review.step)}")
+				current_step = "expected"
 
-		elif post_step == "secondary":
-			secondary_level = (review.secondary_level if review else "") or "needs_attention"
-			secondary_stmts = list(
-				InDepthStatement.objects.filter(area=area, standard_type=secondary_level)
-				.order_by("statement_number")
-			)
-			secondary_stmt_ids = {s.id for s in secondary_stmts}
-			SecondaryFormSet = formset_factory(InDepthResponseForm, extra=0)
-			formset = SecondaryFormSet(request.POST)
+		# ── Urgent Improvement ──
+		elif post_step == "urgent_improvement":
+			urgent_stmts = _stmts_for(InDepthStatement.StandardType.URGENT_IMPROVEMENT)
+			urgent_stmt_ids = {s.id for s in urgent_stmts}
+			FormSetClass = formset_factory(InDepthRAGForm, extra=0)
+			formset = FormSetClass(request.POST)
 			if formset.is_valid():
 				with transaction.atomic():
 					for form in formset:
 						stmt_id = form.cleaned_data["statement_id"]
-						if stmt_id not in secondary_stmt_ids:
+						if stmt_id not in urgent_stmt_ids:
 							continue
 						InDepthResponse.objects.update_or_create(
-							review=review,
-							statement_id=stmt_id,
-							defaults={"applies": form.cleaned_data["applies"]},
+							review=review, statement_id=stmt_id,
+							defaults={"rag": form.cleaned_data["rag"]},
 						)
+					saved_rags = list(
+						InDepthResponse.objects.filter(review=review, statement__in=urgent_stmts)
+						.values_list("rag", flat=True)
+					)
+					all_red = all(r == "red" for r in saved_rags if r)
+					review.secondary_level = "needs_attention" if all_red else "expected"
 					review.step = "justification"
 					review.updated_by = request.user
 					review.save()
 				return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
-			current_step = "secondary"
+			current_step = "urgent_improvement"
 
+		# ── Strong Standard ──
+		elif post_step == "strong_standard":
+			strong_stmts = _stmts_for(InDepthStatement.StandardType.STRONG_STANDARD)
+			strong_stmt_ids = {s.id for s in strong_stmts}
+			FormSetClass = formset_factory(InDepthRAGForm, extra=0)
+			formset = FormSetClass(request.POST)
+			if formset.is_valid():
+				with transaction.atomic():
+					for form in formset:
+						stmt_id = form.cleaned_data["statement_id"]
+						if stmt_id not in strong_stmt_ids:
+							continue
+						InDepthResponse.objects.update_or_create(
+							review=review, statement_id=stmt_id,
+							defaults={"rag": form.cleaned_data["rag"]},
+						)
+					saved_rags = list(
+						InDepthResponse.objects.filter(review=review, statement__in=strong_stmts)
+						.values_list("rag", flat=True)
+					)
+					has_red = any(r == "red" for r in saved_rags if r)
+					if has_red:
+						review.secondary_level = "expected"
+						review.step = "justification"
+					else:
+						# All green/amber — try exceptional
+						if _has_type(InDepthStatement.StandardType.EXCEPTIONAL):
+							review.step = "exceptional"
+						else:
+							review.secondary_level = "strong_standard"
+							review.step = "justification"
+					review.updated_by = request.user
+					review.save()
+				return redirect(f"{reverse('review:indepth_review')}{_build_params(review.step)}")
+			current_step = "strong_standard"
+
+		# ── Exceptional ──
+		elif post_step == "exceptional":
+			exceptional_stmts = _stmts_for(InDepthStatement.StandardType.EXCEPTIONAL)
+			exceptional_stmt_ids = {s.id for s in exceptional_stmts}
+			FormSetClass = formset_factory(InDepthRAGForm, extra=0)
+			formset = FormSetClass(request.POST)
+			if formset.is_valid():
+				with transaction.atomic():
+					for form in formset:
+						stmt_id = form.cleaned_data["statement_id"]
+						if stmt_id not in exceptional_stmt_ids:
+							continue
+						InDepthResponse.objects.update_or_create(
+							review=review, statement_id=stmt_id,
+							defaults={"rag": form.cleaned_data["rag"]},
+						)
+					saved_rags = list(
+						InDepthResponse.objects.filter(review=review, statement__in=exceptional_stmts)
+						.values_list("rag", flat=True)
+					)
+					has_red = any(r == "red" for r in saved_rags if r)
+					review.secondary_level = "strong_standard" if has_red else "exceptional"
+					review.step = "justification"
+					review.updated_by = request.user
+					review.save()
+				return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
+			current_step = "exceptional"
+
+		# ── Justification ──
 		elif post_step == "justification":
 			determined_level = (review.secondary_level if review else "") or "expected"
-			just_stmts = list(
-				InDepthStatement.objects.filter(area=area, standard_type=determined_level)
-				.order_by("statement_number")
-			)
+			just_stmts = _stmts_for(determined_level)
 			if not just_stmts:
 				just_stmts = statements
 			just_stmt_ids = {s.id for s in just_stmts}
@@ -873,8 +978,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 						if stmt_id not in just_stmt_ids:
 							continue
 						InDepthResponse.objects.update_or_create(
-							review=review,
-							statement_id=stmt_id,
+							review=review, statement_id=stmt_id,
 							defaults={
 								"justification": form.cleaned_data["justification"],
 								"next_steps": form.cleaned_data["next_steps"],
@@ -883,75 +987,95 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 					review.updated_by = request.user
 					review.save()
 				messages.success(request, "In-depth review saved.")
-				return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
+				return redirect(f"{reverse('review:indepth_review')}{_build_params('reflection')}")
 			current_step = "justification"
 
-	# ── Build context for GET (or a POST with invalid form) ──────────────────────
+		# ── Reflection ──
+		elif post_step == "reflection":
+			form = ReflectionForm(request.POST)
+			if form.is_valid():
+				with transaction.atomic():
+					if review is None:
+						review = InDepthReview.objects.create(
+							school=school, year=selected_year, area=area, updated_by=request.user,
+						)
+					review.qa_reflection = form.cleaned_data["qa_reflection"]
+					review.updated_by = request.user
+					review.save()
+				messages.success(request, "Reflection saved.")
+				return redirect(f"{reverse('review:indepth_review')}{_build_params('reflection')}")
+			current_step = "reflection"
+
+	# ── Build context for GET (or a POST with invalid form) ─────────────────────
 	formset = None
 	rows = []
-	secondary_rows = []
-	secondary_title = ""
+	step_title = ""
+	rag_legend = [
+		{"value": "red", "label": "Red", "description": "Insufficient evidence to meet the standard"},
+		{"value": "amber", "label": "Amber", "description": "Partial evidence; you believe the standard is met but gaps remain"},
+		{"value": "green", "label": "Green", "description": "Strong, comprehensive evidence supports your judgement"},
+	]
 
-	if current_step == "expected":
-		ExpectedFormSet = formset_factory(InDepthResponseForm, extra=0)
-		initial = []
-		for statement in statements:
-			resp = existing.get(statement.id)
-			if resp is None or resp.applies is None:
-				applies_value = ""
-			elif resp.applies is True:
-				applies_value = "1"
-			else:
-				applies_value = "0"
-			initial.append({"statement_id": statement.id, "applies": applies_value})
-		formset = ExpectedFormSet(initial=initial)
+	_STEP_TITLES = {
+		"expected": "Expected Standard",
+		"urgent_improvement": "Urgent Improvement",
+		"strong_standard": "Strong Standard",
+		"exceptional": "Exceptional",
+		"justification": "Justification & Next Steps",
+	}
+
+	if current_step in _RAG_STEPS or (current_step == "expected" and is_safeguarding):
+		# Determine which statements to show
+		if current_step == "expected":
+			step_stmts = statements
+		else:
+			step_stmts = _stmts_for(current_step)
+		step_title = _STEP_TITLES.get(current_step, current_step.replace("_", " ").title())
+
+		if is_safeguarding and current_step == "expected":
+			# Safeguarding: Met / Not met
+			FormSetClass = formset_factory(InDepthResponseForm, extra=0)
+			initial = []
+			for statement in step_stmts:
+				resp = existing.get(statement.id)
+				if resp is None or resp.applies is None:
+					applies_value = ""
+				elif resp.applies is True:
+					applies_value = "1"
+				else:
+					applies_value = "0"
+				initial.append({"statement_id": statement.id, "applies": applies_value})
+			formset = FormSetClass(initial=initial)
+		else:
+			# RAG
+			FormSetClass = formset_factory(InDepthRAGForm, extra=0)
+			initial = [
+				{"statement_id": s.id, "rag": existing.get(s.id).rag if existing.get(s.id) else ""}
+				for s in step_stmts
+			]
+			formset = FormSetClass(initial=initial)
+
 		if not can_edit:
 			for form in formset.forms:
 				for field in form.fields.values():
 					field.disabled = True
-		rows = [{"statement": s, "form": f} for s, f in zip(statements, formset.forms)]
-
-	elif current_step == "secondary":
-		secondary_level = (review.secondary_level if review else "") or "needs_attention"
-		secondary_title = "Strong Standard" if secondary_level == "strong_standard" else "Needs Attention"
-		secondary_stmts = list(
-			InDepthStatement.objects.filter(area=area, standard_type=secondary_level)
-			.order_by("statement_number")
-		)
-		SecondaryFormSet = formset_factory(InDepthResponseForm, extra=0)
-		initial = []
-		for statement in secondary_stmts:
-			resp = existing.get(statement.id)
-			applies_value = ""
-			if resp is not None and resp.applies is True:
-				applies_value = "1"
-			elif resp is not None and resp.applies is False:
-				applies_value = "0"
-			initial.append({"statement_id": statement.id, "applies": applies_value})
-		formset = SecondaryFormSet(initial=initial)
-		if not can_edit:
-			for form in formset.forms:
-				for field in form.fields.values():
-					field.disabled = True
-		secondary_rows = [{"statement": s, "form": f} for s, f in zip(secondary_stmts, formset.forms)]
+		rows = [{"statement": s, "form": f} for s, f in zip(step_stmts, formset.forms)]
 
 	elif current_step == "justification":
 		determined_level = (review.secondary_level if review else "") or "expected"
-		just_stmts = list(
-			InDepthStatement.objects.filter(area=area, standard_type=determined_level)
-			.order_by("statement_number")
-		)
+		just_stmts = _stmts_for(determined_level)
 		if not just_stmts:
 			just_stmts = statements
+		step_title = f"Justification & Next Steps — {_STEP_TITLES.get(determined_level, determined_level.replace('_', ' ').title())}"
 		JustFormSet = formset_factory(InDepthJustificationForm, extra=0)
-		initial = []
-		for statement in just_stmts:
-			resp = existing.get(statement.id)
-			initial.append({
-				"statement_id": statement.id,
-				"justification": resp.justification if resp else "",
-				"next_steps": resp.next_steps if resp else "",
-			})
+		initial = [
+			{
+				"statement_id": s.id,
+				"justification": existing.get(s.id).justification if existing.get(s.id) else "",
+				"next_steps": existing.get(s.id).next_steps if existing.get(s.id) else "",
+			}
+			for s in just_stmts
+		]
 		formset = JustFormSet(initial=initial)
 		if not can_edit:
 			for form in formset.forms:
@@ -961,10 +1085,119 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			{
 				"statement": s,
 				"form": f,
+				"rag": existing.get(s.id).rag if existing.get(s.id) else "",
 				"applies": existing.get(s.id).applies if existing.get(s.id) else None,
 			}
 			for s, f in zip(just_stmts, formset.forms)
 		]
+
+	# ── Build step indicator ─────────────────────────────────────────────────────
+	def _build_step_nav():
+		steps = []
+
+		if review is None:
+			# Show full possible journey for this area; only step 1 is accessible yet.
+			num = 1
+			steps.append({"key": "expected", "label": f"{num}. Expected Standard", "accessible": True})
+			num += 1
+			if not is_safeguarding:
+				if _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT):
+					steps.append({"key": "urgent_improvement", "label": f"{num}. Urgent Improvement", "accessible": False})
+					num += 1
+				if _has_type(InDepthStatement.StandardType.STRONG_STANDARD):
+					steps.append({"key": "strong_standard", "label": f"{num}. Strong Standard", "accessible": False})
+					num += 1
+				if _has_type(InDepthStatement.StandardType.EXCEPTIONAL):
+					steps.append({"key": "exceptional", "label": f"{num}. Exceptional", "accessible": False})
+					num += 1
+			steps.append({"key": "justification", "label": f"{num}. Justification", "accessible": False})
+			num += 1
+			steps.append({"key": "reflection", "label": f"{num}. Reflection", "accessible": False})
+			return steps
+
+		rev_step = review.step
+		if rev_step == "secondary":
+			rev_step = "justification"
+
+		num = 1
+		steps.append({"key": "expected", "label": f"{num}. Expected Standard", "accessible": True})
+		num += 1
+
+		if not is_safeguarding:
+			if rev_step in ("urgent_improvement", "justification") and _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT):
+				if rev_step == "urgent_improvement" or (
+					rev_step == "justification" and review.secondary_level in ("needs_attention", "expected")
+					and _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT)
+				):
+					steps.append({"key": "urgent_improvement", "label": f"{num}. Urgent Improvement", "accessible": True})
+					num += 1
+
+			if rev_step in ("strong_standard", "exceptional", "justification") and _has_type(InDepthStatement.StandardType.STRONG_STANDARD):
+				if rev_step == "strong_standard" or (
+					rev_step in ("exceptional", "justification") and review.secondary_level in ("strong_standard", "exceptional", "")
+				):
+					steps.append({"key": "strong_standard", "label": f"{num}. Strong Standard", "accessible": True})
+					num += 1
+
+			if rev_step in ("exceptional", "justification") and _has_type(InDepthStatement.StandardType.EXCEPTIONAL):
+				if rev_step == "exceptional" or (
+					rev_step == "justification" and review.secondary_level in ("exceptional", "strong_standard")
+					and _has_type(InDepthStatement.StandardType.EXCEPTIONAL)
+				):
+					steps.append({"key": "exceptional", "label": f"{num}. Exceptional", "accessible": True})
+					num += 1
+
+		if rev_step == "justification":
+			determined = review.secondary_level or "expected"
+			label_map = {
+				"needs_attention": "Needs Attention",
+				"expected": "Expected Standard",
+				"strong_standard": "Strong Standard",
+				"exceptional": "Exceptional",
+			}
+			steps.append({
+				"key": "justification",
+				"label": f"{num}. Justification ({label_map.get(determined, determined.replace('_', ' ').title())})",
+				"accessible": True,
+			})
+			num += 1
+			steps.append({"key": "reflection", "label": f"{num}. Reflection", "accessible": True})
+		else:
+			# Still in RAG steps — show locked placeholders so user can see what's ahead.
+			steps.append({"key": "justification", "label": f"{num}. Justification", "accessible": False})
+			num += 1
+			steps.append({"key": "reflection", "label": f"{num}. Reflection", "accessible": False})
+
+		return steps
+
+	step_nav = _build_step_nav()
+
+	# ── Review completion status ─────────────────────────────────────────────────
+	_LEVEL_LABELS = {
+		"needs_attention": "Needs Attention",
+		"expected": "Expected Standard",
+		"strong_standard": "Strong Standard",
+		"exceptional": "Exceptional",
+	}
+	review_is_complete = review is not None and review.step in ("justification", "secondary")
+	determined_level_display = ""
+	if review_is_complete:
+		_lvl = review.secondary_level or "expected"
+		determined_level_display = _LEVEL_LABELS.get(_lvl, _lvl.replace("_", " ").title())
+
+	# ── Build reflection form (always needed for context) ───────────────────────
+	if current_step == "reflection":
+		step_title = "Reflection on QA & Feedback"
+	reflection_value = review.qa_reflection if review else ""
+	reflection_form = ReflectionForm(initial={"qa_reflection": reflection_value})
+	if not can_edit:
+		reflection_form.fields["qa_reflection"].disabled = True
+
+	# determined_level is only set inside the justification branch; default for all other steps
+	try:
+		determined_level  # noqa: referenced below in context
+	except UnboundLocalError:
+		determined_level = ""
 
 	return render(
 		request,
@@ -979,9 +1212,15 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"current_step": current_step,
 			"review": review,
 			"rows": rows,
-			"secondary_rows": secondary_rows,
 			"formset": formset,
-			"secondary_title": secondary_title,
+			"step_title": step_title,
+			"step_nav": step_nav,
+			"rag_legend": rag_legend,
 			"can_edit": can_edit,
+			"is_safeguarding": is_safeguarding,
+			"reflection_form": reflection_form,
+			"determined_level": determined_level if current_step == "justification" else "",
+			"review_is_complete": review_is_complete,
+			"determined_level_display": determined_level_display,
 		},
 	)

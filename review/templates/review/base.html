@@ -24,11 +24,20 @@
 
         <nav class="nav">
           <a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Home</a>
-          <a href="/review/dashboard/" {% if '/review/dashboard/' in request.path %}aria-current="page"{% endif %}>Enter data</a>
+          <a href="/review/dashboard/" {% if '/review/dashboard/' in request.path %}aria-current="page"{% endif %}>School Dashboard</a>
           <a href="/review/evaluation/" {% if '/review/evaluation/' in request.path %}aria-current="page"{% endif %}>Evaluation</a>
           <a href="/review/in-depth/" {% if '/review/in-depth/' in request.path %}aria-current="page"{% endif %}>In-depth review</a>
-          <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>Overview</a>
+          <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>Trust Overview</a>
         </nav>
+
+        <div class="sidebar-ratings">
+          <div class="sidebar-ratings-title">Rating scale</div>
+          <div class="sidebar-rating sidebar-rating--5"><span class="sidebar-rating-num">5</span> Urgent Improvement</div>
+          <div class="sidebar-rating sidebar-rating--4"><span class="sidebar-rating-num">4</span> Needs Attention</div>
+          <div class="sidebar-rating sidebar-rating--3"><span class="sidebar-rating-num">3</span> Expected Standard</div>
+          <div class="sidebar-rating sidebar-rating--2"><span class="sidebar-rating-num">2</span> Strong Standard</div>
+          <div class="sidebar-rating sidebar-rating--1"><span class="sidebar-rating-num">1</span> Exceptional</div>
+        </div>
 
         <div class="nav-bottom">
           {% if user.is_superuser %}
@@ -49,7 +58,15 @@
       </div>
     </div>
 
-    <script defer src="{% static 'review/word_limit.js' %}?v=20260525-1"></script>
+    <script defer src="{% static 'review/word_limit.js' %}?v=20260527-2"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.school-select select').forEach(function (sel) {
+          sel.closest('form').classList.add('auto-submit');
+          sel.addEventListener('change', function () { this.closest('form').submit(); });
+        });
+      });
+    </script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

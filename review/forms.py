@@ -48,11 +48,11 @@ class EvaluationEntryForm(forms.Form):
     )
     judgement_evidence = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4}),
+        widget=forms.Textarea(attrs={"rows": 4, "aria-label": "Judgement evidence"}),
     )
     to_progress = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4}),
+        widget=forms.Textarea(attrs={"rows": 4, "aria-label": "To progress"}),
     )
 
     def clean_judgement_evidence(self) -> str:
@@ -78,7 +78,7 @@ class DashboardRatingForm(forms.Form):
 
 
 class InDepthResponseForm(forms.Form):
-    """Step 1 — Expected Standard: just Met / Not met, no free text."""
+    """Safeguarding areas only — Met / Not met, no free text."""
 
     statement_id = forms.IntegerField(widget=forms.HiddenInput)
     applies = forms.ChoiceField(
@@ -99,6 +99,28 @@ class InDepthResponseForm(forms.Form):
         if str(raw) == "0":
             return False
         return None
+
+
+class InDepthRAGForm(forms.Form):
+    """Non-safeguarding areas — Red / Amber / Green rating per statement."""
+
+    statement_id = forms.IntegerField(widget=forms.HiddenInput)
+    rag = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", ""),
+            ("red", "Red"),
+            ("amber", "Amber"),
+            ("green", "Green"),
+        ],
+        widget=forms.RadioSelect,
+    )
+
+    def clean_rag(self):
+        raw = self.cleaned_data.get("rag")
+        if raw not in ("red", "amber", "green"):
+            return ""
+        return raw
 
 
 class InDepthSecondaryForm(forms.Form):
@@ -124,25 +146,37 @@ class InDepthSecondaryForm(forms.Form):
         return None
 
 
+MAX_JUSTIFICATION_WORDS = 150
+
+
 class InDepthJustificationForm(forms.Form):
-    """Step 3 — Justification and next steps per statement."""
+    """Final step — Justification and next steps per statement (150 words each)."""
 
     statement_id = forms.IntegerField(widget=forms.HiddenInput)
     justification = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 3}),
+        widget=forms.Textarea(attrs={"rows": 3, "data-max-words": "150"}),
     )
     next_steps = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 3}),
+        widget=forms.Textarea(attrs={"rows": 3, "data-max-words": "150"}),
     )
 
     def clean_justification(self) -> str:
         value = self.cleaned_data.get("justification") or ""
-        _validate_max_words(value)
+        _validate_max_words(value, max_words=MAX_JUSTIFICATION_WORDS)
         return value
 
     def clean_next_steps(self) -> str:
         value = self.cleaned_data.get("next_steps") or ""
-        _validate_max_words(value)
+        _validate_max_words(value, max_words=MAX_JUSTIFICATION_WORDS)
         return value
+
+
+class ReflectionForm(forms.Form):
+    """Standalone reflection — Principal reflects on what changed as a result of QA and feedback."""
+
+    qa_reflection = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 6, "data-max-words": "0"}),
+    )

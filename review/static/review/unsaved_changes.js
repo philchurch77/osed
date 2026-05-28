@@ -12,8 +12,21 @@
     var isDirty = false;
     var isSubmitting = false;
 
+    // Insert a hidden indicator into the .actions bar next to the Save button.
+    var indicator = null;
+    var actionsEl = formEl.querySelector('.actions');
+    if (actionsEl) {
+      indicator = document.createElement('span');
+      indicator.className = 'unsaved-indicator';
+      indicator.setAttribute('aria-live', 'polite');
+      indicator.textContent = 'Unsaved changes';
+      actionsEl.insertBefore(indicator, actionsEl.firstChild);
+    }
+
     function markDirty() {
-      if (!isSubmitting) isDirty = true;
+      if (isSubmitting) return;
+      isDirty = true;
+      if (indicator) indicator.classList.add('unsaved-indicator--visible');
     }
 
     formEl.addEventListener('input', markDirty, true);
@@ -22,12 +35,12 @@
     formEl.addEventListener('submit', function () {
       isSubmitting = true;
       isDirty = false;
+      if (indicator) indicator.classList.remove('unsaved-indicator--visible');
     });
 
     window.addEventListener('beforeunload', function (event) {
       if (!isDirty || isSubmitting) return;
       event.preventDefault();
-      // Most browsers ignore custom text; returning an empty string triggers the native prompt.
       event.returnValue = '';
     });
 

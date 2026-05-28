@@ -40,7 +40,7 @@
         </div>
       </form>
     {% else %}
-      <p style="margin: 10px 0 4px; font-size: 14px; color: var(--colour-muted);">{{ school.name }}</p>
+      <p class="page-subtitle">{{ school.name }}</p>
       <form method="get" class="school-select">
         <div class="form-field">
           <label for="area">Area</label>
@@ -86,46 +86,68 @@
   {% if area %}
 
     {# Step indicator #}
-    <nav class="indepth-steps">
-      <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step=expected"
-         class="indepth-step {% if current_step == 'expected' %}indepth-step--active{% endif %}">
-        1. Expected Standard
-      </a>
-      {% if review and review.secondary_level %}
-        <span class="indepth-step-sep">&rsaquo;</span>
-        <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step=secondary"
-           class="indepth-step {% if current_step == 'secondary' %}indepth-step--active{% endif %}">
-          2. {% if review.secondary_level == 'strong_standard' %}Strong Standard{% else %}Needs Attention{% endif %}
-        </a>
-      {% endif %}
-      {% if review and review.step == 'justification' %}
-        <span class="indepth-step-sep">&rsaquo;</span>
-        <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step=justification"
-           class="indepth-step {% if current_step == 'justification' %}indepth-step--active{% endif %}">
-          {% if review.secondary_level %}3{% else %}2{% endif %}. Justification
-        </a>
-      {% endif %}
-    </nav>
+    {% if step_nav %}
+      <nav class="indepth-steps">
+        {% for step in step_nav %}
+          {% if step.accessible %}
+            <a href="?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&step={{ step.key }}"
+               class="indepth-step {% if step.key == current_step %}indepth-step--active{% endif %}">
+              {{ step.label }}
+            </a>
+          {% else %}
+            <span class="indepth-step indepth-step--locked">{{ step.label }}</span>
+          {% endif %}
+          {% if not forloop.last %}<span class="indepth-step-sep">&rsaquo;</span>{% endif %}
+        {% endfor %}
+      </nav>
+    {% endif %}
 
-    {# STEP 1: Expected Standard #}
-    {% if current_step == 'expected' and formset %}
+    {# Review outcome banner — shown on all steps once level is determined #}
+    {% if review_is_complete %}
+      <div class="review-outcome">
+        <span class="review-outcome-label">Determined level:</span>
+        <span class="review-outcome-badge review-outcome-badge--{{ review.secondary_level|default:'expected' }}">
+          {{ determined_level_display }}
+        </span>
+        <span class="review-outcome-complete">&#10003; Review complete</span>
+      </div>
+    {% endif %}
+
+    {# RAG steps: expected, urgent_improvement, strong_standard, exceptional #}
+    {% if current_step != 'justification' and formset %}
       <form method="post">
         {% csrf_token %}
         <input type="hidden" name="school_id" value="{{ school.id }}" />
         <input type="hidden" name="year" value="{{ selected_year_value }}" />
         <input type="hidden" name="area_id" value="{{ area.id }}" />
-        <input type="hidden" name="step" value="expected" />
+        <input type="hidden" name="step" value="{{ current_step }}" />
         {{ formset.management_form }}
 
-        <h2 class="indepth-step-title">Step 1 &mdash; Expected Standard</h2>
-        <p class="indepth-step-hint">Tick Met or Not met for each statement. You will be taken to the next step automatically.</p>
+        <h2 class="indepth-step-title">{{ step_title }}</h2>
+
+        {% if is_safeguarding %}
+          <p class="indepth-step-hint">Mark each statement as Met or Not met.</p>
+        {% else %}
+          {# RAG legend #}
+          <div class="indepth-rag-legend">
+            {% for item in rag_legend %}
+              <span class="indepth-rag-legend-item indepth-rag-legend-item--{{ item.value }}">
+                <span class="indepth-rag-badge">{{ item.label }}</span>
+                <span class="indepth-rag-legend-desc">{{ item.description }}</span>
+              </span>
+            {% endfor %}
+          </div>
+          <p class="indepth-step-hint">Rate each statement Red, Amber, or Green. Justification boxes appear once your level is determined.</p>
+        {% endif %}
 
         <table class="indepth-table">
           <thead>
             <tr>
-              <th style="width: 8%">#</th>
-              <th style="width: 67%">Judgement evidence</th>
-              <th style="width: 25%">Met / Not met</th>
+              <th style="width: 7%">#</th>
+              <th style="width: {% if is_safeguarding %}63{% else %}55{% endif %}%">Statement</th>
+              <th style="width: {% if is_safeguarding %}30{% else %}38{% endif %}%">
+                {% if is_safeguarding %}Met / Not met{% else %}Rating{% endif %}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -134,16 +156,31 @@
                 <td class="indepth-num">{{ row.statement.statement_number }}</td>
                 <td class="indepth-statement-text">{{ row.statement.text }}</td>
                 <td class="indepth-applies">
-                  {{ row.form.statement_id }}
-                  {{ row.form.applies.errors }}
-                  <div class="indepth-applies-options">
-                    {% for radio in row.form.applies %}
-                      <label class="indepth-radio">
-                        {{ radio.tag }}
-                        <span>{{ radio.choice_label }}</span>
-                      </label>
-                    {% endfor %}
-                  </div>
+                  {% if is_safeguarding %}
+                    {{ row.form.statement_id }}
+                    {{ row.form.applies.errors }}
+                    <div class="indepth-applies-options">
+                      {% for radio in row.form.applies %}
+                        <label class="indepth-radio">
+                          {{ radio.tag }}
+                          <span>{{ radio.data.label }}</span>
+                        </label>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    {{ row.form.statement_id }}
+                    {{ row.form.rag.errors }}
+                    <div class="indepth-rag-options">
+                      {% for radio in row.form.rag %}
+                        {% if radio.data.value %}
+                          <label class="indepth-rag-btn indepth-rag-btn--{{ radio.data.value }}">
+                            {{ radio.tag }}
+                            <span>{{ radio.data.label }}</span>
+                          </label>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  {% endif %}
                 </td>
               </tr>
             {% endfor %}
@@ -157,61 +194,7 @@
         </div>
       </form>
 
-    {# STEP 2: Needs Attention or Strong Standard — Met / Not met ticking only #}
-    {% elif current_step == 'secondary' and formset %}
-      <form method="post">
-        {% csrf_token %}
-        <input type="hidden" name="school_id" value="{{ school.id }}" />
-        <input type="hidden" name="year" value="{{ selected_year_value }}" />
-        <input type="hidden" name="area_id" value="{{ area.id }}" />
-        <input type="hidden" name="step" value="secondary" />
-        {{ formset.management_form }}
-
-        <h2 class="indepth-step-title">Step 2 &mdash; {{ secondary_title }}</h2>
-        <p class="indepth-step-hint">Mark each statement as Met or Not met.</p>
-
-        {% if not secondary_rows %}
-          <p class="indepth-no-statements">No {{ secondary_title }} statements have been loaded for this area yet. Ask an admin to import them.</p>
-        {% else %}
-          <table class="indepth-table indepth-table--secondary">
-            <thead>
-              <tr>
-                <th style="width: 8%">#</th>
-                <th style="width: 67%">Statement</th>
-                <th style="width: 25%">Met / Not met</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in secondary_rows %}
-                <tr>
-                  <td class="indepth-num">{{ row.statement.statement_number }}</td>
-                  <td class="indepth-statement-text">{{ row.statement.text }}</td>
-                  <td class="indepth-applies">
-                    {{ row.form.statement_id }}
-                    {{ row.form.applies.errors }}
-                    <div class="indepth-applies-options">
-                      {% for radio in row.form.applies %}
-                        <label class="indepth-radio">
-                          {{ radio.tag }}
-                          <span>{{ radio.choice_label }}</span>
-                        </label>
-                      {% endfor %}
-                    </div>
-                  </td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% endif %}
-
-        <div class="actions">
-          {% if can_edit %}
-            <button type="submit">Save &amp; continue &rsaquo;</button>
-          {% endif %}
-        </div>
-      </form>
-
-    {# STEP 3: Justification and next steps per statement #}
+    {# Justification step #}
     {% elif current_step == 'justification' and formset %}
       <form method="post">
         {% csrf_token %}
@@ -221,17 +204,26 @@
         <input type="hidden" name="step" value="justification" />
         {{ formset.management_form }}
 
-        <h2 class="indepth-step-title">Step {% if review and review.secondary_level %}3{% else %}2{% endif %} &mdash; Justification &amp; Next Steps</h2>
-        <p class="indepth-step-hint">For each statement, add your justification and next steps.</p>
+        <h2 class="indepth-step-title">{{ step_title }}</h2>
+        {% if determined_level == 'needs_attention' and area.needs_attention_text %}
+          <p class="indepth-step-hint">{{ area.needs_attention_text }}</p>
+        {% elif determined_level == 'strong_standard' and area.strong_standard_text %}
+          <p class="indepth-step-hint">{{ area.strong_standard_text }}</p>
+        {% endif %}
+        <p class="indepth-step-hint">For each statement, add your justification and next steps (150 words max each).</p>
 
         <table class="indepth-table indepth-table--just">
           <thead>
             <tr>
               <th style="width: 5%">#</th>
-              <th style="width: 30%">Statement</th>
-              <th style="width: 10%">Result</th>
-              <th style="width: 27%">Justification</th>
-              <th style="width: 28%">Next steps</th>
+              <th style="width: 28%">Statement</th>
+              {% if not is_safeguarding %}
+                <th style="width: 9%">RAG</th>
+              {% else %}
+                <th style="width: 9%">Result</th>
+              {% endif %}
+              <th style="width: 29%">Justification <small>(max 150 words)</small></th>
+              <th style="width: 29%">Next steps <small>(max 150 words)</small></th>
             </tr>
           </thead>
           <tbody>
@@ -240,12 +232,24 @@
                 <td class="indepth-num">{{ row.statement.statement_number }}</td>
                 <td class="indepth-statement-text">{{ row.statement.text }}</td>
                 <td class="indepth-result">
-                  {% if row.applies %}
-                    <span class="indepth-met">Met</span>
-                  {% elif row.applies == False %}
-                    <span class="indepth-notmet">Not met</span>
+                  {% if is_safeguarding %}
+                    {% if row.applies %}
+                      <span class="indepth-met">Met</span>
+                    {% elif row.applies == False %}
+                      <span class="indepth-notmet">Not met</span>
+                    {% else %}
+                      &mdash;
+                    {% endif %}
                   {% else %}
-                    &mdash;
+                    {% if row.rag == 'green' %}
+                      <span class="indepth-rag-chip indepth-rag-chip--green">Green</span>
+                    {% elif row.rag == 'amber' %}
+                      <span class="indepth-rag-chip indepth-rag-chip--amber">Amber</span>
+                    {% elif row.rag == 'red' %}
+                      <span class="indepth-rag-chip indepth-rag-chip--red">Red</span>
+                    {% else %}
+                      &mdash;
+                    {% endif %}
                   {% endif %}
                 </td>
                 <td class="indepth-justification">
@@ -264,6 +268,31 @@
 
         <div class="actions">
           {% if can_edit %}
+            <button type="submit">Save &amp; continue &rsaquo;</button>
+          {% endif %}
+        </div>
+      </form>
+    {% endif %}
+
+    {# Reflection step #}
+    {% if current_step == 'reflection' %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="area_id" value="{{ area.id }}" />
+        <input type="hidden" name="step" value="reflection" />
+
+        <h2 class="indepth-step-title">{{ step_title }}</h2>
+        <p class="indepth-step-hint">Reflect on what changed as a result of QA and feedback.</p>
+
+        <div class="indepth-reflection">
+          {{ reflection_form.qa_reflection.errors }}
+          {{ reflection_form.qa_reflection }}
+        </div>
+
+        <div class="actions">
+          {% if can_edit %}
             <button type="submit">Save</button>
           {% endif %}
         </div>
@@ -275,8 +304,9 @@
 
 {% block scripts %}
   {% load static %}
+  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260527-1"></script>
   {% if can_edit %}
-    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
-    <script defer src="{% static 'review/word_limit.js' %}?v=20260508-2"></script>
+    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
+    <script defer src="{% static 'review/word_limit.js' %}?v=20260527-1"></script>
   {% endif %}
 {% endblock %}

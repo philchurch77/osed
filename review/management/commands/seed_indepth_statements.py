@@ -14,10 +14,14 @@ from review.models import InDepthArea, InDepthStatement
 _STANDARD_TYPE_MAP = {
     "expected standard": InDepthStatement.StandardType.EXPECTED,
     "expected": InDepthStatement.StandardType.EXPECTED,
+    "urgent improvement": InDepthStatement.StandardType.URGENT_IMPROVEMENT,
+    "urgent": InDepthStatement.StandardType.URGENT_IMPROVEMENT,
+    "ui": InDepthStatement.StandardType.URGENT_IMPROVEMENT,
     "needs attention": InDepthStatement.StandardType.NEEDS_ATTENTION,
     "na": InDepthStatement.StandardType.NEEDS_ATTENTION,
     "strong standard": InDepthStatement.StandardType.STRONG_STANDARD,
     "strong": InDepthStatement.StandardType.STRONG_STANDARD,
+    "exceptional": InDepthStatement.StandardType.EXCEPTIONAL,
 }
 
 
@@ -53,7 +57,8 @@ class Command(BaseCommand):
 		#   Optional D: Standard Type  (Expected Standard / Needs Attention / Strong Standard)
 		header_row = None
 		has_standard_type_col = False
-		for r in range(1, min(50, ws.max_row) + 1):
+		max_row = ws.max_row or 10000
+		for r in range(1, min(50, max_row) + 1):
 			c1 = (ws.cell(r, 1).value or "").strip() if isinstance(ws.cell(r, 1).value, str) else ws.cell(r, 1).value
 			c2 = (ws.cell(r, 2).value or "").strip() if isinstance(ws.cell(r, 2).value, str) else ws.cell(r, 2).value
 			c3 = (ws.cell(r, 3).value or "").strip() if isinstance(ws.cell(r, 3).value, str) else ws.cell(r, 3).value
@@ -71,7 +76,7 @@ class Command(BaseCommand):
 		area_order: dict[str, int] = {}
 		statements: list[tuple[str, int, str, str]] = []  # (area_name, num, text, standard_type)
 
-		for r in range(header_row + 1, ws.max_row + 1):
+		for r in range(header_row + 1, max_row + 1):
 			area = ws.cell(r, 1).value
 			num = ws.cell(r, 2).value
 			text = ws.cell(r, 3).value

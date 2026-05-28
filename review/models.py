@@ -106,6 +106,10 @@ class Evaluation(models.Model):
 class Branding(models.Model):
     trust_emblem = models.ImageField(upload_to="branding/", blank=True, null=True)
 
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return "Branding"
 
@@ -113,6 +117,7 @@ class Branding(models.Model):
 class InDepthArea(models.Model):
     name = models.CharField(max_length=200, unique=True)
     order = models.PositiveIntegerField(default=0)
+    is_safeguarding = models.BooleanField(default=False)
     needs_attention_text = models.TextField(blank=True, default="")
     strong_standard_text = models.TextField(blank=True, default="")
 
@@ -126,8 +131,10 @@ class InDepthArea(models.Model):
 class InDepthStatement(models.Model):
     class StandardType(models.TextChoices):
         EXPECTED = "expected", "Expected Standard"
+        URGENT_IMPROVEMENT = "urgent_improvement", "Urgent Improvement"
         NEEDS_ATTENTION = "needs_attention", "Needs Attention"
         STRONG_STANDARD = "strong_standard", "Strong Standard"
+        EXCEPTIONAL = "exceptional", "Exceptional"
 
     area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
     standard_type = models.CharField(
@@ -154,8 +161,12 @@ class InDepthStatement(models.Model):
 class InDepthReview(models.Model):
     class Step(models.TextChoices):
         EXPECTED = "expected", "Expected Standard"
-        SECONDARY = "secondary", "Secondary Standard"
+        URGENT_IMPROVEMENT = "urgent_improvement", "Urgent Improvement"
+        STRONG_STANDARD = "strong_standard", "Strong Standard"
+        EXCEPTIONAL = "exceptional", "Exceptional"
         JUSTIFICATION = "justification", "Justification"
+        # Legacy value kept for backward compat with existing data
+        SECONDARY = "secondary", "Secondary Standard"
 
     # Stored as academic year start, displayed as YYYY/YYYY+1
     year = models.PositiveSmallIntegerField(default=current_academic_year_start)
@@ -165,6 +176,7 @@ class InDepthReview(models.Model):
     secondary_level = models.CharField(max_length=20, blank=True, default="")
     secondary_applies = models.BooleanField(null=True, blank=True)
     justification = models.TextField(blank=True, default="")
+    qa_reflection = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
@@ -189,9 +201,22 @@ class InDepthReview(models.Model):
 
 
 class InDepthResponse(models.Model):
+    class RAG(models.TextChoices):
+        RED = "red", "Red"
+        AMBER = "amber", "Amber"
+        GREEN = "green", "Green"
+
     review = models.ForeignKey(InDepthReview, on_delete=models.CASCADE)
     statement = models.ForeignKey(InDepthStatement, on_delete=models.CASCADE)
+    # applies: used for safeguarding areas (Met/Not met)
     applies = models.BooleanField(null=True, blank=True)
+    # rag: used for non-safeguarding areas (Red/Amber/Green)
+    rag = models.CharField(
+        max_length=10,
+        choices=RAG.choices,
+        blank=True,
+        default="",
+    )
     justification = models.TextField(blank=True, default="")
     next_steps = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
