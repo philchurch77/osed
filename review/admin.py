@@ -139,6 +139,7 @@ class EvaluationAdmin(admin.ModelAdmin):
 @admin.register(InDepthArea)
 class InDepthAreaAdmin(admin.ModelAdmin):
 	list_display = ("order", "name", "is_safeguarding")
+	list_filter = ("is_safeguarding",)
 	ordering = ("order", "name")
 	search_fields = ("name",)
 	fieldsets = (
@@ -154,20 +155,38 @@ class InDepthAreaAdmin(admin.ModelAdmin):
 
 @admin.register(InDepthStatement)
 class InDepthStatementAdmin(admin.ModelAdmin):
-	list_display = ("area", "statement_number")
-	list_filter = ("area",)
-	ordering = ("area__order", "area__name", "statement_number")
+	list_display = ("area", "standard_type", "statement_number")
+	list_filter = ("area", "standard_type")
+	ordering = ("area__order", "area__name", "standard_type", "statement_number")
 	search_fields = ("text",)
 	list_select_related = ("area",)
 
 
 @admin.register(InDepthReview)
 class InDepthReviewAdmin(admin.ModelAdmin):
-	list_display = ("school", "year", "area", "updated_at", "updated_by")
-	list_filter = ("year", "area", "school")
+	list_display = ("school", "year", "area", "step", "has_reflection", "updated_at", "updated_by")
+	list_filter = ("year", "area", "school", "step")
 	ordering = ("-year", "school__name", "area__order", "area__name")
 	list_select_related = ("school", "area", "updated_by")
 	readonly_fields = ("created_at", "updated_at", "updated_by")
+	fieldsets = (
+		(None, {
+			"fields": ("school", "year", "area", "step", "secondary_level", "secondary_applies"),
+		}),
+		("Justification", {
+			"fields": ("justification",),
+		}),
+		("Reflection on QA & Feedback", {
+			"fields": ("qa_reflection",),
+		}),
+		("Audit", {
+			"fields": ("created_at", "updated_at", "updated_by"),
+		}),
+	)
+
+	@admin.display(boolean=True, description="Reflection")
+	def has_reflection(self, obj):
+		return bool(obj.qa_reflection)
 
 	def save_model(self, request, obj, form, change):
 		obj.updated_by = request.user
@@ -180,8 +199,8 @@ class InDepthReviewAdmin(admin.ModelAdmin):
 
 @admin.register(InDepthResponse)
 class InDepthResponseAdmin(admin.ModelAdmin):
-	list_display = ("review", "statement", "applies", "updated_at")
-	list_filter = ("applies", "statement__area")
+	list_display = ("review", "statement", "applies", "rag", "updated_at")
+	list_filter = ("applies", "rag", "statement__area", "statement__standard_type")
 	search_fields = ("justification", "statement__text")
 	list_select_related = ("review", "statement", "statement__area")
 

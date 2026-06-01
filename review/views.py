@@ -814,15 +814,19 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 							)
 						else:
 							review.updated_by = request.user
+						any_not_met = False
 						for form in formset:
 							stmt_id = form.cleaned_data["statement_id"]
 							if stmt_id not in statement_ids:
 								continue
+							applies_val = form.cleaned_data["applies"]
 							InDepthResponse.objects.update_or_create(
 								review=review, statement_id=stmt_id,
-								defaults={"applies": form.cleaned_data["applies"]},
+								defaults={"applies": applies_val},
 							)
-						review.secondary_level = "expected"
+							if applies_val is False:
+								any_not_met = True
+						review.secondary_level = "not_met" if any_not_met else "met"
 						review.step = "justification"
 						review.save()
 					return redirect(f"{reverse('review:indepth_review')}{_build_params('justification')}")
@@ -860,8 +864,10 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 								review.secondary_level = "needs_attention"
 								review.step = "justification"
 						else:
-							# All green/amber
-							if _has_type(InDepthStatement.StandardType.STRONG_STANDARD):
+							# Only route to strong standard if every rated response is green
+							rated = [r for r in saved_rags if r]
+							all_green = bool(rated) and all(r == "green" for r in rated)
+							if all_green and _has_type(InDepthStatement.StandardType.STRONG_STANDARD):
 								review.step = "strong_standard"
 							else:
 								review.secondary_level = "expected"
@@ -891,7 +897,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 						.values_list("rag", flat=True)
 					)
 					all_red = all(r == "red" for r in saved_rags if r)
-					review.secondary_level = "needs_attention" if all_red else "expected"
+					review.secondary_level = "urgent_improvement" if all_red else "needs_attention"
 					review.step = "justification"
 					review.updated_by = request.user
 					review.save()
@@ -1030,7 +1036,10 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			step_stmts = statements
 		else:
 			step_stmts = _stmts_for(current_step)
-		step_title = _STEP_TITLES.get(current_step, current_step.replace("_", " ").title())
+		if is_safeguarding and current_step == "expected":
+			step_title = "Safeguarding Statements"
+		else:
+			step_title = _STEP_TITLES.get(current_step, current_step.replace("_", " ").title())
 
 		if is_safeguarding and current_step == "expected":
 			# Safeguarding: Met / Not met
@@ -1098,7 +1107,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		if review is None:
 			# Show full possible journey for this area; only step 1 is accessible yet.
 			num = 1
-			steps.append({"key": "expected", "label": f"{num}. Expected Standard", "accessible": True})
+			steps.append({"key": "expected", "label": f"{num}. {'Safeguarding Statements' if is_safeguarding else 'Expected Standard'}", "accessible": True})
 			num += 1
 			if not is_safeguarding:
 				if _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT):
@@ -1120,21 +1129,21 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			rev_step = "justification"
 
 		num = 1
-		steps.append({"key": "expected", "label": f"{num}. Expected Standard", "accessible": True})
+		steps.append({"key": "expected", "label": f"{num}. {'Safeguarding Statements' if is_safeguarding else 'Expected Standard'}", "accessible": True})
 		num += 1
 
 		if not is_safeguarding:
 			if rev_step in ("urgent_improvement", "justification") and _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT):
 				if rev_step == "urgent_improvement" or (
-					rev_step == "justification" and review.secondary_level in ("needs_attention", "expected")
-					and _has_type(InDepthStatement.StandardType.URGENT_IMPROVEMENT)
+					rev_step == "justification" and review.secondary_level in ("needs_attention", "urgent_improvement")
 				):
 					steps.append({"key": "urgent_improvement", "label": f"{num}. Urgent Improvement", "accessible": True})
 					num += 1
 
 			if rev_step in ("strong_standard", "exceptional", "justification") and _has_type(InDepthStatement.StandardType.STRONG_STANDARD):
 				if rev_step == "strong_standard" or (
-					rev_step in ("exceptional", "justification") and review.secondary_level in ("strong_standard", "exceptional", "")
+					rev_step in ("exceptional", "justification") and review.secondary_level in ("strong_standard", "exceptional", "expected", "")
+					and _has_type(InDepthStatement.StandardType.STRONG_STANDARD)
 				):
 					steps.append({"key": "strong_standard", "label": f"{num}. Strong Standard", "accessible": True})
 					num += 1
@@ -1150,7 +1159,10 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		if rev_step == "justification":
 			determined = review.secondary_level or "expected"
 			label_map = {
+				"met": "Met",
+				"not_met": "Not Met",
 				"needs_attention": "Needs Attention",
+				"urgent_improvement": "Urgent Improvement",
 				"expected": "Expected Standard",
 				"strong_standard": "Strong Standard",
 				"exceptional": "Exceptional",
@@ -1174,7 +1186,9 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 
 	# ── Review completion status ─────────────────────────────────────────────────
 	_LEVEL_LABELS = {
+		"met": "Met",
 		"needs_attention": "Needs Attention",
+		"urgent_improvement": "Urgent Improvement",
 		"expected": "Expected Standard",
 		"strong_standard": "Strong Standard",
 		"exceptional": "Exceptional",
@@ -1222,5 +1236,135 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"determined_level": determined_level if current_step == "justification" else "",
 			"review_is_complete": review_is_complete,
 			"determined_level_display": determined_level_display,
+		},
+	)
+
+
+@login_required
+def reflection(request: HttpRequest) -> HttpResponse:
+	can_edit = user_can_edit(request.user)
+
+	if request.method == "POST" and not can_edit:
+		messages.error(request, "You have read-only access and cannot save changes.")
+		year = request.POST.get("year") or ""
+		params = f"?year={year}" if year else ""
+		if request.user.is_superuser:
+			school_id = request.POST.get("school_id")
+			if school_id:
+				joiner = "&" if params else "?"
+				params = f"{params}{joiner}school={school_id}"
+		return redirect(f"{reverse('review:reflection')}{params}")
+
+	school = None
+	schools = None
+
+	if request.user.is_superuser:
+		schools = list(School.objects.order_by("name").all())
+		selected = request.GET.get("school") or request.POST.get("school_id")
+		if selected:
+			try:
+				school = School.objects.get(id=selected)
+			except School.DoesNotExist:
+				school = None
+		if school is None and schools:
+			school = schools[0]
+		if school is None:
+			messages.error(request, "No schools have been set up yet.")
+			return redirect("review:home")
+	else:
+		try:
+			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
+				"schools"
+			).get(user=request.user)
+		except SchoolProfile.DoesNotExist:
+			return render(
+				request,
+				"review/no_school_profile.html",
+				{"user": request.user},
+				status=403,
+			)
+		allowed_schools = list(school_profile.schools.order_by("name").all())
+		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
+			allowed_schools.insert(0, school_profile.school)
+		selected = request.GET.get("school") or request.POST.get("school_id")
+		if selected:
+			try:
+				selected_id = int(selected)
+			except (TypeError, ValueError):
+				selected_id = None
+			if selected_id is not None:
+				school = next((s for s in allowed_schools if s.id == selected_id), None)
+		if school is None:
+			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
+		schools = allowed_schools if len(allowed_schools) > 1 else None
+
+	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
+	selected_year = _parse_academic_year_start(
+		request.GET.get("year") or request.POST.get("year"),
+		default_year,
+	)
+	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
+	selected_year_value = f"{selected_year}-{selected_year + 1}"
+
+	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
+	academic_year_options = [
+		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
+		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
+	]
+
+	areas = list(InDepthArea.objects.order_by("order", "name").all())
+
+	# Build a map of area_id -> InDepthReview for the selected school/year
+	reviews_qs = InDepthReview.objects.filter(
+		school=school, year=selected_year,
+	) if school else InDepthReview.objects.none()
+	reviews_by_area = {r.area_id: r for r in reviews_qs}
+
+	if request.method == "POST" and can_edit:
+		with transaction.atomic():
+			for area in areas:
+				field_name = f"area_{area.id}"
+				text = request.POST.get(field_name, "").strip()
+				review = reviews_by_area.get(area.id)
+				if review is None:
+					if text:
+						review = InDepthReview.objects.create(
+							school=school, year=selected_year, area=area, updated_by=request.user,
+						)
+						review.qa_reflection = text
+						review.updated_by = request.user
+						review.save()
+						reviews_by_area[area.id] = review
+				else:
+					review.qa_reflection = text
+					review.updated_by = request.user
+					review.save()
+		messages.success(request, "Reflections saved.")
+		if request.user.is_superuser:
+			params = f"?school={school.id}&year={selected_year_value}"
+		else:
+			params = f"?year={selected_year_value}"
+		return redirect(f"{reverse('review:reflection')}{params}")
+
+	# Build per-area context items
+	area_items = []
+	for area in areas:
+		review = reviews_by_area.get(area.id)
+		area_items.append({
+			"area": area,
+			"field_name": f"area_{area.id}",
+			"value": review.qa_reflection if review else "",
+		})
+
+	return render(
+		request,
+		"review/reflection.html",
+		{
+			"school": school,
+			"schools": schools,
+			"area_items": area_items,
+			"selected_year_value": selected_year_value,
+			"academic_year_options": academic_year_options,
+			"can_edit": can_edit,
 		},
 	)

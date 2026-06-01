@@ -160,28 +160,23 @@
         }
 
         pillEl.addEventListener('click', function (event) {
-          // Click again to clear only if it was already selected beforehand.
-          if (inputEl && wasCheckedBeforeClick) {
-            if (event && event.preventDefault) event.preventDefault();
-            if (event && event.stopPropagation) event.stopPropagation();
+          // Take full control of the click so the browser doesn't re-toggle
+          // the <details> element via native label→input dispatching.
+          if (event && event.preventDefault) event.preventDefault();
+          if (event && event.stopPropagation) event.stopPropagation();
 
+          if (!inputEl) return;
+
+          if (wasCheckedBeforeClick) {
+            // Click again to deselect.
             inputEl.checked = false;
-            triggerChange(inputEl);
-
-            deferMicrotask(function () {
-              updatePickerSummary(detailsEl);
-              closeDetails(detailsEl);
-            });
-            wasCheckedBeforeClick = false;
-            return;
+          } else {
+            inputEl.checked = true;
           }
+          triggerChange(inputEl);
 
-          deferMicrotask(function () {
-            updatePickerSummary(detailsEl);
-            var nowChecked = detailsEl.querySelector('input[type="radio"]:checked');
-            if (nowChecked) closeDetails(detailsEl);
-          });
-
+          updatePickerSummary(detailsEl);
+          closeDetails(detailsEl);
           wasCheckedBeforeClick = false;
         });
       })(pills[j]);

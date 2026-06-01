@@ -126,7 +126,7 @@
         <h2 class="indepth-step-title">{{ step_title }}</h2>
 
         {% if is_safeguarding %}
-          <p class="indepth-step-hint">Mark each statement as Met or Not met.</p>
+          <p class="indepth-step-hint">Mark each statement as Met or Not Met.</p>
         {% else %}
           {# RAG legend #}
           <div class="indepth-rag-legend">
@@ -146,7 +146,7 @@
               <th style="width: 7%">#</th>
               <th style="width: {% if is_safeguarding %}63{% else %}55{% endif %}%">Statement</th>
               <th style="width: {% if is_safeguarding %}30{% else %}38{% endif %}%">
-                {% if is_safeguarding %}Met / Not met{% else %}Rating{% endif %}
+                {% if is_safeguarding %}Met / Not Met{% else %}Rating{% endif %}
               </th>
             </tr>
           </thead>
@@ -236,7 +236,7 @@
                     {% if row.applies %}
                       <span class="indepth-met">Met</span>
                     {% elif row.applies == False %}
-                      <span class="indepth-notmet">Not met</span>
+                      <span class="indepth-notmet">Not Met</span>
                     {% else %}
                       &mdash;
                     {% endif %}
@@ -304,7 +304,7 @@
 
 {% block scripts %}
   {% load static %}
-  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260527-1"></script>
+  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260528-1"></script>
   {% if can_edit %}
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
   {% endif %}

@@ -20,7 +20,7 @@ RATING_CHOICES_DEFAULT: list[tuple[int, str]] = [
 
 RATING_CHOICES_SAFEGUARDING: list[tuple[int, str]] = [
     (1, "Met"),
-    (5, "Not met"),
+    (5, "Not Met"),
 ]
 
 
@@ -85,7 +85,7 @@ class InDepthResponseForm(forms.Form):
         required=False,
         choices=[
             ("1", "Met"),
-            ("0", "Not met"),
+            ("0", "Not Met"),
         ],
         widget=forms.RadioSelect,
     )
@@ -130,7 +130,7 @@ class InDepthSecondaryForm(forms.Form):
         required=False,
         choices=[
             ("1", "Met"),
-            ("0", "Not met"),
+            ("0", "Not Met"),
         ],
         widget=forms.RadioSelect,
     )

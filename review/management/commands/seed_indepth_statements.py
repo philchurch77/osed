@@ -10,23 +10,44 @@ from openpyxl import load_workbook
 from review.models import InDepthArea, InDepthStatement
 
 
-# Maps human-readable values in the Excel to InDepthStatement.StandardType keys
-_STANDARD_TYPE_MAP = {
-    "expected standard": InDepthStatement.StandardType.EXPECTED,
-    "expected": InDepthStatement.StandardType.EXPECTED,
-    "urgent improvement": InDepthStatement.StandardType.URGENT_IMPROVEMENT,
-    "urgent": InDepthStatement.StandardType.URGENT_IMPROVEMENT,
-    "ui": InDepthStatement.StandardType.URGENT_IMPROVEMENT,
-    "needs attention": InDepthStatement.StandardType.NEEDS_ATTENTION,
-    "na": InDepthStatement.StandardType.NEEDS_ATTENTION,
-    "strong standard": InDepthStatement.StandardType.STRONG_STANDARD,
-    "strong": InDepthStatement.StandardType.STRONG_STANDARD,
-    "exceptional": InDepthStatement.StandardType.EXCEPTIONAL,
-}
+# Keywords found in column headers → StandardType
+# Checked in order; first match wins.
+_HEADER_KEYWORD_MAP = [
+    ("urgent improvement", InDepthStatement.StandardType.URGENT_IMPROVEMENT),
+    ("urgent", InDepthStatement.StandardType.URGENT_IMPROVEMENT),
+    ("needs attention", InDepthStatement.StandardType.NEEDS_ATTENTION),
+    ("below expected", InDepthStatement.StandardType.NEEDS_ATTENTION),
+    ("exceptional", InDepthStatement.StandardType.EXCEPTIONAL),
+    ("strong standard", InDepthStatement.StandardType.STRONG_STANDARD),
+    ("strong", InDepthStatement.StandardType.STRONG_STANDARD),
+    # "Statement Text" column is the expected standard
+    ("statement text", InDepthStatement.StandardType.EXPECTED),
+    ("expected standard", InDepthStatement.StandardType.EXPECTED),
+    ("expected", InDepthStatement.StandardType.EXPECTED),
+]
+
+# Cell values that mean "no statement for this level"
+_SKIP_VALUES = {"not applicable", "n/a", "na", "-", ""}
+
+
+def _header_to_standard_type(header: str):
+    """Return a StandardType if the column header represents a statement level, else None."""
+    lower = header.lower()
+    for keyword, stype in _HEADER_KEYWORD_MAP:
+        if keyword in lower:
+            return stype
+    return None
+
+
+def _is_skippable(value) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    return text in _SKIP_VALUES or text.startswith("not applicable")
 
 
 class Command(BaseCommand):
-	help = "Import / update in-depth review statements from the Ofsted expected standard Excel file."
+	help = "Import / update in-depth review statements from the Ofsted Excel file (wide format)."
 
 	def add_arguments(self, parser):
 		parser.add_argument(
@@ -38,8 +59,8 @@ class Command(BaseCommand):
 		parser.add_argument(
 			"--sheet",
 			dest="sheet",
-			default="Review Statements",
-			help='Worksheet name (default: "Review Statements")',
+			default=None,
+			help="Worksheet name (default: first sheet containing the header row)",
 		)
 
 	def handle(self, *args, **options):
@@ -48,73 +69,99 @@ class Command(BaseCommand):
 			raise CommandError(f"File not found: {path}")
 
 		wb = load_workbook(path, read_only=True)
-		sheet_name = options["sheet"]
-		ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
 
-		# Find the header row.
-		# Supported column layouts:
-		#   A: Evaluation Area | B: Statement Number | C: Statement Text
-		#   Optional D: Standard Type  (Expected Standard / Needs Attention / Strong Standard)
-		header_row = None
-		has_standard_type_col = False
+		# Pick the sheet
+		sheet_name = options["sheet"]
+		if sheet_name:
+			if sheet_name not in wb.sheetnames:
+				raise CommandError(f"Sheet {sheet_name!r} not found. Available: {wb.sheetnames}")
+			ws = wb[sheet_name]
+		else:
+			ws = wb[wb.sheetnames[0]]
+
 		max_row = ws.max_row or 10000
-		for r in range(1, min(50, max_row) + 1):
-			c1 = (ws.cell(r, 1).value or "").strip() if isinstance(ws.cell(r, 1).value, str) else ws.cell(r, 1).value
-			c2 = (ws.cell(r, 2).value or "").strip() if isinstance(ws.cell(r, 2).value, str) else ws.cell(r, 2).value
-			c3 = (ws.cell(r, 3).value or "").strip() if isinstance(ws.cell(r, 3).value, str) else ws.cell(r, 3).value
-			c4 = (ws.cell(r, 4).value or "").strip() if isinstance(ws.cell(r, 4).value, str) else ""
-			if c1 == "Evaluation Area" and c2 == "Statement Number" and c3 == "Statement Text":
+		max_col = ws.max_column or 20
+
+		# ── Find the header row ──────────────────────────────────────────────
+		# Look for a row where col A = "Evaluation Area" and col B = "Statement Number"
+		header_row = None
+		for r in range(1, min(20, max_row) + 1):
+			a = ws.cell(r, 1).value
+			b = ws.cell(r, 2).value
+			if (
+				isinstance(a, str) and "evaluation area" in a.lower()
+				and isinstance(b, str) and "statement" in b.lower()
+			):
 				header_row = r
-				has_standard_type_col = (c4.lower() == "standard type")
 				break
 
 		if header_row is None:
 			raise CommandError(
-				"Could not find header row with 'Evaluation Area', 'Statement Number', 'Statement Text'."
+				"Could not find header row containing 'Evaluation Area' and 'Statement Number'."
 			)
 
+		# ── Map columns to standard types ────────────────────────────────────
+		# col 1 = area, col 2 = statement number; remaining cols checked by header text.
+		type_columns: list[tuple[int, InDepthStatement.StandardType]] = []
+		for c in range(3, max_col + 1):
+			header = ws.cell(header_row, c).value
+			if not isinstance(header, str):
+				continue
+			stype = _header_to_standard_type(header.strip())
+			if stype is not None:
+				type_columns.append((c, stype))
+
+		if not type_columns:
+			raise CommandError(
+				"No statement-type columns found in the header row. "
+				"Expected headers containing keywords like 'Statement Text', "
+				"'needs attention', 'strong standard', 'exceptional', 'urgent improvement'."
+			)
+
+		self.stdout.write(f"Header row: {header_row}")
+		self.stdout.write("Detected statement columns:")
+		for col_idx, stype in type_columns:
+			header_text = ws.cell(header_row, col_idx).value
+			self.stdout.write(f"  Col {col_idx} ({header_text!r}) → {stype}")
+
+		# ── Collect all statements ───────────────────────────────────────────
 		area_order: dict[str, int] = {}
-		statements: list[tuple[str, int, str, str]] = []  # (area_name, num, text, standard_type)
+		# (area_name, statement_number, text, standard_type)
+		statements: list[tuple[str, int, str, InDepthStatement.StandardType]] = []
 
 		for r in range(header_row + 1, max_row + 1):
-			area = ws.cell(r, 1).value
-			num = ws.cell(r, 2).value
-			text = ws.cell(r, 3).value
-			standard_type_raw = ws.cell(r, 4).value if has_standard_type_col else None
+			area_val = ws.cell(r, 1).value
+			num_val = ws.cell(r, 2).value
 
-			if area is None and num is None and text is None:
+			# Skip fully blank rows
+			if area_val is None and num_val is None:
 				continue
-			if not area or not text:
+			if not area_val:
 				continue
 
-			area_name = str(area).strip()
+			area_name = str(area_val).strip()
 			if not area_name:
 				continue
 
 			try:
-				statement_number = int(num)
+				statement_number = int(num_val)
 			except (TypeError, ValueError):
 				continue
-
-			statement_text = str(text).strip()
-			if not statement_text:
-				continue
-
-			if has_standard_type_col and standard_type_raw:
-				raw_key = str(standard_type_raw).strip().lower()
-				standard_type = _STANDARD_TYPE_MAP.get(raw_key, InDepthStatement.StandardType.EXPECTED)
-			else:
-				standard_type = InDepthStatement.StandardType.EXPECTED
 
 			if area_name not in area_order:
 				area_order[area_name] = len(area_order) + 1
 
-			statements.append((area_name, statement_number, statement_text, standard_type))
+			# One InDepthStatement per type column that has real content
+			for col_idx, stype in type_columns:
+				cell_val = ws.cell(r, col_idx).value
+				if _is_skippable(cell_val):
+					continue
+				text = str(cell_val).strip()
+				if text:
+					statements.append((area_name, statement_number, text, stype))
 
-		created_areas = 0
-		updated_areas = 0
-		created_statements = 0
-		updated_statements = 0
+		# ── Write to database ────────────────────────────────────────────────
+		created_areas = updated_areas = created_statements = updated_statements = 0
 
 		with transaction.atomic():
 			areas_by_name: dict[str, InDepthArea] = {}
@@ -144,8 +191,7 @@ class Command(BaseCommand):
 
 		self.stdout.write(
 			self.style.SUCCESS(
-				"Imported in-depth statements: "
-				f"areas created={created_areas}, areas updated={updated_areas}, "
-				f"statements created={created_statements}, statements updated={updated_statements}."
+				f"Done. Areas: {created_areas} created, {updated_areas} updated. "
+				f"Statements: {created_statements} created, {updated_statements} updated."
 			)
 		)
