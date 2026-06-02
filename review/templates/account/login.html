@@ -21,7 +21,7 @@
     <p style="color: var(--colour-muted); font-size: 14px; margin: 0 0 16px;">Use your organisation Microsoft account to sign in.</p>
 
     {% with next_url=redirect_field_value|default:"/" %}
-      <a class="btn-primary" href="{% provider_login_url 'microsoft' process='login' %}?{{ redirect_field_name }}={{ next_url|urlencode }}">
+      <a class="btn-primary" href="{% provider_login_url 'microsoft' process='login' next=next_url %}">
         Sign in with Microsoft
       </a>
     {% endwith %}

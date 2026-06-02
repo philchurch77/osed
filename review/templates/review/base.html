@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% load static %}
-    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260525-1" />
+    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260602-1" />
     {% block head %}{% endblock %}
   </head>
   <body>
@@ -28,7 +28,8 @@
           <a href="/review/evaluation/" {% if '/review/evaluation/' in request.path %}aria-current="page"{% endif %}>Evaluation</a>
           <a href="/review/in-depth/" {% if '/review/in-depth/' in request.path %}aria-current="page"{% endif %}>In-depth review</a>
           <a href="/review/reflection/" {% if '/review/reflection/' in request.path %}aria-current="page"{% endif %}>Reflection</a>
-          <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>Trust Overview</a>
+          <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>School Progress</a>
+          <a href="/review/board/" {% if '/review/board/' in request.path %}aria-current="page"{% endif %}>Trust Dashboard</a>
         </nav>
 
         <div class="sidebar-ratings">

@@ -21,7 +21,7 @@
 
   {% with next_url=redirect_field_value|default:"/" %}
     <p>
-      <a class="button" href="{% provider_login_url 'microsoft' process='login' %}?{{ redirect_field_name }}={{ next_url|urlencode }}">
+      <a class="button" href="{% provider_login_url 'microsoft' process='login' next=next_url %}">
         Sign in with Microsoft
       </a>
     </p>
@@ -30,7 +30,9 @@
   <hr />
 
   <p><strong>Admin / Superuser sign-in:</strong></p>
-  <p>
-    <a class="button" href="/admin/login/?next=/">Sign in with username + password</a>
-  </p>
+  {% with next_url=redirect_field_value|default:"/" %}
+    <p>
+      <a class="button" href="/admin/login/?next={{ next_url|urlencode }}">Sign in with username + password</a>
+    </p>
+  {% endwith %}
 {% endblock %}

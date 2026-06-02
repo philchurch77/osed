@@ -12,6 +12,7 @@ urlpatterns = [
     path("dashboard/", views.dashboard, name="dashboard"),
     path("respond/", views.respond, name="respond"),
     path("overview/", views.overview, name="overview"),
+    path("board/", views.board_view, name="board"),
     path("evaluation/", views.evaluation, name="evaluation"),
     path("in-depth/", views.indepth_review, name="indepth_review"),
     path("reflection/", views.reflection, name="reflection"),

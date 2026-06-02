@@ -21,7 +21,7 @@ from .models import (
 	InDepthArea,
 	InDepthResponse,
 	InDepthReview,
-	InDepthStatement,
+	InDepthSubSection,
 	ReviewPeriod,
 	School,
 	SchoolProfile,
@@ -144,37 +144,49 @@ class InDepthAreaAdmin(admin.ModelAdmin):
 	search_fields = ("name",)
 	fieldsets = (
 		(None, {
-			"fields": ("name", "order", "is_safeguarding"),
-		}),
-		("Standard-level context text", {
-			"description": "Optional text shown to reviewers at the top of the Justification step, based on the determined standard level.",
-			"fields": ("needs_attention_text", "strong_standard_text"),
+			"fields": ("name", "order", "is_safeguarding", "purpose"),
 		}),
 	)
 
 
-@admin.register(InDepthStatement)
-class InDepthStatementAdmin(admin.ModelAdmin):
-	list_display = ("area", "standard_type", "statement_number")
-	list_filter = ("area", "standard_type")
-	ordering = ("area__order", "area__name", "standard_type", "statement_number")
-	search_fields = ("text",)
+@admin.register(InDepthSubSection)
+class InDepthSubSectionAdmin(admin.ModelAdmin):
+	list_display = ("area", "order", "name")
+	list_filter = ("area",)
+	ordering = ("area__order", "area__name", "order")
+	search_fields = ("name", "overview", "evidence_criteria")
 	list_select_related = ("area",)
+	fieldsets = (
+		(None, {
+			"fields": ("area", "name", "order", "overview", "evidence_criteria"),
+		}),
+		("Grade descriptors — standard areas", {
+			"classes": ("collapse",),
+			"fields": (
+				"urgent_improvement_descriptor",
+				"needs_attention_descriptor",
+				"expected_descriptor",
+				"strong_descriptor",
+				"exceptional_descriptor",
+			),
+		}),
+		("Grade descriptors — safeguarding", {
+			"classes": ("collapse",),
+			"fields": ("not_met_descriptor", "met_descriptor"),
+		}),
+	)
 
 
 @admin.register(InDepthReview)
 class InDepthReviewAdmin(admin.ModelAdmin):
-	list_display = ("school", "year", "area", "step", "has_reflection", "updated_at", "updated_by")
+	list_display = ("school", "year", "area", "step", "overall_grade", "has_reflection", "updated_at", "updated_by")
 	list_filter = ("year", "area", "school", "step")
 	ordering = ("-year", "school__name", "area__order", "area__name")
 	list_select_related = ("school", "area", "updated_by")
 	readonly_fields = ("created_at", "updated_at", "updated_by")
 	fieldsets = (
 		(None, {
-			"fields": ("school", "year", "area", "step", "secondary_level", "secondary_applies"),
-		}),
-		("Justification", {
-			"fields": ("justification",),
+			"fields": ("school", "year", "area", "step", "overall_grade"),
 		}),
 		("Reflection on QA & Feedback", {
 			"fields": ("qa_reflection",),
@@ -199,10 +211,10 @@ class InDepthReviewAdmin(admin.ModelAdmin):
 
 @admin.register(InDepthResponse)
 class InDepthResponseAdmin(admin.ModelAdmin):
-	list_display = ("review", "statement", "applies", "rag", "updated_at")
-	list_filter = ("applies", "rag", "statement__area", "statement__standard_type")
-	search_fields = ("justification", "statement__text")
-	list_select_related = ("review", "statement", "statement__area")
+	list_display = ("review", "subsection", "grade", "updated_at")
+	list_filter = ("grade", "subsection__area")
+	search_fields = ("evidence_text", "next_steps", "subsection__name")
+	list_select_related = ("review", "subsection", "subsection__area")
 
 
 class SchoolProfileInline(admin.StackedInline):

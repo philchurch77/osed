@@ -118,8 +118,7 @@ class InDepthArea(models.Model):
     name = models.CharField(max_length=200, unique=True)
     order = models.PositiveIntegerField(default=0)
     is_safeguarding = models.BooleanField(default=False)
-    needs_attention_text = models.TextField(blank=True, default="")
-    strong_standard_text = models.TextField(blank=True, default="")
+    purpose = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ("order", "name")
@@ -128,54 +127,46 @@ class InDepthArea(models.Model):
         return self.name
 
 
-class InDepthStatement(models.Model):
-    class StandardType(models.TextChoices):
-        EXPECTED = "expected", "Expected Standard"
-        URGENT_IMPROVEMENT = "urgent_improvement", "Urgent Improvement"
-        NEEDS_ATTENTION = "needs_attention", "Needs Attention"
-        STRONG_STANDARD = "strong_standard", "Strong Standard"
-        EXCEPTIONAL = "exceptional", "Exceptional"
-
-    area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
-    standard_type = models.CharField(
-        max_length=20,
-        choices=StandardType.choices,
-        default=StandardType.EXPECTED,
-    )
-    statement_number = models.PositiveIntegerField()
-    text = models.TextField()
+class InDepthSubSection(models.Model):
+    area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE, related_name="subsections")
+    name = models.CharField(max_length=200)
+    overview = models.TextField(blank=True, default="")
+    evidence_criteria = models.TextField(blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    # Grade descriptors — standard 5-tier areas
+    urgent_improvement_descriptor = models.TextField(blank=True, default="")
+    needs_attention_descriptor = models.TextField(blank=True, default="")
+    expected_descriptor = models.TextField(blank=True, default="")
+    strong_descriptor = models.TextField(blank=True, default="")
+    exceptional_descriptor = models.TextField(blank=True, default="")
+    # Grade descriptors — safeguarding binary scale
+    not_met_descriptor = models.TextField(blank=True, default="")
+    met_descriptor = models.TextField(blank=True, default="")
 
     class Meta:
+        ordering = ("area__order", "area__name", "order")
         constraints = [
             models.UniqueConstraint(
-                fields=["area", "standard_type", "statement_number"],
-                name="unique_indepth_statement_per_area_type_number",
+                fields=["area", "name"],
+                name="unique_indepth_subsection_per_area",
             )
         ]
-        ordering = ("area__order", "area__name", "standard_type", "statement_number")
 
     def __str__(self):
-        return f"{self.area} #{self.statement_number}"
+        return f"{self.area} — {self.name}"
 
 
 class InDepthReview(models.Model):
     class Step(models.TextChoices):
-        EXPECTED = "expected", "Expected Standard"
-        URGENT_IMPROVEMENT = "urgent_improvement", "Urgent Improvement"
-        STRONG_STANDARD = "strong_standard", "Strong Standard"
-        EXCEPTIONAL = "exceptional", "Exceptional"
-        JUSTIFICATION = "justification", "Justification"
-        # Legacy value kept for backward compat with existing data
-        SECONDARY = "secondary", "Secondary Standard"
+        REVIEW = "review", "Review"
+        REFLECTION = "reflection", "Reflection"
 
     # Stored as academic year start, displayed as YYYY/YYYY+1
     year = models.PositiveSmallIntegerField(default=current_academic_year_start)
     school = models.ForeignKey(School, on_delete=models.CASCADE)
     area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE)
-    step = models.CharField(max_length=20, choices=Step.choices, default=Step.EXPECTED)
-    secondary_level = models.CharField(max_length=20, blank=True, default="")
-    secondary_applies = models.BooleanField(null=True, blank=True)
-    justification = models.TextField(blank=True, default="")
+    step = models.CharField(max_length=20, choices=Step.choices, default=Step.REVIEW)
+    overall_grade = models.CharField(max_length=25, blank=True, default="")
     qa_reflection = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -201,34 +192,37 @@ class InDepthReview(models.Model):
 
 
 class InDepthResponse(models.Model):
-    class RAG(models.TextChoices):
-        RED = "red", "Red"
-        AMBER = "amber", "Amber"
-        GREEN = "green", "Green"
+    class Grade(models.TextChoices):
+        # Safeguarding binary scale
+        NOT_MET = "not_met", "Not Met"
+        MET = "met", "Met"
+        # Standard 5-tier scale
+        URGENT_IMPROVEMENT = "urgent_improvement", "Urgent Improvement"
+        NEEDS_ATTENTION = "needs_attention", "Needs Attention"
+        EXPECTED_STANDARD = "expected_standard", "Expected Standard"
+        STRONG_STANDARD = "strong_standard", "Strong Standard"
+        EXCEPTIONAL = "exceptional", "Exceptional"
 
     review = models.ForeignKey(InDepthReview, on_delete=models.CASCADE)
-    statement = models.ForeignKey(InDepthStatement, on_delete=models.CASCADE)
-    # applies: used for safeguarding areas (Met/Not met)
-    applies = models.BooleanField(null=True, blank=True)
-    # rag: used for non-safeguarding areas (Red/Amber/Green)
-    rag = models.CharField(
-        max_length=10,
-        choices=RAG.choices,
+    subsection = models.ForeignKey(
+        InDepthSubSection,
+        on_delete=models.CASCADE,
+        null=True,
         blank=True,
-        default="",
     )
-    justification = models.TextField(blank=True, default="")
+    evidence_text = models.TextField(blank=True, default="")
+    grade = models.CharField(max_length=25, choices=Grade.choices, blank=True, default="")
     next_steps = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["review", "statement"],
-                name="unique_indepth_response_per_review_statement",
+                fields=["review", "subsection"],
+                name="unique_indepth_response_per_review_subsection",
             )
         ]
-        ordering = ("statement__area__order", "statement__area__name", "statement__statement_number")
+        ordering = ("subsection__area__order", "subsection__order")
 
     def __str__(self):
-        return f"{self.review} - {self.statement}"
+        return f"{self.review} — {self.subsection}"

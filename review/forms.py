@@ -24,6 +24,8 @@ RATING_CHOICES_SAFEGUARDING: list[tuple[int, str]] = [
 ]
 
 
+
+
 def _word_count(value: str) -> int:
     if not value:
         return 0
@@ -77,104 +79,66 @@ class DashboardRatingForm(forms.Form):
     )
 
 
-class InDepthResponseForm(forms.Form):
-    """Safeguarding areas only — Met / Not met, no free text."""
+SAFEGUARDING_GRADE_CHOICES = [
+    ("", ""),
+    ("not_met", "Not Met"),
+    ("met", "Met"),
+]
 
-    statement_id = forms.IntegerField(widget=forms.HiddenInput)
-    applies = forms.ChoiceField(
+STANDARD_GRADE_CHOICES = [
+    ("", ""),
+    ("urgent_improvement", "Urgent Improvement"),
+    ("needs_attention", "Needs Attention"),
+    ("expected_standard", "Expected Standard"),
+    ("strong_standard", "Strong Standard"),
+    ("exceptional", "Exceptional"),
+]
+
+MAX_EVIDENCE_WORDS = 300
+MAX_NEXT_STEPS_WORDS = 150
+
+
+class InDepthSubSectionForm(forms.Form):
+    """One sub-section response: evidence text, grade, and next steps."""
+
+    subsection_id = forms.IntegerField(widget=forms.HiddenInput)
+    evidence_text = forms.CharField(
         required=False,
-        choices=[
-            ("1", "Met"),
-            ("0", "Not Met"),
-        ],
-        widget=forms.RadioSelect,
+        widget=forms.Textarea(attrs={"rows": 4, "data-max-words": str(MAX_EVIDENCE_WORDS)}),
     )
-
-    def clean_applies(self):
-        raw = self.cleaned_data.get("applies")
-        if raw in (None, "", " "):
-            return None
-        if str(raw) == "1":
-            return True
-        if str(raw) == "0":
-            return False
-        return None
-
-
-class InDepthRAGForm(forms.Form):
-    """Non-safeguarding areas — Red / Amber / Green rating per statement."""
-
-    statement_id = forms.IntegerField(widget=forms.HiddenInput)
-    rag = forms.ChoiceField(
+    grade = forms.ChoiceField(
         required=False,
-        choices=[
-            ("", ""),
-            ("red", "Red"),
-            ("amber", "Amber"),
-            ("green", "Green"),
-        ],
+        choices=STANDARD_GRADE_CHOICES,
         widget=forms.RadioSelect,
-    )
-
-    def clean_rag(self):
-        raw = self.cleaned_data.get("rag")
-        if raw not in ("red", "amber", "green"):
-            return ""
-        return raw
-
-
-class InDepthSecondaryForm(forms.Form):
-    """Step 2 — area-level Met / Not met for Needs Attention or Strong Standard."""
-
-    applies = forms.ChoiceField(
-        required=False,
-        choices=[
-            ("1", "Met"),
-            ("0", "Not Met"),
-        ],
-        widget=forms.RadioSelect,
-    )
-
-    def clean_applies(self):
-        raw = self.cleaned_data.get("applies")
-        if raw in (None, "", " "):
-            return None
-        if str(raw) == "1":
-            return True
-        if str(raw) == "0":
-            return False
-        return None
-
-
-MAX_JUSTIFICATION_WORDS = 150
-
-
-class InDepthJustificationForm(forms.Form):
-    """Final step — Justification and next steps per statement (150 words each)."""
-
-    statement_id = forms.IntegerField(widget=forms.HiddenInput)
-    justification = forms.CharField(
-        required=False,
-        widget=forms.Textarea(attrs={"rows": 3, "data-max-words": "150"}),
     )
     next_steps = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 3, "data-max-words": "150"}),
+        widget=forms.Textarea(attrs={"rows": 3, "data-max-words": str(MAX_NEXT_STEPS_WORDS)}),
     )
 
-    def clean_justification(self) -> str:
-        value = self.cleaned_data.get("justification") or ""
-        _validate_max_words(value, max_words=MAX_JUSTIFICATION_WORDS)
+    def __init__(self, *args, is_safeguarding: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        if is_safeguarding:
+            self.fields["grade"].choices = SAFEGUARDING_GRADE_CHOICES
+
+    def clean_evidence_text(self) -> str:
+        value = self.cleaned_data.get("evidence_text") or ""
+        _validate_max_words(value, max_words=MAX_EVIDENCE_WORDS)
         return value
 
     def clean_next_steps(self) -> str:
         value = self.cleaned_data.get("next_steps") or ""
-        _validate_max_words(value, max_words=MAX_JUSTIFICATION_WORDS)
+        _validate_max_words(value, max_words=MAX_NEXT_STEPS_WORDS)
         return value
+
+    def clean_grade(self) -> str:
+        value = self.cleaned_data.get("grade") or ""
+        valid = {c[0] for c in SAFEGUARDING_GRADE_CHOICES + STANDARD_GRADE_CHOICES if c[0]}
+        return value if value in valid else ""
 
 
 class ReflectionForm(forms.Form):
-    """Standalone reflection — Principal reflects on what changed as a result of QA and feedback."""
+    """Principal reflects on what changed as a result of QA and feedback."""
 
     qa_reflection = forms.CharField(
         required=False,

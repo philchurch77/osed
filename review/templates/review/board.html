@@ -1,0 +1,98 @@
+{% extends "review/base.html" %}
+
+{% block title %}Trust Dashboard{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <div class="board-header-titles">
+      <h1 class="page-title">Trust Dashboard</h1>
+      <p class="board-period-subtitle">{{ year }}/{{ year|add:1 }} &middot; Round {{ selected_round }}</p>
+    </div>
+
+    <form method="get" class="school-select">
+      {% if phase_options|length > 2 %}
+        <div class="form-field">
+          <label for="phase">Phase</label>
+          <select id="phase" name="phase">
+            {% for value, label in phase_options %}
+              <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
+
+      <div class="form-field">
+        <label for="year">Academic year</label>
+        <select id="year" name="year">
+          {% for opt in academic_year_options %}
+            <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-field">
+        <label for="round">Round</label>
+        <select id="round" name="round">
+          {% for opt in round_options %}
+            <option value="{{ opt.value }}" {% if opt.value == selected_round %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit">View</button>
+      </div>
+    </form>
+  </header>
+
+  <div class="board-legend">
+    <span class="board-legend-item board-legend-item--up">▲ Improvement</span>
+    <span class="board-legend-item board-legend-item--down">▼ Decline</span>
+    <span class="board-legend-item board-legend-item--same">— No change</span>
+    <span class="board-legend-item board-legend-item--note">Arrows show movement vs previous round</span>
+  </div>
+
+  <div class="board-table-wrap">
+    <table class="board-table">
+      <thead>
+        <tr>
+          <th class="board-school-col" scope="col"><span class="board-school-col-label">School</span></th>
+          {% for category in categories %}
+            <th class="board-category-col" scope="col"><span class="board-col-label">{{ category.name }}</span></th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <th class="board-school-name" scope="row">{{ row.school.name }}</th>
+            {% for cell in row.cells %}
+              <td class="board-cell {% if cell.band %}score--{{ cell.band }}{% else %}board-cell--empty{% endif %}">
+                <div class="board-cell-content">
+                  {% if cell.band %}
+                    {% if cell.trend == "up" %}
+                      <span class="board-trend board-trend--up" title="Improvement from previous round">▲</span>
+                    {% elif cell.trend == "down" %}
+                      <span class="board-trend board-trend--down" title="Decline from previous round">▼</span>
+                    {% elif cell.trend == "same" %}
+                      <span class="board-trend board-trend--same" title="No change from previous round">—</span>
+                    {% endif %}
+                    <span class="board-cell-label">{{ cell.label }}</span>
+                  {% endif %}
+                </div>
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+        {% if not has_any_data %}
+          <tr>
+            <td colspan="{{ categories|length|add:1 }}" class="overview-empty">
+              No evaluation data has been entered for {{ year }}/{{ year|add:1 }} Round {{ selected_round }}.
+              Go to <a href="/review/dashboard/">School Dashboard</a> to add ratings.
+            </td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
