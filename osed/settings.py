@@ -212,10 +212,6 @@ MICROSOFT_CLIENT_SECRET = os.getenv('MICROSOFT_CLIENT_SECRET', '')
 # Use "organizations" for Entra org accounts, or a tenant ID to lock to one tenant.
 MICROSOFT_TENANT = os.getenv('MICROSOFT_TENANT', 'organizations')
 
-if not DEBUG and (not MICROSOFT_CLIENT_ID or not MICROSOFT_CLIENT_SECRET):
-    raise ImproperlyConfigured(
-        "MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET must be set when DEBUG=0."
-    )
 
 SOCIALACCOUNT_PROVIDERS = {
     'microsoft': {
