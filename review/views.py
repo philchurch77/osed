@@ -148,7 +148,7 @@ def overview(request: HttpRequest) -> HttpResponse:
 			school = schools[0]
 		if school is None and not all_schools_selected:
 			messages.error(request, "No schools have been set up yet.")
-			return redirect("review:home")
+			return redirect("home")
 	else:
 		try:
 			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
@@ -291,7 +291,7 @@ def board_view(request: HttpRequest) -> HttpResponse:
 
 	if not schools:
 		messages.error(request, "No schools are available.")
-		return redirect("review:home")
+		return redirect("home")
 
 	# --- Period resolution ---
 	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
@@ -430,7 +430,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 			school = schools[0]
 		if school is None:
 			messages.error(request, "No schools have been set up yet.")
-			return redirect("review:home")
+			return redirect("home")
 	else:
 		try:
 			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
@@ -615,7 +615,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			school = schools[0]
 		if school is None:
 			messages.error(request, "No schools have been set up yet.")
-			return redirect("review:home")
+			return redirect("home")
 	else:
 		try:
 			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
@@ -843,7 +843,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			school = schools[0]
 		if school is None:
 			messages.error(request, "No schools have been set up yet.")
-			return redirect("review:home")
+			return redirect("home")
 	else:
 		try:
 			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
@@ -1085,7 +1085,7 @@ def reflection(request: HttpRequest) -> HttpResponse:
 			school = schools[0]
 		if school is None:
 			messages.error(request, "No schools have been set up yet.")
-			return redirect("review:home")
+			return redirect("home")
 	else:
 		try:
 			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
