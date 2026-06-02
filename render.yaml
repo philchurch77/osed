@@ -7,6 +7,7 @@ services:
       pip install -r requirements.txt
       python manage.py collectstatic --noinput
       python manage.py copy_demo_media_to_static
+      python manage.py ensure_schema
       python manage.py migrate
       python manage.py load_indepth_blueprint
       python manage.py seed_schools
