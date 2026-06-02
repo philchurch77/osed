@@ -47,6 +47,31 @@ class Command(BaseCommand):
                 if exists:
                     self.stdout.write(f"  {table}.{column}: already present")
                 else:
+                    # Check the table itself exists before trying ALTER TABLE.
+                    # On a fresh database migrate hasn't run yet, so silently
+                    # skip — migrate will create everything from scratch.
+                    if vendor == "postgresql":
+                        cursor.execute(
+                            "SELECT 1 FROM information_schema.tables "
+                            "WHERE table_name = %s",
+                            [table],
+                        )
+                        table_exists = cursor.fetchone() is not None
+                    else:
+                        cursor.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name=%s",
+                            [table],
+                        )
+                        table_exists = cursor.fetchone() is not None
+
+                    if not table_exists:
+                        self.stdout.write(
+                            f"  {table}.{column}: table absent, skipping "
+                            f"(migrate will create it)"
+                        )
+                        continue
+
                     cursor.execute(
                         f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
                     )
