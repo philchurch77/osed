@@ -1,0 +1,8 @@
+<div class="form-field">
+  <label for="area">Area</label>
+  <select id="area" name="area">
+    {% for a in areas %}
+      <option value="{{ a.id }}" {% if area and a.id == area.id %}selected{% endif %}>{{ a.name }}</option>
+    {% endfor %}
+  </select>
+</div>

@@ -5,90 +5,27 @@
 {% block content %}
   <header class="page-header">
     <h1 class="page-title">School Progress</h1>
-            {% if user.is_superuser %}
-              <form method="get" class="school-select">
-                <div class="form-field">
-                  <label for="phase">Phase</label>
-                  <select id="phase" name="phase">
-                    {% for value, label in phase_options %}
-                      <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="school">School</label>
-                  <select id="school" name="school">
-                    <option value="all" {% if all_schools_selected %}selected{% endif %}>All schools</option>
-                    {% for s in schools %}
-                      <option value="{{ s.id }}" {% if not all_schools_selected and school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="year">Academic year</label>
-                  <select id="year" name="year">
-                    {% for opt in academic_year_options %}
-                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-actions">
-                  <button type="submit">Select</button>
-                </div>
-              </form>
-            {% elif schools %}
-              <form method="get" class="school-select">
-                <div class="form-field">
-                  <label for="phase">Phase</label>
-                  <select id="phase" name="phase">
-                    {% for value, label in phase_options %}
-                      <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="school">School</label>
-                  <select id="school" name="school">
-                    {% for s in schools %}
-                      <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="year">Academic year</label>
-                  <select id="year" name="year">
-                    {% for opt in academic_year_options %}
-                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-actions">
-                  <button type="submit">Select</button>
-                </div>
-              </form>
-            {% else %}
-              <p class="page-subtitle">{{ school.name }} &nbsp; {{ year }}/{{ year|add:1 }}</p>
-              <form method="get" class="school-select">
-                <div class="form-field">
-                  <label for="year">Academic year</label>
-                  <select id="year" name="year">
-                    {% for opt in academic_year_options %}
-                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-actions">
-                  <button type="submit">Select</button>
-                </div>
-              </form>
-            {% endif %}
+    {% if user.is_superuser %}
+      <form method="get" class="school-select">
+        {% include "review/includes/filter_phase_field.html" %}
+        {% include "review/includes/filter_school_field.html" with include_all_option=True %}
+        {% include "review/includes/filter_year_field.html" %}
+        {% include "review/includes/filter_actions.html" %}
+      </form>
+    {% elif schools %}
+      <form method="get" class="school-select">
+        {% include "review/includes/filter_phase_field.html" %}
+        {% include "review/includes/filter_school_field.html" %}
+        {% include "review/includes/filter_year_field.html" %}
+        {% include "review/includes/filter_actions.html" %}
+      </form>
+    {% else %}
+      <p class="page-subtitle">{{ school.name }} &nbsp; {{ year }}/{{ year|add:1 }}</p>
+      <form method="get" class="school-select">
+        {% include "review/includes/filter_year_field.html" %}
+        {% include "review/includes/filter_actions.html" %}
+      </form>
+    {% endif %}
   </header>
 
   {% if all_schools_selected %}

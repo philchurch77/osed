@@ -11,37 +11,11 @@
 
     <form method="get" class="school-select">
       {% if phase_options|length > 2 %}
-        <div class="form-field">
-          <label for="phase">Phase</label>
-          <select id="phase" name="phase">
-            {% for value, label in phase_options %}
-              <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
-            {% endfor %}
-          </select>
-        </div>
+        {% include "review/includes/filter_phase_field.html" %}
       {% endif %}
-
-      <div class="form-field">
-        <label for="year">Academic year</label>
-        <select id="year" name="year">
-          {% for opt in academic_year_options %}
-            <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div class="form-field">
-        <label for="round">Round</label>
-        <select id="round" name="round">
-          {% for opt in round_options %}
-            <option value="{{ opt.value }}" {% if opt.value == selected_round %}selected{% endif %}>{{ opt.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div class="form-actions">
-        <button type="submit">View</button>
-      </div>
+      {% include "review/includes/filter_year_field.html" %}
+      {% include "review/includes/filter_round_field.html" %}
+      {% include "review/includes/filter_actions.html" with submit_label="View" %}
     </form>
   </header>
 

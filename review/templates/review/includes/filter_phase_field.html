@@ -1,0 +1,8 @@
+<div class="form-field">
+  <label for="phase">Phase</label>
+  <select id="phase" name="phase">
+    {% for value, label in phase_options %}
+      <option value="{{ value }}" {% if value == selected_phase %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+</div>

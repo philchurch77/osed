@@ -6,65 +6,21 @@
   <header class="page-header">
     <h1 class="page-title">Evaluation</h1>
 
-            {% if user.is_superuser or schools %}
-              <form method="get" class="school-select">
-                <div class="form-field">
-                  <label for="school">School</label>
-                  <select id="school" name="school">
-                    {% for s in schools %}
-                      <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="year">Academic year</label>
-                  <select id="year" name="year">
-                    {% for opt in academic_year_options %}
-                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="round">Round</label>
-                  <select id="round" name="round">
-                    <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
-                    <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
-                    <option value="3" {% if period.round == 3 %}selected{% endif %}>Round 3</option>
-                  </select>
-                </div>
-
-                <div class="form-actions">
-                  <button type="submit">Select</button>
-                </div>
-              </form>
-            {% else %}
-              <p class="page-subtitle">{{ school.name }}</p>
-              <form method="get" class="school-select">
-                <div class="form-field">
-                  <label for="year">Academic year</label>
-                  <select id="year" name="year">
-                    {% for opt in academic_year_options %}
-                      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-
-                <div class="form-field">
-                  <label for="round">Round</label>
-                  <select id="round" name="round">
-                    <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
-                    <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
-                    <option value="3" {% if period.round == 3 %}selected{% endif %}>Round 3</option>
-                  </select>
-                </div>
-
-                <div class="form-actions">
-                  <button type="submit">Select</button>
-                </div>
-              </form>
-            {% endif %}
+    {% if user.is_superuser or schools %}
+      <form method="get" class="school-select">
+        {% include "review/includes/filter_school_field.html" %}
+        {% include "review/includes/filter_year_field.html" %}
+        {% include "review/includes/filter_round_field.html" %}
+        {% include "review/includes/filter_actions.html" %}
+      </form>
+    {% else %}
+      <p class="page-subtitle">{{ school.name }}</p>
+      <form method="get" class="school-select">
+        {% include "review/includes/filter_year_field.html" %}
+        {% include "review/includes/filter_round_field.html" %}
+        {% include "review/includes/filter_actions.html" %}
+      </form>
+    {% endif %}
   </header>
 
   {% if messages %}
@@ -89,10 +45,10 @@
     <table class="evaluation-table">
       <thead>
         <tr>
-          <th style="width: 18%">Area</th>
-          <th style="width: 18%">Judgement</th>
-          <th style="width: 32%">Judgement evidence</th>
-          <th style="width: 32%">To progress</th>
+          <th>Area</th>
+          <th>Judgement</th>
+          <th>Judgement evidence</th>
+          <th>To progress</th>
         </tr>
       </thead>
       <tbody>
@@ -162,7 +118,7 @@
 
 {% block scripts %}
   {% load static %}
-  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260531-1"></script>
+  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260611-1"></script>
   {% if can_edit %}
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
   {% endif %}

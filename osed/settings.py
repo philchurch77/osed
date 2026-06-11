@@ -39,6 +39,12 @@ SECRET_KEY = os.getenv(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = _env_bool("DEBUG", default=True)
 
+if not DEBUG and not os.getenv("SECRET_KEY"):
+    raise ImproperlyConfigured(
+        "SECRET_KEY is required when DEBUG=0 (production). "
+        "Set the SECRET_KEY environment variable."
+    )
+
 _raw_allowed_hosts = os.getenv("ALLOWED_HOSTS", "")
 ALLOWED_HOSTS = [h.strip() for h in _raw_allowed_hosts.split(",") if h.strip()]
 if DEBUG and not ALLOWED_HOSTS:
@@ -200,7 +206,9 @@ AUTHENTICATION_BACKENDS = (
 )
 
 ACCOUNT_LOGIN_METHODS = {'email'}
-ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*']
+# password1 must be listed: allauth only shows a password box on the login
+# form when the site's signup fields include a password.
+ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*', 'password1*', 'password2*']
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 
 SOCIALACCOUNT_QUERY_EMAIL = True

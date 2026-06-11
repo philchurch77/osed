@@ -1,0 +1,8 @@
+<div class="form-field">
+  <label for="year">Academic year</label>
+  <select id="year" name="year">
+    {% for opt in academic_year_options %}
+      <option value="{{ opt.value }}" {% if opt.value == selected_year_value %}selected{% endif %}>{{ opt.label }}</option>
+    {% endfor %}
+  </select>
+</div>

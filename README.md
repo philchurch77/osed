@@ -33,6 +33,10 @@ Notes
 
 - In local dev, SQLite is used by default.
 - In Render, the app uses Postgres via `DATABASE_URL`.
+- Migrations `0023`/`0024` and the `ensure_schema` management command are intentional
+  repair shims for the Render Postgres database (migration `0020` was partially applied
+  there). They use defensive `IF NOT EXISTS` SQL and must be kept; `render.yaml` runs
+  `ensure_schema` before `migrate` during each build.
 
 User accounts / roles
 

@@ -1,0 +1,14 @@
+<div class="form-field">
+  <label for="round">Round</label>
+  <select id="round" name="round">
+    {% if round_options %}
+      {% for opt in round_options %}
+        <option value="{{ opt.value }}" {% if opt.value == selected_round %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+    {% else %}
+      <option value="1" {% if period.round == 1 %}selected{% endif %}>Round 1</option>
+      <option value="2" {% if period.round == 2 %}selected{% endif %}>Round 2</option>
+      <option value="3" {% if period.round == 3 %}selected{% endif %}>Round 3</option>
+    {% endif %}
+  </select>
+</div>

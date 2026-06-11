@@ -9,7 +9,7 @@ from .models import (
 	Evaluation,
 	InDepthArea,
 	InDepthReview,
-	InDepthStatement,
+	InDepthSubSection,
 	ReviewPeriod,
 	School,
 	SchoolProfile,
@@ -26,7 +26,7 @@ class ViewerAccessTests(TestCase):
 		self.viewer.schoolprofile.schools.add(self.school)
 
 		self.area = InDepthArea.objects.create(name="Quality of education", order=1)
-		InDepthStatement.objects.create(area=self.area, statement_number=1, text="Statement 1")
+		InDepthSubSection.objects.create(area=self.area, name="Sub-section 1", order=1)
 
 	def test_viewer_dashboard_get_does_not_create_periods(self):
 		self.client.force_login(self.viewer)

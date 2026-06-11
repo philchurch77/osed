@@ -198,40 +198,5 @@
         }
       }
     });
-
-    // In-depth review: make RAG buttons deselectable (click again to clear).
-    var ragBtns = document.querySelectorAll('.indepth-rag-btn');
-    for (var k = 0; k < ragBtns.length; k += 1) {
-      (function (labelEl) {
-        var inputEl = labelEl.querySelector('input[type="radio"]');
-        if (!inputEl) return;
-
-        var wasCheckedBeforeClick = false;
-
-        function recordWasChecked() {
-          wasCheckedBeforeClick = !!(inputEl && inputEl.checked);
-        }
-
-        labelEl.addEventListener('pointerdown', recordWasChecked);
-        labelEl.addEventListener('mousedown', recordWasChecked);
-        labelEl.addEventListener('keydown', function (event) {
-          var key = event && (event.key || event.code);
-          if (key === 'Enter' || key === ' ' || key === 'Spacebar' || key === 'Space') {
-            recordWasChecked();
-          }
-        });
-
-        labelEl.addEventListener('click', function (event) {
-          if (wasCheckedBeforeClick) {
-            if (event && event.preventDefault) event.preventDefault();
-            inputEl.checked = false;
-            triggerChange(inputEl);
-            wasCheckedBeforeClick = false;
-            return;
-          }
-          wasCheckedBeforeClick = false;
-        });
-      })(ragBtns[k]);
-    }
   });
 })();

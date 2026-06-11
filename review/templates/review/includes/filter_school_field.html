@@ -1,0 +1,15 @@
+<div class="form-field">
+  <label for="school">School</label>
+  <select id="school" name="school">
+    {% if include_all_option %}
+      <option value="all" {% if all_schools_selected %}selected{% endif %}>All schools</option>
+      {% for s in schools %}
+        <option value="{{ s.id }}" {% if not all_schools_selected and school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    {% else %}
+      {% for s in schools %}
+        <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    {% endif %}
+  </select>
+</div>

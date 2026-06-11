@@ -77,6 +77,106 @@ def _parse_academic_year_start(raw_value: str | None, default_year: int) -> int:
 	return start
 
 
+def _no_school_profile_response(request: HttpRequest) -> HttpResponse:
+	return render(
+		request,
+		"review/no_school_profile.html",
+		{"user": request.user},
+		status=403,
+	)
+
+
+def _get_allowed_schools(
+	request: HttpRequest,
+) -> tuple[SchoolProfile | None, list[School] | None, HttpResponse | None]:
+	"""Fetch the user's SchoolProfile and the schools they may access.
+
+	Returns (school_profile, allowed_schools, error_response); error_response is
+	a 403 render when the user has no SchoolProfile.
+	"""
+	try:
+		school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
+			"schools"
+		).get(user=request.user)
+	except SchoolProfile.DoesNotExist:
+		return None, None, _no_school_profile_response(request)
+
+	allowed_schools = list(school_profile.schools.order_by("name").all())
+	if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
+		allowed_schools.insert(0, school_profile.school)
+	return school_profile, allowed_schools, None
+
+
+def _resolve_school_selection(
+	request: HttpRequest,
+) -> tuple[School | None, list[School] | None, HttpResponse | None]:
+	"""Resolve the working school and the selector dropdown list.
+
+	Returns (school, schools, error_response). `schools` is None when the user
+	only has access to a single school (the selector is hidden in that case).
+	"""
+	school = None
+	if request.user.is_superuser:
+		schools = list(School.objects.order_by("name").all())
+		selected = request.GET.get("school") or request.POST.get("school_id")
+		if selected:
+			try:
+				school = School.objects.get(id=selected)
+			except School.DoesNotExist:
+				school = None
+		if school is None and schools:
+			school = schools[0]
+		if school is None:
+			messages.error(request, "No schools have been set up yet.")
+			return None, None, redirect("home")
+		return school, schools, None
+
+	school_profile, allowed_schools, error = _get_allowed_schools(request)
+	if error is not None:
+		return None, None, error
+	selected = request.GET.get("school") or request.POST.get("school_id")
+	if selected:
+		try:
+			selected_id = int(selected)
+		except (TypeError, ValueError):
+			selected_id = None
+		if selected_id is not None:
+			school = next((s for s in allowed_schools if s.id == selected_id), None)
+	if school is None:
+		school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
+	schools = allowed_schools if len(allowed_schools) > 1 else None
+	return school, schools, None
+
+
+def _academic_year_context(
+	request: HttpRequest, *, include_post: bool = True
+) -> tuple[int, str, list[dict[str, str]]]:
+	"""Return (selected_year, selected_year_value, academic_year_options)."""
+	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
+	raw_year = request.GET.get("year")
+	if include_post:
+		raw_year = raw_year or request.POST.get("year")
+	selected_year = _parse_academic_year_start(raw_year, default_year)
+	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
+	selected_year_value = f"{selected_year}-{selected_year + 1}"
+
+	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
+	academic_year_options = [
+		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
+		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
+	]
+	return selected_year, selected_year_value, academic_year_options
+
+
+def _readonly_redirect(
+	request: HttpRequest, url_name: str, params: list[tuple[str, str]]
+) -> HttpResponse:
+	"""Bounce a read-only user's POST back to the page, preserving their selection."""
+	messages.error(request, "You have read-only access and cannot save changes.")
+	query = "&".join(f"{name}={value}" for name, value in params if value)
+	return redirect(f"{reverse(url_name)}{'?' + query if query else ''}")
+
+
 def home(request: HttpRequest) -> HttpResponse:
 	if not request.user.is_authenticated:
 		# Keep the sign-in experience on the homepage.
@@ -86,28 +186,10 @@ def home(request: HttpRequest) -> HttpResponse:
 		schools = School.objects.order_by("name").all()
 		return render(request, "review/home.html", {"schools": schools})
 
-	try:
-		school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-			"schools"
-		).get(user=request.user)
-	except SchoolProfile.DoesNotExist:
-		return render(
-			request,
-			"review/no_school_profile.html",
-			{"user": request.user},
-			status=403,
-		)
-
-	allowed_schools = list(school_profile.schools.order_by("name").all())
-	if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
-		allowed_schools.insert(0, school_profile.school)
+	_, allowed_schools, error = _get_allowed_schools(request)
+	if error is not None:
+		return error
 	return render(request, "review/home.html", {"schools": allowed_schools})
-
-
-@login_required
-def respond(request: HttpRequest) -> HttpResponse:
-	messages.info(request, "Statement entry has been retired. Use the School Dashboard instead.")
-	return redirect("review:dashboard")
 
 
 @login_required
@@ -150,23 +232,9 @@ def overview(request: HttpRequest) -> HttpResponse:
 			messages.error(request, "No schools have been set up yet.")
 			return redirect("home")
 	else:
-		try:
-			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-				"schools"
-			).get(
-				user=request.user
-			)
-		except SchoolProfile.DoesNotExist:
-			return render(
-				request,
-				"review/no_school_profile.html",
-				{"user": request.user},
-				status=403,
-			)
-
-		allowed_schools = list(school_profile.schools.order_by("name").all())
-		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
-			allowed_schools.insert(0, school_profile.school)
+		_, allowed_schools, error = _get_allowed_schools(request)
+		if error is not None:
+			return error
 		# Filter the school dropdown by phase for non-superusers too.
 		if selected_phase:
 			allowed_schools = [s for s in allowed_schools if s.phase == selected_phase]
@@ -182,16 +250,9 @@ def overview(request: HttpRequest) -> HttpResponse:
 			school = (allowed_schools[0] if allowed_schools else None)
 		schools = allowed_schools if len(allowed_schools) > 1 else None
 
-	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
-	year = _parse_academic_year_start(request.GET.get("year"), default_year)
-	year = max(year, MIN_ACADEMIC_YEAR_START)
-	selected_year_value = f"{year}-{year + 1}"
-
-	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, year)
-	academic_year_options = [
-		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
-		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
-	]
+	year, selected_year_value, academic_year_options = _academic_year_context(
+		request, include_post=False
+	)
 
 	# Overview is read-only: don't create periods as a side-effect of viewing.
 	periods = {
@@ -271,20 +332,9 @@ def board_view(request: HttpRequest) -> HttpResponse:
 	if request.user.is_superuser:
 		schools = list(School.objects.order_by("name").all())
 	else:
-		try:
-			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-				"schools"
-			).get(user=request.user)
-		except SchoolProfile.DoesNotExist:
-			return render(
-				request,
-				"review/no_school_profile.html",
-				{"user": request.user},
-				status=403,
-			)
-		schools = list(school_profile.schools.order_by("name").all())
-		if school_profile.school_id and all(s.id != school_profile.school_id for s in schools):
-			schools.insert(0, school_profile.school)
+		_, schools, error = _get_allowed_schools(request)
+		if error is not None:
+			return error
 
 	if selected_phase:
 		schools = [s for s in schools if s.phase == selected_phase]
@@ -294,10 +344,9 @@ def board_view(request: HttpRequest) -> HttpResponse:
 		return redirect("home")
 
 	# --- Period resolution ---
-	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
-	year = _parse_academic_year_start(request.GET.get("year"), default_year)
-	year = max(year, MIN_ACADEMIC_YEAR_START)
-	selected_year_value = f"{year}-{year + 1}"
+	year, selected_year_value, academic_year_options = _academic_year_context(
+		request, include_post=False
+	)
 
 	try:
 		selected_round = int(request.GET.get("round") or 1)
@@ -307,12 +356,6 @@ def board_view(request: HttpRequest) -> HttpResponse:
 		selected_round = 1
 
 	round_options = [{"value": r, "label": f"Round {r}"} for r in (1, 2, 3)]
-
-	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, year)
-	academic_year_options = [
-		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
-		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
-	]
 
 	current_period = ReviewPeriod.objects.filter(year=year, round=selected_round).first()
 
@@ -406,74 +449,21 @@ def board_view(request: HttpRequest) -> HttpResponse:
 def dashboard(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 	if request.method == "POST" and not can_edit:
-		messages.error(request, "You have read-only access and cannot save changes.")
-		selected_year_value = request.POST.get("year") or ""
-		params = f"?year={selected_year_value}" if selected_year_value else ""
-		if request.user.is_superuser:
-			school_id = request.POST.get("school_id")
-			if school_id:
-				params = f"?school={school_id}&year={selected_year_value}" if selected_year_value else f"?school={school_id}"
-		return redirect(f"{reverse('review:dashboard')}{params}")
+		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		return _readonly_redirect(
+			request,
+			"review:dashboard",
+			[
+				("school", school_id or ""),
+				("year", request.POST.get("year") or ""),
+			],
+		)
 
-	school = None
-	schools = None
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
 
-	if request.user.is_superuser:
-		schools = list(School.objects.order_by("name").all())
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				school = School.objects.get(id=selected)
-			except School.DoesNotExist:
-				school = None
-		if school is None and schools:
-			school = schools[0]
-		if school is None:
-			messages.error(request, "No schools have been set up yet.")
-			return redirect("home")
-	else:
-		try:
-			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-				"schools"
-			).get(
-				user=request.user
-			)
-		except SchoolProfile.DoesNotExist:
-			return render(
-				request,
-				"review/no_school_profile.html",
-				{"user": request.user},
-				status=403,
-			)
-
-		allowed_schools = list(school_profile.schools.order_by("name").all())
-		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
-			allowed_schools.insert(0, school_profile.school)
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				selected_id = int(selected)
-			except (TypeError, ValueError):
-				selected_id = None
-			if selected_id is not None:
-				school = next((s for s in allowed_schools if s.id == selected_id), None)
-		if school is None:
-			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
-		schools = allowed_schools if len(allowed_schools) > 1 else None
-
-	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
-	selected_year = _parse_academic_year_start(
-		request.GET.get("year") or request.POST.get("year"),
-		default_year,
-	)
-	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
-	selected_year_value = f"{selected_year}-{selected_year + 1}"
-
-	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
-	academic_year_options = [
-		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
-		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
-	]
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
 
 	# For viewers, avoid creating ReviewPeriods as a side-effect of viewing.
 	if can_edit:
@@ -583,76 +573,23 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 def evaluation(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 	if request.method == "POST" and not can_edit:
-		messages.error(request, "You have read-only access and cannot save changes.")
-		year = request.POST.get("year") or ""
-		round_value = request.POST.get("round") or ""
-		params = "?"
-		params += f"year={year}" if year else ""
-		if round_value:
-			params += ("&" if params != "?" and params != "" else "") + f"round={round_value}"
-		if params == "?":
-			params = ""
-		if request.user.is_superuser:
-			school_id = request.POST.get("school_id")
-			if school_id:
-				joiner = "&" if params else "?"
-				params = f"{params}{joiner}school={school_id}"
-		return redirect(f"{reverse('review:evaluation')}{params}")
+		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		return _readonly_redirect(
+			request,
+			"review:evaluation",
+			[
+				("year", request.POST.get("year") or ""),
+				("round", request.POST.get("round") or ""),
+				("school", school_id or ""),
+			],
+		)
 
-	school = None
-	schools = None
-	period = None
-
-	if request.user.is_superuser:
-		schools = list(School.objects.order_by("name").all())
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				school = School.objects.get(id=selected)
-			except School.DoesNotExist:
-				school = None
-		if school is None and schools:
-			school = schools[0]
-		if school is None:
-			messages.error(request, "No schools have been set up yet.")
-			return redirect("home")
-	else:
-		try:
-			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-				"schools"
-			).get(
-				user=request.user
-			)
-		except SchoolProfile.DoesNotExist:
-			return render(
-				request,
-				"review/no_school_profile.html",
-				{"user": request.user},
-				status=403,
-			)
-
-		allowed_schools = list(school_profile.schools.order_by("name").all())
-		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
-			allowed_schools.insert(0, school_profile.school)
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				selected_id = int(selected)
-			except (TypeError, ValueError):
-				selected_id = None
-			if selected_id is not None:
-				school = next((s for s in allowed_schools if s.id == selected_id), None)
-		if school is None:
-			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
-		schools = allowed_schools if len(allowed_schools) > 1 else None
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
 
 	# Period selection (academic year start + round)
-	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
-	selected_year = _parse_academic_year_start(
-		request.GET.get("year") or request.POST.get("year"),
-		default_year,
-	)
-	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
 
 	try:
 		selected_round = int(request.GET.get("round") or request.POST.get("round") or 1)
@@ -668,13 +605,6 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 	else:
 		period_db = ReviewPeriod.objects.filter(year=selected_year, round=selected_round).first()
 		period = period_db or ReviewPeriod(year=selected_year, round=selected_round)
-	selected_year_value = f"{selected_year}-{selected_year + 1}"
-
-	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
-	academic_year_options = [
-		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
-		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
-	]
 
 	categories = list(Category.objects.filter(is_active=True).order_by("order", "name").all())
 	category_ids = {c.id for c in categories}
@@ -812,78 +742,22 @@ def _compute_overall_grade(grades: list[str], is_safeguarding: bool) -> str:
 def indepth_review(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 	if request.method == "POST" and not can_edit:
-		messages.error(request, "You have read-only access and cannot save changes.")
-		year = request.POST.get("year") or ""
-		area_id = request.POST.get("area_id") or ""
-		params = "?"
-		params += f"year={year}" if year else ""
-		if area_id:
-			params += ("&" if params != "?" else "") + f"area={area_id}"
-		if params == "?":
-			params = ""
-		if request.user.is_superuser:
-			school_id = request.POST.get("school_id")
-			if school_id:
-				joiner = "&" if params else "?"
-				params = f"{params}{joiner}school={school_id}"
-		return redirect(f"{reverse('review:indepth_review')}{params}")
+		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		return _readonly_redirect(
+			request,
+			"review:indepth_review",
+			[
+				("year", request.POST.get("year") or ""),
+				("area", request.POST.get("area_id") or ""),
+				("school", school_id or ""),
+			],
+		)
 
-	school = None
-	schools = None
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
 
-	if request.user.is_superuser:
-		schools = list(School.objects.order_by("name").all())
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				school = School.objects.get(id=selected)
-			except School.DoesNotExist:
-				school = None
-		if school is None and schools:
-			school = schools[0]
-		if school is None:
-			messages.error(request, "No schools have been set up yet.")
-			return redirect("home")
-	else:
-		try:
-			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-				"schools"
-			).get(user=request.user)
-		except SchoolProfile.DoesNotExist:
-			return render(
-				request,
-				"review/no_school_profile.html",
-				{"user": request.user},
-				status=403,
-			)
-		allowed_schools = list(school_profile.schools.order_by("name").all())
-		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
-			allowed_schools.insert(0, school_profile.school)
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				selected_id = int(selected)
-			except (TypeError, ValueError):
-				selected_id = None
-			if selected_id is not None:
-				school = next((s for s in allowed_schools if s.id == selected_id), None)
-		if school is None:
-			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
-		schools = allowed_schools if len(allowed_schools) > 1 else None
-
-	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
-	selected_year = _parse_academic_year_start(
-		request.GET.get("year") or request.POST.get("year"),
-		default_year,
-	)
-	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
-	selected_year_value = f"{selected_year}-{selected_year + 1}"
-
-	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
-	academic_year_options = [
-		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
-		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
-	]
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
 
 	areas = list(InDepthArea.objects.order_by("order", "name").all())
 	area = None
@@ -1060,72 +934,21 @@ def reflection(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 
 	if request.method == "POST" and not can_edit:
-		messages.error(request, "You have read-only access and cannot save changes.")
-		year = request.POST.get("year") or ""
-		params = f"?year={year}" if year else ""
-		if request.user.is_superuser:
-			school_id = request.POST.get("school_id")
-			if school_id:
-				joiner = "&" if params else "?"
-				params = f"{params}{joiner}school={school_id}"
-		return redirect(f"{reverse('review:reflection')}{params}")
+		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		return _readonly_redirect(
+			request,
+			"review:reflection",
+			[
+				("year", request.POST.get("year") or ""),
+				("school", school_id or ""),
+			],
+		)
 
-	school = None
-	schools = None
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
 
-	if request.user.is_superuser:
-		schools = list(School.objects.order_by("name").all())
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				school = School.objects.get(id=selected)
-			except School.DoesNotExist:
-				school = None
-		if school is None and schools:
-			school = schools[0]
-		if school is None:
-			messages.error(request, "No schools have been set up yet.")
-			return redirect("home")
-	else:
-		try:
-			school_profile = SchoolProfile.objects.select_related("school").prefetch_related(
-				"schools"
-			).get(user=request.user)
-		except SchoolProfile.DoesNotExist:
-			return render(
-				request,
-				"review/no_school_profile.html",
-				{"user": request.user},
-				status=403,
-			)
-		allowed_schools = list(school_profile.schools.order_by("name").all())
-		if school_profile.school_id and all(s.id != school_profile.school_id for s in allowed_schools):
-			allowed_schools.insert(0, school_profile.school)
-		selected = request.GET.get("school") or request.POST.get("school_id")
-		if selected:
-			try:
-				selected_id = int(selected)
-			except (TypeError, ValueError):
-				selected_id = None
-			if selected_id is not None:
-				school = next((s for s in allowed_schools if s.id == selected_id), None)
-		if school is None:
-			school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
-		schools = allowed_schools if len(allowed_schools) > 1 else None
-
-	default_year = max(current_academic_year_start(), MIN_ACADEMIC_YEAR_START)
-	selected_year = _parse_academic_year_start(
-		request.GET.get("year") or request.POST.get("year"),
-		default_year,
-	)
-	selected_year = max(selected_year, MIN_ACADEMIC_YEAR_START)
-	selected_year_value = f"{selected_year}-{selected_year + 1}"
-
-	max_year = max(default_year + 2, MIN_ACADEMIC_YEAR_START + 4, selected_year)
-	academic_year_options = [
-		{"value": f"{y}-{y + 1}", "label": f"{y}/{y + 1}"}
-		for y in range(MIN_ACADEMIC_YEAR_START, max_year + 1)
-	]
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
 
 	areas = list(InDepthArea.objects.order_by("order", "name").all())
 

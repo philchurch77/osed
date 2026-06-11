@@ -10,7 +10,6 @@ app_name = "review"
 urlpatterns = [
     path("enter/", RedirectView.as_view(pattern_name="review:dashboard"), name="enter"),
     path("dashboard/", views.dashboard, name="dashboard"),
-    path("respond/", views.respond, name="respond"),
     path("overview/", views.overview, name="overview"),
     path("board/", views.board_view, name="board"),
     path("evaluation/", views.evaluation, name="evaluation"),

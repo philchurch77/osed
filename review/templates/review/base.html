@@ -4,25 +4,38 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{% block title %}OSED{% endblock %}</title>
+    <meta name="theme-color" content="#304354" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {% load static %}
-    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260602-1" />
+    <link rel="icon" type="image/svg+xml" href="{% static 'review/favicon.svg' %}" />
+    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260611-1" />
     {% block head %}{% endblock %}
   </head>
   <body>
+    <header class="mobile-topbar">
+      <button class="mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="sidebar" aria-label="Open menu">
+        <span class="mobile-nav-toggle-bar"></span>
+        <span class="mobile-nav-toggle-bar"></span>
+        <span class="mobile-nav-toggle-bar"></span>
+      </button>
+      <span class="mobile-topbar-title">OXLIP</span>
+    </header>
+    <div class="sidebar-backdrop" aria-hidden="true"></div>
+
     <div class="app-shell">
-      <aside class="sidebar">
+      <aside class="sidebar" id="sidebar">
         <div class="sidebar-brand">
           {% if branding and branding.trust_emblem %}
             <div class="trust-emblem-wrap">
-              <img class="trust-emblem" src="{{ branding.trust_emblem.url }}" alt="OXLIP trust emblem" />
+              <img class="trust-emblem" src="{{ branding.trust_emblem.url }}" alt="OXLIP trust emblem" decoding="async" />
             </div>
           {% endif %}
           <div class="trust-name">OXLIP</div>
         </div>
 
-        <nav class="nav">
+        <nav class="nav" aria-label="Primary">
           <a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Home</a>
           <a href="/review/dashboard/" {% if '/review/dashboard/' in request.path %}aria-current="page"{% endif %}>School Dashboard</a>
           <a href="/review/evaluation/" {% if '/review/evaluation/' in request.path %}aria-current="page"{% endif %}>Evaluation</a>
@@ -61,6 +74,7 @@
     </div>
 
     <script defer src="{% static 'review/word_limit.js' %}?v=20260528-1"></script>
+    <script defer src="{% static 'review/mobile_nav.js' %}?v=20260611-1"></script>
     <script>
       document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('.school-select select').forEach(function (sel) {

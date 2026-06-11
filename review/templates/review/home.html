@@ -56,7 +56,7 @@
     {% for school in schools %}
       <li class="school-card">
         {% if school.logo %}
-          <img class="school-logo" src="{{ school.logo.url }}" alt="{{ school.name }} logo" />
+          <img class="school-logo" src="{{ school.logo.url }}" alt="{{ school.name }} logo" loading="lazy" decoding="async" />
         {% else %}
           <div class="school-logo" aria-hidden="true"></div>
         {% endif %}
