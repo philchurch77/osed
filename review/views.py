@@ -13,7 +13,7 @@ from allauth.account.views import LoginView
 from .forms import (
 	DashboardRatingForm,
 	EvaluationEntryForm,
-	InDepthSubSectionForm,
+	InDepthJudgementAreaForm,
 	RATING_CHOICES_DEFAULT,
 	RATING_CHOICES_SAFEGUARDING,
 	SAFEGUARDING_GRADE_CHOICES,
@@ -23,9 +23,10 @@ from .models import (
 	Category,
 	Evaluation,
 	InDepthArea,
+	InDepthJudgementArea,
 	InDepthResponse,
 	InDepthReview,
-	InDepthSubSection,
+	InDepthStandard,
 	ReviewPeriod,
 	School,
 	SchoolProfile,
@@ -696,16 +697,6 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 	)
 
 
-_GRADE_ORDER = {
-	"not_met": 0,
-	"urgent_improvement": 1,
-	"needs_attention": 2,
-	"expected_standard": 3,
-	"strong_standard": 4,
-	"exceptional": 5,
-	"met": 6,
-}
-
 _GRADE_LABELS = {
 	"not_met": "Not Met",
 	"met": "Met",
@@ -726,16 +717,12 @@ _GRADE_CSS = {
 	"met": "met",
 }
 
-
-def _compute_overall_grade(grades: list[str], is_safeguarding: bool) -> str:
-	"""Return the overall grade for an area given the list of sub-section grades."""
-	filled = [g for g in grades if g]
-	if not filled:
-		return ""
-	if is_safeguarding:
-		return "not_met" if "not_met" in filled else "met"
-	# Weakest sub-section drives the overall grade
-	return min(filled, key=lambda g: _GRADE_ORDER.get(g, 99))
+# Which standards carry RAG-able judgement areas (worked through in order,
+# Expected -> Strong), and which are flat reference lists — per scale.
+_RICH_KEYS_DEFAULT = ["expected_standard", "strong_standard"]
+_REF_KEYS_DEFAULT = ["urgent_improvement", "needs_attention", "exceptional"]
+_RICH_KEYS_SAFEGUARDING = ["met"]
+_REF_KEYS_SAFEGUARDING = ["not_met"]
 
 
 @login_required
@@ -759,21 +746,23 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 
 	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
 
-	areas = list(InDepthArea.objects.order_by("order", "name").all())
+	# Only areas with the new criteria loaded are part of the active flow; the
+	# legacy subsection-only areas are intentionally left out of the dropdown.
+	areas = list(
+		InDepthArea.objects.filter(standards__isnull=False).distinct().order_by("order", "name")
+	)
 	area = None
 	selected_area = request.GET.get("area") or request.POST.get("area_id")
 	if selected_area:
-		try:
-			area = InDepthArea.objects.get(id=selected_area)
-		except InDepthArea.DoesNotExist:
-			area = None
+		area = next((a for a in areas if str(a.id) == str(selected_area)), None)
 	if area is None and areas:
 		area = areas[0]
 
 	if not areas or area is None:
 		messages.error(
 			request,
-			"No in-depth review sub-sections have been loaded yet. Run the load_indepth_blueprint management command.",
+			"No in-depth review criteria have been loaded yet. "
+			"Run the load_indepth_criteria management command.",
 		)
 		return render(
 			request,
@@ -785,24 +774,40 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				"area": area,
 				"selected_year_value": selected_year_value,
 				"academic_year_options": academic_year_options,
-				"current_step": "review",
 				"review": None,
-				"subsection_rows": [],
+				"rich_blocks": [],
+				"ref_blocks": [],
 				"formset": None,
 				"can_edit": can_edit,
 				"is_safeguarding": False,
+				"overall_grade": "",
+				"overall_grade_label": "",
+				"overall_grade_css": "",
+				"grade_choices": STANDARD_GRADE_CHOICES,
 			},
 		)
 
 	is_safeguarding = area.is_safeguarding
-	subsections = list(InDepthSubSection.objects.filter(area=area).order_by("order"))
-	subsection_ids = {s.id for s in subsections}
+	rich_keys = _RICH_KEYS_SAFEGUARDING if is_safeguarding else _RICH_KEYS_DEFAULT
+	ref_keys = _REF_KEYS_SAFEGUARDING if is_safeguarding else _REF_KEYS_DEFAULT
+	grade_choices = SAFEGUARDING_GRADE_CHOICES if is_safeguarding else STANDARD_GRADE_CHOICES
+
+	standards = {
+		s.key: s
+		for s in InDepthStandard.objects.filter(area=area).prefetch_related("judgement_areas")
+	}
+
+	# Ordered RAG-able judgement areas (Expected first, then Strong).
+	rich_standards = [standards[k] for k in rich_keys if k in standards]
+	judgement_areas = []
+	for s in rich_standards:
+		judgement_areas.extend(ja for ja in s.judgement_areas.all() if not ja.is_flat)
+	ja_ids = {ja.id for ja in judgement_areas}
 
 	review = InDepthReview.objects.filter(school=school, year=selected_year, area=area).first()
-
 	existing = {} if review is None else {
-		r.subsection_id: r
-		for r in InDepthResponse.objects.filter(review=review)
+		r.judgement_area_id: r
+		for r in InDepthResponse.objects.filter(review=review, judgement_area__isnull=False)
 	}
 
 	def _build_params() -> str:
@@ -810,101 +815,98 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			return f"?school={school.id}&year={selected_year_value}&area={area.id}"
 		return f"?year={selected_year_value}&area={area.id}"
 
+	FormSetClass = formset_factory(InDepthJudgementAreaForm, extra=0)
+	formset = None
+
 	# ── POST handler ────────────────────────────────────────────────────────────
 	if request.method == "POST" and can_edit:
-		FormSetClass = formset_factory(InDepthSubSectionForm, extra=0)
 		formset = FormSetClass(request.POST)
-		grade_choices = SAFEGUARDING_GRADE_CHOICES if is_safeguarding else STANDARD_GRADE_CHOICES
-		for f in formset.forms:
-			f.fields["grade"].choices = grade_choices
 		if formset.is_valid():
+			overall_grade = (request.POST.get("overall_grade") or "").strip()
+			valid_grades = {c[0] for c in grade_choices if c[0]}
+			if overall_grade not in valid_grades:
+				overall_grade = ""
 			with transaction.atomic():
 				if review is None:
 					review = InDepthReview.objects.create(
 						school=school, year=selected_year, area=area, updated_by=request.user,
 					)
-				else:
-					review.updated_by = request.user
 				for f in formset:
-					sub_id = f.cleaned_data.get("subsection_id")
-					if sub_id not in subsection_ids:
+					ja_id = f.cleaned_data.get("judgement_area_id")
+					if ja_id not in ja_ids:
 						continue
 					InDepthResponse.objects.update_or_create(
 						review=review,
-						subsection_id=sub_id,
+						judgement_area_id=ja_id,
 						defaults={
-							"evidence_text": f.cleaned_data["evidence_text"],
-							"grade": f.cleaned_data["grade"],
+							"rag": f.cleaned_data["rag"],
+							"evidence_text": f.cleaned_data["commentary"],
 							"next_steps": f.cleaned_data["next_steps"],
 						},
 					)
-				all_grades = list(
-					InDepthResponse.objects.filter(review=review)
-					.values_list("grade", flat=True)
-				)
-				review.overall_grade = _compute_overall_grade(all_grades, is_safeguarding)
+				review.overall_grade = overall_grade
 				review.step = "review"
+				review.updated_by = request.user
 				review.save()
 			messages.success(request, "In-depth review saved.")
 			return redirect(f"{reverse('review:indepth_review')}{_build_params()}")
 
-	# ── Build sub-section formset for review step ────────────────────────────────
-	grade_choices = SAFEGUARDING_GRADE_CHOICES if is_safeguarding else STANDARD_GRADE_CHOICES
-	FormSetClass = formset_factory(InDepthSubSectionForm, extra=0)
-	initial = [
-		{
-			"subsection_id": ss.id,
-			"evidence_text": existing[ss.id].evidence_text if ss.id in existing else "",
-			"grade": existing[ss.id].grade if ss.id in existing else "",
-			"next_steps": existing[ss.id].next_steps if ss.id in existing else "",
-		}
-		for ss in subsections
-	]
-	formset = FormSetClass(initial=initial)
-	for f in formset.forms:
-		f.fields["grade"].choices = grade_choices
-		if not can_edit:
+	# ── Build formset for GET (or re-render after an invalid POST) ───────────────
+	if formset is None:
+		initial = [
+			{
+				"judgement_area_id": ja.id,
+				"rag": existing[ja.id].rag if ja.id in existing else "",
+				"commentary": existing[ja.id].evidence_text if ja.id in existing else "",
+				"next_steps": existing[ja.id].next_steps if ja.id in existing else "",
+			}
+			for ja in judgement_areas
+		]
+		formset = FormSetClass(initial=initial)
+
+	if not can_edit:
+		for f in formset.forms:
 			for field in f.fields.values():
 				field.disabled = True
 
-	# Build grade descriptors dict for each sub-section (for template use)
-	def _grade_descriptor(ss, grade: str) -> str:
-		if is_safeguarding:
-			return getattr(ss, f"{grade}_descriptor", "") if grade in ("not_met", "met") else ""
-		desc_map = {
-			"urgent_improvement": ss.urgent_improvement_descriptor,
-			"needs_attention": ss.needs_attention_descriptor,
-			"expected_standard": ss.expected_descriptor,
-			"strong_standard": ss.strong_descriptor,
-			"exceptional": ss.exceptional_descriptor,
-		}
-		return desc_map.get(grade, "")
-
-	subsection_rows = []
-	for ss, f in zip(subsections, formset.forms):
-		resp = existing.get(ss.id)
-		current_grade = resp.grade if resp else ""
-		descriptors = {
-			grade: _grade_descriptor(ss, grade)
-			for grade, _ in grade_choices
-			if grade
-		}
-		subsection_rows.append({
-			"subsection": ss,
-			"form": f,
-			"current_grade": current_grade,
-			"current_grade_label": _GRADE_LABELS.get(current_grade, ""),
-			"current_grade_css": _GRADE_CSS.get(current_grade, ""),
-			"descriptors": descriptors,
+	# Align forms to judgement areas (same order they were built in) and group
+	# them under their standard for rendering.
+	form_iter = iter(formset.forms)
+	rich_blocks = []
+	for s in rich_standards:
+		rows = []
+		for ja in s.judgement_areas.all():
+			if ja.is_flat:
+				continue
+			f = next(form_iter)
+			resp = existing.get(ja.id)
+			rows.append({
+				"ja": ja,
+				"form": f,
+				"current_rag": resp.rag if resp else "",
+			})
+		rich_blocks.append({
+			"standard": s,
+			"label": s.get_key_display(),
+			"focus": s.focus,
+			"rows": rows,
 		})
 
-	# ── Overall grade ────────────────────────────────────────────────────────────
+	# Reference (flat) trigger/example lists — read-only context for the grade.
+	ref_blocks = []
+	for k in ref_keys:
+		s = standards.get(k)
+		if s is None:
+			continue
+		statements = [ja.statement for ja in s.judgement_areas.all() if ja.is_flat]
+		ref_blocks.append({
+			"standard": s,
+			"label": s.get_key_display(),
+			"statements": statements,
+			"notes": s.usage_notes or [],
+		})
+
 	overall_grade = review.overall_grade if review else ""
-	# Recompute live in case responses were partially changed this request
-	live_grades = [r.grade for r in existing.values()]
-	live_overall = _compute_overall_grade(live_grades, is_safeguarding)
-	if live_overall:
-		overall_grade = live_overall
 
 	return render(
 		request,
@@ -917,7 +919,8 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"selected_year_value": selected_year_value,
 			"academic_year_options": academic_year_options,
 			"review": review,
-			"subsection_rows": subsection_rows,
+			"rich_blocks": rich_blocks,
+			"ref_blocks": ref_blocks,
 			"formset": formset,
 			"can_edit": can_edit,
 			"is_safeguarding": is_safeguarding,
@@ -950,7 +953,10 @@ def reflection(request: HttpRequest) -> HttpResponse:
 
 	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
 
-	areas = list(InDepthArea.objects.order_by("order", "name").all())
+	# Mirror the in-depth review screen: only the standards-backed (new) areas.
+	areas = list(
+		InDepthArea.objects.filter(standards__isnull=False).distinct().order_by("order", "name")
+	)
 
 	# Build a map of area_id -> InDepthReview for the selected school/year
 	reviews_qs = InDepthReview.objects.filter(

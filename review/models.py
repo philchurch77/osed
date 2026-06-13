@@ -128,6 +128,9 @@ class InDepthArea(models.Model):
 
 
 class InDepthSubSection(models.Model):
+    # DEPRECATED — replaced by InDepthStandard / InDepthJudgementArea. Kept only
+    # so prior-year subsection-based reviews stay viewable. Remove once the new
+    # flow is validated through a full review cycle (see load_indepth_blueprint).
     area = models.ForeignKey(InDepthArea, on_delete=models.CASCADE, related_name="subsections")
     name = models.CharField(max_length=200)
     overview = models.TextField(blank=True, default="")
@@ -203,15 +206,33 @@ class InDepthResponse(models.Model):
         STRONG_STANDARD = "strong_standard", "Strong Standard"
         EXCEPTIONAL = "exceptional", "Exceptional"
 
+    class Rag(models.TextChoices):
+        RED = "red", "Red"
+        AMBER = "amber", "Amber"
+        GREEN = "green", "Green"
+
     review = models.ForeignKey(InDepthReview, on_delete=models.CASCADE)
+    # Legacy link — kept for prior-year reviews built on the subsection model.
     subsection = models.ForeignKey(
         InDepthSubSection,
         on_delete=models.CASCADE,
         null=True,
         blank=True,
     )
+    # New-structure link: a response now attaches to a single judgement area.
+    judgement_area = models.ForeignKey(
+        "InDepthJudgementArea",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="responses",
+    )
     evidence_text = models.TextField(blank=True, default="")
+    # Area-level grade is recorded on InDepthReview.overall_grade; this column is
+    # retained for legacy subsection responses and left blank in the new flow.
     grade = models.CharField(max_length=25, choices=Grade.choices, blank=True, default="")
+    # Per-judgement-area self-rating in the new flow.
+    rag = models.CharField(max_length=10, choices=Rag.choices, blank=True, default="")
     next_steps = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -220,9 +241,82 @@ class InDepthResponse(models.Model):
             models.UniqueConstraint(
                 fields=["review", "subsection"],
                 name="unique_indepth_response_per_review_subsection",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["review", "judgement_area"],
+                name="unique_indepth_response_per_review_judgement_area",
+            ),
         ]
-        ordering = ("subsection__area__order", "subsection__order")
+        ordering = ("id",)
 
     def __str__(self):
-        return f"{self.review} — {self.subsection}"
+        return f"{self.review} — {self.judgement_area or self.subsection}"
+
+
+# ---------------------------------------------------------------------------
+# New criteria structure (Nov 2025 framework drafts)
+#
+# Unlike InDepthSubSection (one row carrying a descriptor per grade), the new
+# Ofsted draft criteria define a *different* set of judgement areas for each
+# grade band. These models capture that: Area -> Standard (grade band) ->
+# JudgementArea (statement + key questions + suggested evidence + sources).
+# They are additive; the legacy InDepthSubSection models are left intact so
+# existing review screens keep working until the UI is migrated over.
+# Loaded by:  python manage.py load_indepth_criteria
+# ---------------------------------------------------------------------------
+class InDepthStandard(models.Model):
+    """A grade band within an area, carrying its own judgement areas."""
+
+    class Key(models.TextChoices):
+        URGENT_IMPROVEMENT = "urgent_improvement", "Urgent Improvement"
+        NEEDS_ATTENTION = "needs_attention", "Needs Attention"
+        EXPECTED_STANDARD = "expected_standard", "Expected Standard"
+        STRONG_STANDARD = "strong_standard", "Strong Standard"
+        EXCEPTIONAL = "exceptional", "Exceptional"
+        MET = "met", "Met"
+        NOT_MET = "not_met", "Not Met"
+
+    area = models.ForeignKey(
+        InDepthArea, on_delete=models.CASCADE, related_name="standards"
+    )
+    key = models.CharField(max_length=25, choices=Key.choices)
+    focus = models.TextField(blank=True, default="")
+    # Sheet-level usage guidance (mainly for the flat lists: Urgent Improvement,
+    # Needs Attention, Exceptional, Not Met).
+    usage_notes = models.JSONField(default=list, blank=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("area__order", "order")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["area", "key"],
+                name="unique_indepth_standard_per_area",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.area} — {self.get_key_display()}"
+
+
+class InDepthJudgementArea(models.Model):
+    """A single judgement area / statement within a standard."""
+
+    standard = models.ForeignKey(
+        InDepthStandard, on_delete=models.CASCADE, related_name="judgement_areas"
+    )
+    statement = models.TextField()
+    key_questions = models.JSONField(default=list, blank=True)
+    suggested_evidence = models.JSONField(default=list, blank=True)
+    sources = models.JSONField(default=list, blank=True)
+    # True for the flat trigger/example lists (Urgent Improvement, Needs
+    # Attention, Exceptional, Not Met), where each row is a single statement
+    # with no key questions / evidence / sources.
+    is_flat = models.BooleanField(default=False)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("standard", "order")
+
+    def __str__(self):
+        return f"{self.standard} — {self.statement[:60]}"

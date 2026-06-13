@@ -1,37 +1,38 @@
 /**
- * In-depth review grade button toggle.
+ * In-depth review rating toggles.
  *
- * Highlights the selected grade button within each sub-section card and
- * shows the matching grade descriptor text.
+ * Highlights the selected RAG button within each judgement-area card, and the
+ * selected button in the overall-grade selector. CSS :has() handles modern
+ * browsers; this adds an explicit --selected class as a fallback.
  */
 (function () {
   'use strict';
 
-  function updateSubSection(container) {
+  function syncGroup(container, btnSelector, selectedClass) {
     var checked = container.querySelector('input[type="radio"]:checked');
-    var selectedGrade = checked ? checked.value : '';
-
-    // Update button active state
-    container.querySelectorAll('.indepth-grade-btn').forEach(function (btn) {
-      var grade = btn.getAttribute('data-grade');
-      btn.classList.toggle('indepth-grade-btn--selected', grade === selectedGrade);
-    });
-
-    // Show/hide descriptors
-    container.querySelectorAll('.indepth-grade-descriptor').forEach(function (desc) {
-      var forGrade = desc.getAttribute('data-for-grade');
-      desc.style.display = (forGrade === selectedGrade && selectedGrade) ? '' : 'none';
+    var value = checked ? checked.value : '';
+    container.querySelectorAll(btnSelector).forEach(function (btn) {
+      var own = btn.querySelector('input[type="radio"]');
+      btn.classList.toggle(selectedClass, !!own && own.checked && !!value);
     });
   }
 
-  function initSubSection(container) {
-    updateSubSection(container);
+  function initGroup(container, btnSelector, selectedClass) {
+    syncGroup(container, btnSelector, selectedClass);
     container.querySelectorAll('input[type="radio"]').forEach(function (radio) {
       radio.addEventListener('change', function () {
-        updateSubSection(container);
+        syncGroup(container, btnSelector, selectedClass);
       });
     });
   }
 
-  document.querySelectorAll('.indepth-subsection').forEach(initSubSection);
+  // Per judgement-area RAG ratings
+  document.querySelectorAll('[data-judgement] .indepth-rag-options').forEach(function (group) {
+    initGroup(group, '.indepth-rag-btn', 'indepth-rag-btn--selected');
+  });
+
+  // Overall area grade selector
+  document.querySelectorAll('.indepth-overall .indepth-grade-options').forEach(function (group) {
+    initGroup(group, '.indepth-grade-btn', 'indepth-grade-btn--selected');
+  });
 })();

@@ -94,36 +94,42 @@ STANDARD_GRADE_CHOICES = [
     ("exceptional", "Exceptional"),
 ]
 
-MAX_EVIDENCE_WORDS = 300
 MAX_NEXT_STEPS_WORDS = 150
 
 
-class InDepthSubSectionForm(forms.Form):
-    """One sub-section response: evidence text, grade, and next steps."""
+# ── New-structure (Nov 2025) in-depth review ──────────────────────────────────
 
-    subsection_id = forms.IntegerField(widget=forms.HiddenInput)
-    evidence_text = forms.CharField(
+RAG_CHOICES = [
+    ("red", "Red"),
+    ("amber", "Amber"),
+    ("green", "Green"),
+]
+
+# Per the Guidance sheet, commentary should be kept to 150 words or fewer.
+MAX_COMMENTARY_WORDS = 150
+
+
+class InDepthJudgementAreaForm(forms.Form):
+    """One judgement-area response: RAG rating, commentary, and next steps."""
+
+    judgement_area_id = forms.IntegerField(widget=forms.HiddenInput)
+    rag = forms.ChoiceField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4, "data-max-words": str(MAX_EVIDENCE_WORDS)}),
-    )
-    grade = forms.ChoiceField(
-        required=False,
-        choices=STANDARD_GRADE_CHOICES,
+        choices=RAG_CHOICES,
         widget=forms.RadioSelect,
+    )
+    commentary = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 4, "data-max-words": str(MAX_COMMENTARY_WORDS)}),
     )
     next_steps = forms.CharField(
         required=False,
         widget=forms.Textarea(attrs={"rows": 3, "data-max-words": str(MAX_NEXT_STEPS_WORDS)}),
     )
 
-    def __init__(self, *args, is_safeguarding: bool = False, **kwargs):
-        super().__init__(*args, **kwargs)
-        if is_safeguarding:
-            self.fields["grade"].choices = SAFEGUARDING_GRADE_CHOICES
-
-    def clean_evidence_text(self) -> str:
-        value = self.cleaned_data.get("evidence_text") or ""
-        _validate_max_words(value, max_words=MAX_EVIDENCE_WORDS)
+    def clean_commentary(self) -> str:
+        value = self.cleaned_data.get("commentary") or ""
+        _validate_max_words(value, max_words=MAX_COMMENTARY_WORDS)
         return value
 
     def clean_next_steps(self) -> str:
@@ -131,16 +137,7 @@ class InDepthSubSectionForm(forms.Form):
         _validate_max_words(value, max_words=MAX_NEXT_STEPS_WORDS)
         return value
 
-    def clean_grade(self) -> str:
-        value = self.cleaned_data.get("grade") or ""
-        valid = {c[0] for c in SAFEGUARDING_GRADE_CHOICES + STANDARD_GRADE_CHOICES if c[0]}
+    def clean_rag(self) -> str:
+        value = self.cleaned_data.get("rag") or ""
+        valid = {c[0] for c in RAG_CHOICES}
         return value if value in valid else ""
-
-
-class ReflectionForm(forms.Form):
-    """Principal reflects on what changed as a result of QA and feedback."""
-
-    qa_reflection = forms.CharField(
-        required=False,
-        widget=forms.Textarea(attrs={"rows": 6, "data-max-words": "0"}),
-    )

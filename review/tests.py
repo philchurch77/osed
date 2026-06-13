@@ -8,7 +8,10 @@ from .models import (
 	Category,
 	Evaluation,
 	InDepthArea,
+	InDepthJudgementArea,
+	InDepthResponse,
 	InDepthReview,
+	InDepthStandard,
 	InDepthSubSection,
 	ReviewPeriod,
 	School,
@@ -191,3 +194,90 @@ class StaffEditTests(TestCase):
 		)
 		self.assertEqual(saved.rating, 1)
 
+
+
+class InDepthJudgementAreaFlowTests(TestCase):
+	"""The new standard -> judgement-area review flow."""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Test School")
+		self.staff = User.objects.create_user(username="staff", email="staff@example.com")
+		SchoolProfile.objects.create(user=self.staff, school=self.school)
+		self.staff.schoolprofile.schools.add(self.school)
+		for codename in ("add_indepthresponse", "change_indepthresponse"):
+			self.staff.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.area = InDepthArea.objects.create(name="Achievement", order=4)
+		self.expected = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.ja1 = InDepthJudgementArea.objects.create(
+			standard=self.expected, statement="Pupils achieve well.", order=1
+		)
+		self.ja2 = InDepthJudgementArea.objects.create(
+			standard=self.expected, statement="Pupils are ready for the next stage.", order=2
+		)
+		ui = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.URGENT_IMPROVEMENT, order=1
+		)
+		InDepthJudgementArea.objects.create(
+			standard=ui, statement="Pupils lack foundations.", is_flat=True, order=1
+		)
+
+	def _post(self, **overrides):
+		data = {
+			"school_id": str(self.school.id),
+			"year": "2025-2026",
+			"area_id": str(self.area.id),
+			"form-TOTAL_FORMS": "2",
+			"form-INITIAL_FORMS": "2",
+			"form-MIN_NUM_FORMS": "0",
+			"form-MAX_NUM_FORMS": "1000",
+			"form-0-judgement_area_id": str(self.ja1.id),
+			"form-0-rag": "green",
+			"form-0-commentary": "Strong, triangulated evidence.",
+			"form-0-next_steps": "Sustain and share practice.",
+			"form-1-judgement_area_id": str(self.ja2.id),
+			"form-1-rag": "amber",
+			"form-1-commentary": "Some gaps remain.",
+			"form-1-next_steps": "Close the gaps.",
+			"overall_grade": "expected_standard",
+		}
+		data.update(overrides)
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}"
+		return self.client.post(url, data=data)
+
+	def test_staff_saves_judgement_area_responses(self):
+		self.client.force_login(self.staff)
+		resp = self._post()
+		self.assertEqual(resp.status_code, 302)
+
+		review = InDepthReview.objects.get(school=self.school, year=2025, area=self.area)
+		self.assertEqual(review.overall_grade, "expected_standard")
+
+		responses = InDepthResponse.objects.filter(review=review, judgement_area__isnull=False)
+		self.assertEqual(responses.count(), 2)
+		r1 = responses.get(judgement_area=self.ja1)
+		self.assertEqual(r1.rag, "green")
+		self.assertEqual(r1.evidence_text, "Strong, triangulated evidence.")
+		self.assertEqual(r1.grade, "")
+
+	def test_resave_updates_without_duplicating(self):
+		self.client.force_login(self.staff)
+		self._post()
+		self._post(**{"form-0-rag": "amber", "overall_grade": "strong_standard"})
+
+		review = InDepthReview.objects.get(school=self.school, year=2025, area=self.area)
+		self.assertEqual(InDepthResponse.objects.filter(review=review).count(), 2)
+		self.assertEqual(review.overall_grade, "strong_standard")
+		self.assertEqual(
+			InDepthResponse.objects.get(review=review, judgement_area=self.ja1).rag, "amber"
+		)
+
+	def test_commentary_word_limit_blocks_save(self):
+		self.client.force_login(self.staff)
+		resp = self._post(**{"form-0-commentary": " ".join(["word"] * 151)})
+		self.assertEqual(resp.status_code, 200)
+		self.assertEqual(InDepthReview.objects.count(), 0)

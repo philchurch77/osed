@@ -1,4 +1,12 @@
 """
+DEPRECATED — superseded by load_indepth_criteria.py (the new standard /
+judgement-area structure used by the active in-depth review UI).
+
+This loader and the InDepthSubSection model it populates are retained only so
+that prior-year, subsection-based reviews remain viewable. Remove this command,
+InDepthSubSection, and the legacy InDepthResponse.subsection link once the new
+flow has been validated through a full review cycle.
+
 Load all in-depth review areas and sub-sections from the Ofsted Inspection
 Toolkit Blueprint (v1.1, November 2025).
 

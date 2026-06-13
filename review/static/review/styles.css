@@ -1770,6 +1770,158 @@ details[open] .indepth-criteria-summary::before {
   margin-left: 8px;
 }
 
+/* ── In-depth review: standard (grade band) section ───────────────────────── */
+
+.indepth-standard {
+  margin: 0 0 28px;
+}
+
+.indepth-standard-header {
+  margin: 0 0 14px;
+  padding: 0 0 8px;
+  border-bottom: 2px solid var(--colour-border);
+}
+
+.indepth-standard-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--colour-heading);
+  margin: 0;
+}
+
+.indepth-standard-focus {
+  font-size: 13px;
+  color: var(--colour-muted);
+  margin: 6px 0 0;
+}
+
+/* ── Judgement-area card ───────────────────────────────────────────────────── */
+
+.indepth-judgement {
+  background: var(--colour-white);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  padding: 18px 22px;
+  margin: 0 0 16px;
+}
+
+.indepth-judgement-statement {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--colour-heading);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.indepth-ja-meta {
+  margin: 0 0 12px;
+}
+
+.indepth-ja-meta-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--colour-primary);
+  margin: 0 0 4px;
+}
+
+.indepth-ja-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--colour-text);
+  line-height: 1.6;
+}
+
+.indepth-ja-list li {
+  margin: 0 0 4px;
+}
+
+.indepth-ja-sources {
+  font-size: 12px;
+  color: var(--colour-muted);
+  margin: 0 0 12px;
+}
+
+/* ── RAG self-rating buttons ───────────────────────────────────────────────── */
+
+.indepth-rag-section {
+  margin: 14px 0;
+}
+
+.indepth-rag-options {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0 0;
+}
+
+.indepth-rag-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border: 2px solid var(--colour-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--colour-white);
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.indepth-rag-btn input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.indepth-rag-btn:hover { border-color: var(--colour-primary); }
+.indepth-rag-btn:focus-within { outline: 2px solid var(--colour-primary); outline-offset: 2px; }
+
+.indepth-rag-btn--red { color: var(--rag-red); border-color: #eecfcf; }
+.indepth-rag-btn--red.indepth-rag-btn--selected,
+.indepth-rag-btn--red:has(input:checked) { background: var(--rag-red); color: var(--colour-white); border-color: var(--rag-red); }
+
+.indepth-rag-btn--amber { color: #b06c00; border-color: #f5deb3; }
+.indepth-rag-btn--amber.indepth-rag-btn--selected,
+.indepth-rag-btn--amber:has(input:checked) { background: var(--rag-amber); color: #000; border-color: var(--rag-amber); }
+
+.indepth-rag-btn--green { color: #2e6e4a; border-color: #b3ddc5; }
+.indepth-rag-btn--green.indepth-rag-btn--selected,
+.indepth-rag-btn--green:has(input:checked) { background: var(--rag-green); color: var(--colour-white); border-color: var(--rag-green); }
+
+/* ── Reference & overall-grade sections ───────────────────────────────────── */
+
+.indepth-reference {
+  margin: 0 0 28px;
+}
+
+.indepth-reference-intro,
+.indepth-ref-note {
+  font-size: 13px;
+  color: var(--colour-muted);
+  margin: 0 0 10px;
+}
+
+.indepth-ref-note {
+  font-style: italic;
+}
+
+.indepth-overall {
+  margin: 0 0 24px;
+  padding: 18px 22px;
+  background: var(--colour-primary-light);
+  border-radius: var(--radius-md);
+}
+
+.indepth-overall .indepth-grade-options {
+  margin-top: 10px;
+}
+
 /* ── Keyboard focus visibility ─────────────────────────────────────────────── */
 
 a:focus-visible,

@@ -41,14 +41,13 @@
 
   {% if area %}
 
-    {# Overall grade banner — shown once at least one sub-section is graded #}
+    {# Overall grade banner — shown once a grade has been recorded #}
     {% if overall_grade %}
       <div class="review-outcome review-outcome--{{ overall_grade_css }}">
         <span class="review-outcome-label">Overall grade:</span>
         <span class="review-outcome-badge review-outcome-badge--{{ overall_grade_css }}">
           {{ overall_grade_label }}
         </span>
-        <span class="review-outcome-note">(weakest sub-section drives overall grade)</span>
       </div>
     {% endif %}
 
@@ -58,6 +57,31 @@
       </div>
     {% endif %}
 
+    {# How-to / RAG guidance from the Guidance sheet #}
+    <details class="indepth-criteria-details indepth-guidance">
+      <summary class="indepth-criteria-summary">How to complete this review (guidance)</summary>
+      <div class="indepth-criteria-body">
+        <p>Work through each <strong>judgement area</strong>, starting with the
+        Expected Standard and working up to Strong. For each one:</p>
+        <ol>
+          <li>Read the statement and use the key questions to frame your evaluation.</li>
+          <li>Triangulate the suggested evidence (data, documents, stakeholder feedback) — treat it as a guide, not a checklist.</li>
+          <li>Apply a RAG self-rating:
+            <ul>
+              <li><strong>Red</strong> — insufficient evidence to meet the standard.</li>
+              <li><strong>Amber</strong> — partial evidence; standard likely met but gaps remain.</li>
+              <li><strong>Green</strong> — strong, comprehensive evidence supports your judgement.</li>
+            </ul>
+          </li>
+          <li>Write a commentary of up to 150 words, in a formal, objective style, focused on impact and improvement.</li>
+          <li>Add next steps — specific, actionable, and showing how progress will be monitored.</li>
+        </ol>
+        <p>When all Expected judgement areas are green, refer to the Strong Standard to
+        see what further improvement would require. Use the reference lists below
+        (Urgent Improvement / Needs Attention / Exceptional) to inform the overall grade.</p>
+      </div>
+    </details>
+
     <form method="post" id="indepth-review-form">
       {% csrf_token %}
       <input type="hidden" name="school_id" value="{{ school.id }}" />
@@ -65,81 +89,123 @@
       <input type="hidden" name="area_id" value="{{ area.id }}" />
       {{ formset.management_form }}
 
-      {% for row in subsection_rows %}
-        <div class="indepth-subsection" data-subsection-id="{{ row.subsection.id }}">
+      {% if formset.non_form_errors %}
+        <ul class="messages"><li class="error">{{ formset.non_form_errors }}</li></ul>
+      {% endif %}
 
-          <div class="indepth-subsection-header">
-            <h3 class="indepth-subsection-name">{{ row.subsection.name }}</h3>
-            {% if row.current_grade %}
-              <span class="indepth-grade-chip indepth-grade-chip--{{ row.current_grade_css }}">
-                {{ row.current_grade_label }}
-              </span>
+      {% for block in rich_blocks %}
+        <section class="indepth-standard indepth-standard--{{ block.standard.key }}">
+          <header class="indepth-standard-header">
+            <h2 class="indepth-standard-title">{{ block.label }}</h2>
+            {% if block.focus %}
+              <p class="indepth-standard-focus">{{ block.focus }}</p>
             {% endif %}
-          </div>
+          </header>
 
-          {% if row.subsection.overview %}
-            <p class="indepth-subsection-overview">{{ row.subsection.overview }}</p>
-          {% endif %}
+          {% for row in block.rows %}
+            <div class="indepth-judgement" data-judgement>
+              {{ row.form.judgement_area_id }}
 
-          {% if row.subsection.evidence_criteria %}
-            <details class="indepth-criteria-details">
-              <summary class="indepth-criteria-summary">Evidence criteria (reference)</summary>
-              <div class="indepth-criteria-body">
-                {{ row.subsection.evidence_criteria|linebreaksbr }}
-              </div>
-            </details>
-          {% endif %}
+              <div class="indepth-judgement-statement">{{ row.ja.statement }}</div>
 
-          {# Grade selector #}
-          <div class="indepth-grade-section">
-            <label class="indepth-grade-label">Grade</label>
-            {{ row.form.subsection_id }}
-            {{ row.form.grade.errors }}
-            <div class="indepth-grade-options {% if is_safeguarding %}indepth-grade-options--binary{% endif %}">
-              {% for radio in row.form.grade %}
-                {% if radio.data.value %}
-                  <label class="indepth-grade-btn indepth-grade-btn--{{ radio.data.value }}"
-                         data-grade="{{ radio.data.value }}">
-                    {{ radio.tag }}
-                    <span class="indepth-grade-btn-label">{{ radio.data.label }}</span>
-                  </label>
-                {% endif %}
-              {% endfor %}
-            </div>
-
-            {# Grade descriptor — one per grade option, shown/hidden by JS #}
-            {% for grade_val, descriptor in row.descriptors.items %}
-              {% if descriptor %}
-                <div class="indepth-grade-descriptor indepth-grade-descriptor--{{ grade_val }}"
-                     data-for-grade="{{ grade_val }}"
-                     aria-live="polite"
-                     style="display:none">
-                  <em>{{ descriptor }}</em>
+              {% if row.ja.key_questions %}
+                <div class="indepth-ja-meta">
+                  <span class="indepth-ja-meta-label">Key questions</span>
+                  <ul class="indepth-ja-list">
+                    {% for q in row.ja.key_questions %}<li>{{ q }}</li>{% endfor %}
+                  </ul>
                 </div>
               {% endif %}
-            {% endfor %}
-          </div>
 
-          {# Evidence text #}
-          <div class="indepth-field">
-            <label class="indepth-field-label" for="{{ row.form.evidence_text.id_for_label }}">
-              Evidence notes <small>(max 300 words)</small>
-            </label>
-            {{ row.form.evidence_text.errors }}
-            {{ row.form.evidence_text }}
-          </div>
+              {% if row.ja.suggested_evidence %}
+                <details class="indepth-criteria-details">
+                  <summary class="indepth-criteria-summary">Suggested evidence ({{ row.ja.suggested_evidence|length }})</summary>
+                  <div class="indepth-criteria-body">
+                    <ul class="indepth-ja-list">
+                      {% for e in row.ja.suggested_evidence %}<li>{{ e }}</li>{% endfor %}
+                    </ul>
+                  </div>
+                </details>
+              {% endif %}
 
-          {# Next steps #}
-          <div class="indepth-field">
-            <label class="indepth-field-label" for="{{ row.form.next_steps.id_for_label }}">
-              Next steps <small>(max 150 words)</small>
-            </label>
-            {{ row.form.next_steps.errors }}
-            {{ row.form.next_steps }}
-          </div>
+              {% if row.ja.sources %}
+                <p class="indepth-ja-sources"><strong>Sources:</strong> {{ row.ja.sources|join:"; " }}</p>
+              {% endif %}
 
-        </div>{# end .indepth-subsection #}
+              {# RAG self-rating #}
+              <div class="indepth-rag-section">
+                <span class="indepth-grade-label">RAG self-rating</span>
+                {{ row.form.rag.errors }}
+                <div class="indepth-rag-options">
+                  {% for radio in row.form.rag %}
+                    <label class="indepth-rag-btn indepth-rag-btn--{{ radio.data.value }}"
+                           data-rag="{{ radio.data.value }}">
+                      {{ radio.tag }}
+                      <span class="indepth-rag-btn-label">{{ radio.choice_label }}</span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </div>
+
+              {# Commentary #}
+              <div class="indepth-field">
+                <label class="indepth-field-label" for="{{ row.form.commentary.id_for_label }}">
+                  Commentary <small>(max 150 words)</small>
+                </label>
+                {{ row.form.commentary.errors }}
+                {{ row.form.commentary }}
+              </div>
+
+              {# Next steps #}
+              <div class="indepth-field">
+                <label class="indepth-field-label" for="{{ row.form.next_steps.id_for_label }}">
+                  Next steps <small>(max 150 words)</small>
+                </label>
+                {{ row.form.next_steps.errors }}
+                {{ row.form.next_steps }}
+              </div>
+            </div>{# end .indepth-judgement #}
+          {% endfor %}
+        </section>
       {% endfor %}
+
+      {# Reference lists — trigger/example statements that inform the overall grade #}
+      {% if ref_blocks %}
+        <section class="indepth-reference">
+          <h2 class="indepth-standard-title">Reference: other grade bands</h2>
+          <p class="indepth-reference-intro">These statements are not rated individually — use them to decide the overall grade for the area.</p>
+          {% for block in ref_blocks %}
+            <details class="indepth-criteria-details">
+              <summary class="indepth-criteria-summary">{{ block.label }} ({{ block.statements|length }})</summary>
+              <div class="indepth-criteria-body">
+                {% for note in block.notes %}
+                  <p class="indepth-ref-note">{{ note }}</p>
+                {% endfor %}
+                <ul class="indepth-ja-list">
+                  {% for s in block.statements %}<li>{{ s }}</li>{% endfor %}
+                </ul>
+              </div>
+            </details>
+          {% endfor %}
+        </section>
+      {% endif %}
+
+      {# Overall grade for the area #}
+      <section class="indepth-overall">
+        <h2 class="indepth-standard-title">Overall grade for this area</h2>
+        <div class="indepth-grade-options {% if is_safeguarding %}indepth-grade-options--binary{% endif %}">
+          {% for value, label in grade_choices %}
+            {% if value %}
+              <label class="indepth-grade-btn indepth-grade-btn--{{ value }}" data-grade="{{ value }}">
+                <input type="radio" name="overall_grade" value="{{ value }}"
+                       {% if value == overall_grade %}checked{% endif %}
+                       {% if not can_edit %}disabled{% endif %} />
+                <span class="indepth-grade-btn-label">{{ label }}</span>
+              </label>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </section>
 
       <div class="actions">
         {% if can_edit %}
@@ -153,7 +219,7 @@
 
 {% block scripts %}
   {% load static %}
-  <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260602-1"></script>
+  <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260613-1"></script>
   {% if can_edit %}
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
   {% endif %}

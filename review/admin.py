@@ -19,8 +19,10 @@ from .models import (
 	Category,
 	Evaluation,
 	InDepthArea,
+	InDepthJudgementArea,
 	InDepthResponse,
 	InDepthReview,
+	InDepthStandard,
 	InDepthSubSection,
 	ReviewPeriod,
 	School,
@@ -211,10 +213,36 @@ class InDepthReviewAdmin(admin.ModelAdmin):
 
 @admin.register(InDepthResponse)
 class InDepthResponseAdmin(admin.ModelAdmin):
-	list_display = ("review", "subsection", "grade", "updated_at")
-	list_filter = ("grade", "subsection__area")
-	search_fields = ("evidence_text", "next_steps", "subsection__name")
-	list_select_related = ("review", "subsection", "subsection__area")
+	list_display = ("review", "judgement_area", "subsection", "rag", "grade", "updated_at")
+	list_filter = ("rag", "grade", "judgement_area__standard__area", "subsection__area")
+	search_fields = ("evidence_text", "next_steps", "subsection__name", "judgement_area__statement")
+	list_select_related = ("review", "subsection", "subsection__area", "judgement_area")
+
+
+@admin.register(InDepthStandard)
+class InDepthStandardAdmin(admin.ModelAdmin):
+	list_display = ("area", "key", "order", "judgement_area_count")
+	list_filter = ("area", "key")
+	ordering = ("area__order", "order")
+	list_select_related = ("area",)
+	search_fields = ("area__name", "focus")
+
+	@admin.display(description="Judgement areas")
+	def judgement_area_count(self, obj):
+		return obj.judgement_areas.count()
+
+
+@admin.register(InDepthJudgementArea)
+class InDepthJudgementAreaAdmin(admin.ModelAdmin):
+	list_display = ("standard", "order", "is_flat", "short_statement")
+	list_filter = ("is_flat", "standard__area", "standard__key")
+	ordering = ("standard__area__order", "standard__order", "order")
+	list_select_related = ("standard", "standard__area")
+	search_fields = ("statement",)
+
+	@admin.display(description="Statement")
+	def short_statement(self, obj):
+		return obj.statement[:80]
 
 
 class SchoolProfileInline(admin.StackedInline):
