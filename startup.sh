@@ -36,6 +36,11 @@ if [ -f "$APP_ROOT/manage.py" ]; then
   # repeated here defensively in case the build step is ever skipped.
   echo "Collecting static..."
   python manage.py collectstatic --noinput || echo "Collectstatic failed (continuing)."
+
+  # Copy committed demo media (school logos + branding) into STATIC_ROOT/media so
+  # WhiteNoise can serve them when MEDIA_AS_STATIC=1. Must run AFTER collectstatic.
+  echo "Copying demo media into static..."
+  python manage.py copy_demo_media_to_static || echo "copy_demo_media_to_static failed (continuing)."
 fi
 
 # 4) Start gunicorn from the current app path.
