@@ -824,8 +824,6 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		if formset.is_valid():
 			overall_grade = (request.POST.get("overall_grade") or "").strip()
 			valid_grades = {c[0] for c in grade_choices if c[0]}
-			if overall_grade not in valid_grades:
-				overall_grade = ""
 			with transaction.atomic():
 				if review is None:
 					review = InDepthReview.objects.create(
@@ -835,16 +833,29 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 					ja_id = f.cleaned_data.get("judgement_area_id")
 					if ja_id not in ja_ids:
 						continue
-					InDepthResponse.objects.update_or_create(
-						review=review,
-						judgement_area_id=ja_id,
-						defaults={
-							"rag": f.cleaned_data["rag"],
-							"evidence_text": f.cleaned_data["commentary"],
-							"next_steps": f.cleaned_data["next_steps"],
-						},
-					)
-				review.overall_grade = overall_grade
+					rag = f.cleaned_data["rag"]
+					commentary = f.cleaned_data["commentary"]
+					next_steps = f.cleaned_data["next_steps"]
+					if rag or commentary or next_steps:
+						InDepthResponse.objects.update_or_create(
+							review=review,
+							judgement_area_id=ja_id,
+							defaults={
+								"rag": rag,
+								"evidence_text": commentary,
+								"next_steps": next_steps,
+							},
+						)
+					else:
+						# Nothing entered — don't create a blank row, and clear any
+						# previously-saved response for this judgement area.
+						InDepthResponse.objects.filter(
+							review=review, judgement_area_id=ja_id
+						).delete()
+				# Only overwrite the area grade with a valid value; never blank a
+				# previously-saved grade on an invalid or empty submission.
+				if overall_grade in valid_grades:
+					review.overall_grade = overall_grade
 				review.step = "review"
 				review.updated_by = request.user
 				review.save()

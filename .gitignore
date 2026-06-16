@@ -27,6 +27,8 @@ db.sqlite3
 # Secrets / env
 .env
 .env.*
+# ...but keep the documented template tracked.
+!.env.example
 
 # VS Code
 .vscode/

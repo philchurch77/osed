@@ -61,8 +61,12 @@
     <details class="indepth-criteria-details indepth-guidance">
       <summary class="indepth-criteria-summary">How to complete this review (guidance)</summary>
       <div class="indepth-criteria-body">
-        <p>Work through each <strong>judgement area</strong>, starting with the
-        Expected Standard and working up to Strong. For each one:</p>
+        {% if is_safeguarding %}
+          <p>Work through each <strong>judgement area</strong> for the Met standard. For each one:</p>
+        {% else %}
+          <p>Work through each <strong>judgement area</strong>, starting with the
+          Expected Standard and working up to Strong. For each one:</p>
+        {% endif %}
         <ol>
           <li>Read the statement and use the key questions to frame your evaluation.</li>
           <li>Triangulate the suggested evidence (data, documents, stakeholder feedback) — treat it as a guide, not a checklist.</li>
@@ -76,9 +80,15 @@
           <li>Write a commentary of up to 150 words, in a formal, objective style, focused on impact and improvement.</li>
           <li>Add next steps — specific, actionable, and showing how progress will be monitored.</li>
         </ol>
-        <p>When all Expected judgement areas are green, refer to the Strong Standard to
-        see what further improvement would require. Use the reference lists below
-        (Urgent Improvement / Needs Attention / Exceptional) to inform the overall grade.</p>
+        {% if is_safeguarding %}
+          <p>Safeguarding is judged <strong>Met</strong> or <strong>Not Met</strong>. If any
+          judgement area lacks sufficient evidence (red), the area cannot be Met. Use the
+          Not Met reference list below to check whether any trigger applies.</p>
+        {% else %}
+          <p>When all Expected judgement areas are green, refer to the Strong Standard to
+          see what further improvement would require. Use the reference lists below
+          (Urgent Improvement / Needs Attention / Exceptional) to inform the overall grade.</p>
+        {% endif %}
       </div>
     </details>
 
@@ -221,6 +231,7 @@
   {% load static %}
   <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260613-1"></script>
   {% if can_edit %}
+    <script defer src="{% static 'review/word_limit.js' %}?v=20260613-1"></script>
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
   {% endif %}
 {% endblock %}

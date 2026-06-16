@@ -5,6 +5,7 @@ django-allauth
 django-storages[azure]
 whitenoise
 dj-database-url
+python-dotenv
 
 # Render (Linux) production server + Postgres driver
 gunicorn; platform_system != "Windows"

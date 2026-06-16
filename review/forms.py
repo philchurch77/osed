@@ -136,8 +136,3 @@ class InDepthJudgementAreaForm(forms.Form):
         value = self.cleaned_data.get("next_steps") or ""
         _validate_max_words(value, max_words=MAX_NEXT_STEPS_WORDS)
         return value
-
-    def clean_rag(self) -> str:
-        value = self.cleaned_data.get("rag") or ""
-        valid = {c[0] for c in RAG_CHOICES}
-        return value if value in valid else ""

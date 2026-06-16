@@ -281,3 +281,36 @@ class InDepthJudgementAreaFlowTests(TestCase):
 		resp = self._post(**{"form-0-commentary": " ".join(["word"] * 151)})
 		self.assertEqual(resp.status_code, 200)
 		self.assertEqual(InDepthReview.objects.count(), 0)
+
+	def test_blank_form_creates_no_response_rows(self):
+		self.client.force_login(self.staff)
+		resp = self._post(**{
+			"form-0-rag": "", "form-0-commentary": "", "form-0-next_steps": "",
+			"form-1-rag": "", "form-1-commentary": "", "form-1-next_steps": "",
+			"overall_grade": "",
+		})
+		self.assertEqual(resp.status_code, 302)
+		review = InDepthReview.objects.get(school=self.school, year=2025, area=self.area)
+		self.assertEqual(InDepthResponse.objects.filter(review=review).count(), 0)
+
+	def test_clearing_a_response_deletes_it(self):
+		self.client.force_login(self.staff)
+		self._post()
+		review = InDepthReview.objects.get(school=self.school, year=2025, area=self.area)
+		self.assertEqual(InDepthResponse.objects.filter(review=review).count(), 2)
+		# Re-save with judgement area 1 fully cleared.
+		self._post(**{"form-0-rag": "", "form-0-commentary": "", "form-0-next_steps": ""})
+		self.assertFalse(
+			InDepthResponse.objects.filter(review=review, judgement_area=self.ja1).exists()
+		)
+		self.assertTrue(
+			InDepthResponse.objects.filter(review=review, judgement_area=self.ja2).exists()
+		)
+
+	def test_invalid_overall_grade_does_not_blank_existing(self):
+		self.client.force_login(self.staff)
+		self._post(**{"overall_grade": "expected_standard"})
+		# A submission carrying an unrecognised grade must not wipe the saved one.
+		self._post(**{"overall_grade": "bogus_value"})
+		review = InDepthReview.objects.get(school=self.school, year=2025, area=self.area)
+		self.assertEqual(review.overall_grade, "expected_standard")

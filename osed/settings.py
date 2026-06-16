@@ -19,6 +19,16 @@ from django.core.exceptions import ImproperlyConfigured
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load a local .env file (for local development only). On Render/Azure the real
+# environment variables are set by the platform, so the .env file is absent there
+# and this is a no-op. The import is optional so settings never crash if
+# python-dotenv isn't installed.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:
+    pass
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
@@ -37,7 +47,9 @@ SECRET_KEY = os.getenv(
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = _env_bool("DEBUG", default=True)
+# Defaults to False so production is safe even if DEBUG is never set.
+# For local development, set DEBUG=1 in your .env file.
+DEBUG = _env_bool("DEBUG", default=False)
 
 if not DEBUG and not os.getenv("SECRET_KEY"):
     raise ImproperlyConfigured(
@@ -59,6 +71,14 @@ _render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 if _render_external_url:
     CSRF_TRUSTED_ORIGINS = [_render_external_url]
 
+# Azure App Service exposes the public hostname via WEBSITE_HOSTNAME.
+_azure_hostname = os.getenv("WEBSITE_HOSTNAME", "").strip()
+if _azure_hostname:
+    if _azure_hostname not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_azure_hostname)
+    _azure_origin = f"https://{_azure_hostname}"
+    CSRF_TRUSTED_ORIGINS = list(set(globals().get("CSRF_TRUSTED_ORIGINS", []) + [_azure_origin]))
+
 
 # Application definition
 
@@ -69,6 +89,8 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    # WhiteNoise: must come before staticfiles so its dev static handler is used.
+    'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
 
     'allauth',
