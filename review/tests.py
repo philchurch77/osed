@@ -445,6 +445,21 @@ class InDepthJudgementAreaFlowTests(TestCase):
 		self.assertEqual(r1.next_steps, "Sustain and share practice.")
 		self.assertEqual(r1.rag, "green")  # carried over, untouched
 
+	def test_commentary_shows_only_awarded_band_statements(self):
+		# Expected all green + Strong amber -> grade lands on Strong, so commentary
+		# asks for write-ups on the Strong statement only, not the Expected ones.
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "strong_standard")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.get(url)
+		shown = {
+			row["ja"].id
+			for block in resp.context["rich_blocks"]
+			for row in block["rows"]
+		}
+		self.assertEqual(shown, {self.js1.id})
+
 	def test_commentary_word_limit_blocks_save(self):
 		self.client.force_login(self.staff)
 		self._rag_post([(self.je1, "green"), (self.je2, "amber")])

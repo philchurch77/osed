@@ -726,6 +726,21 @@ _RICH_KEYS_DEFAULT = [
 ]
 _RICH_KEYS_SAFEGUARDING = ["met"]
 
+# When writing commentary a school only documents the band its grade landed on,
+# not every rung it RAGed to climb there (to reach Strong you RAG Expected all
+# green first, but only Strong needs a write-up). Map each awarded grade to the
+# rung whose statements need commentary. Failing/down-path outcomes point at the
+# rung that was evaluated to reach them.
+_GRADE_TO_COMMENTARY_RUNG = {
+	"expected_standard": "expected_standard",
+	"strong_standard": "strong_standard",
+	"exceptional": "exceptional",
+	"urgent_improvement": "urgent_improvement",
+	"needs_attention": "urgent_improvement",
+	"met": "met",
+	"not_met": "met",
+}
+
 
 def _rung_state(rags) -> str:
 	"""Classify a rung's RAG values.
@@ -907,9 +922,20 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			]
 		return out
 
-	# The commentary page only shows statements that were RAGed on the ladder.
+	# The commentary page only asks for write-ups on the band the grade landed
+	# on: the RAGed statements belonging to the awarded grade's rung. (Earlier
+	# rungs were RAGed to reach that grade but don't need their own commentary.)
 	if page == "commentary":
-		page_jas = [ja for ja in all_jas if ja.id in existing and existing[ja.id].rag]
+		rated = [ja for ja in all_jas if ja.id in existing and existing[ja.id].rag]
+		ja_rung_key = {ja.id: s.key for s, jas in rung_jas for ja in jas}
+		band_key = _GRADE_TO_COMMENTARY_RUNG.get(review.overall_grade if review else "")
+		if band_key:
+			band_jas = [ja for ja in rated if ja_rung_key.get(ja.id) == band_key]
+			# Fall back to every rated statement if the band has none, so the page
+			# is never inexplicably blank.
+			page_jas = band_jas or rated
+		else:
+			page_jas = rated
 	else:
 		page_jas = all_jas
 
