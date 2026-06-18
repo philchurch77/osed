@@ -16,8 +16,6 @@ from .forms import (
 	InDepthJudgementAreaForm,
 	RATING_CHOICES_DEFAULT,
 	RATING_CHOICES_SAFEGUARDING,
-	SAFEGUARDING_GRADE_CHOICES,
-	STANDARD_GRADE_CHOICES,
 )
 from .models import (
 	Category,
@@ -35,7 +33,7 @@ from .models import (
 from .permissions import user_can_edit
 
 
-MIN_ACADEMIC_YEAR_START = 2025
+MIN_ACADEMIC_YEAR_START = 2026
 
 
 def _apply_category_specific_rating_choices(*, forms, safeguarding_category_ids: set[int]) -> None:
@@ -717,17 +715,99 @@ _GRADE_CSS = {
 	"met": "met",
 }
 
-# Which standards carry RAG-able judgement areas (worked through in order,
-# Expected -> Strong), and which are flat reference lists — per scale.
-_RICH_KEYS_DEFAULT = ["expected_standard", "strong_standard"]
-_REF_KEYS_DEFAULT = ["urgent_improvement", "needs_attention", "exceptional"]
+# RAG-able rungs, in DOM/reveal order. The ladder starts on Expected; the
+# up-path climbs Expected -> Strong -> Exceptional, the down-path drops to
+# Urgent Improvement. Needs Attention is only an outcome label, never RAGed.
+_RICH_KEYS_DEFAULT = [
+	"expected_standard",
+	"strong_standard",
+	"exceptional",
+	"urgent_improvement",
+]
 _RICH_KEYS_SAFEGUARDING = ["met"]
-_REF_KEYS_SAFEGUARDING = ["not_met"]
+
+
+def _rung_state(rags) -> str:
+	"""Classify a rung's RAG values.
+
+	'absent'     — the rung has no rateable statements at all
+	'incomplete' — at least one statement is un-rated
+	'has_red' / 'has_amber' / 'all_green' — fully rated, by worst rating present
+	"""
+	if rags is None:
+		return "absent"
+	if not rags or any(r == "" for r in rags):
+		return "incomplete"
+	if any(r == "red" for r in rags):
+		return "has_red"
+	if any(r == "amber" for r in rags):
+		return "has_amber"
+	return "all_green"
+
+
+def conclude_indepth_grade(rags_by_key, *, is_safeguarding: bool = False) -> str:
+	"""Derive the self-evaluation grade from the RAG ladder.
+
+	`rags_by_key` maps a standard key to the list of RAG values for that rung's
+	rateable statements (use "" for un-rated; omit the key entirely when the
+	rung has no statements). Returns a grade key, or "" when the ladder has not
+	yet reached a conclusion (a required rung is still incomplete).
+	"""
+	if is_safeguarding:
+		met = rags_by_key.get("met")
+		if _rung_state(met) in ("absent", "incomplete"):
+			return ""
+		return "not_met" if any(r == "red" for r in met) else "met"
+
+	expected = _rung_state(rags_by_key.get("expected_standard"))
+	if expected in ("absent", "incomplete"):
+		return ""
+
+	if expected == "has_red":
+		# Down-path. Polarity is flipped: on Urgent Improvement, a red means the
+		# failing does NOT apply. All red => no failings apply => Needs Attention.
+		ui_list = rags_by_key.get("urgent_improvement")
+		ui = _rung_state(ui_list)
+		if ui == "absent":
+			return "needs_attention"
+		if ui == "incomplete":
+			return ""
+		return "needs_attention" if all(r == "red" for r in ui_list) else "urgent_improvement"
+
+	if expected == "has_amber":
+		return "expected_standard"
+
+	# All green at Expected — climb to Strong.
+	strong = _rung_state(rags_by_key.get("strong_standard"))
+	if strong == "absent":
+		return "expected_standard"
+	if strong == "incomplete":
+		return ""
+	if strong == "has_red":
+		return "expected_standard"
+	if strong == "has_amber":
+		return "strong_standard"
+
+	# All green at Strong — climb to Exceptional.
+	exc_list = rags_by_key.get("exceptional")
+	exc = _rung_state(exc_list)
+	if exc == "absent":
+		return "strong_standard"
+	if exc == "incomplete":
+		return ""
+	return "strong_standard" if exc == "has_red" else "exceptional"
 
 
 @login_required
 def indepth_review(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
+
+	# Two pages share this view: 'rag' (the ladder that concludes the grade) and
+	# 'commentary' (the per-statement write-up). Default to the ladder.
+	page = (request.GET.get("page") or request.POST.get("page") or "rag").strip()
+	if page not in ("rag", "commentary"):
+		page = "rag"
+
 	if request.method == "POST" and not can_edit:
 		school_id = request.POST.get("school_id") if request.user.is_superuser else None
 		return _readonly_redirect(
@@ -737,6 +817,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				("year", request.POST.get("year") or ""),
 				("area", request.POST.get("area_id") or ""),
 				("school", school_id or ""),
+				("page", page),
 			],
 		)
 
@@ -776,33 +857,35 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				"academic_year_options": academic_year_options,
 				"review": None,
 				"rich_blocks": [],
-				"ref_blocks": [],
 				"formset": None,
 				"can_edit": can_edit,
 				"is_safeguarding": False,
+				"page": page,
 				"overall_grade": "",
 				"overall_grade_label": "",
 				"overall_grade_css": "",
-				"grade_choices": STANDARD_GRADE_CHOICES,
 			},
 		)
 
 	is_safeguarding = area.is_safeguarding
 	rich_keys = _RICH_KEYS_SAFEGUARDING if is_safeguarding else _RICH_KEYS_DEFAULT
-	ref_keys = _REF_KEYS_SAFEGUARDING if is_safeguarding else _REF_KEYS_DEFAULT
-	grade_choices = SAFEGUARDING_GRADE_CHOICES if is_safeguarding else STANDARD_GRADE_CHOICES
 
 	standards = {
 		s.key: s
 		for s in InDepthStandard.objects.filter(area=area).prefetch_related("judgement_areas")
 	}
 
-	# Ordered RAG-able judgement areas (Expected first, then Strong).
+	# RAG-able rungs in DOM/reveal order, each with its rateable judgement areas.
 	rich_standards = [standards[k] for k in rich_keys if k in standards]
-	judgement_areas = []
+	rung_jas = []  # [(standard, [ja, ...]), ...] — only rungs that have statements
+	ja_ids = set()
 	for s in rich_standards:
-		judgement_areas.extend(ja for ja in s.judgement_areas.all() if not ja.is_flat)
-	ja_ids = {ja.id for ja in judgement_areas}
+		jas = [ja for ja in s.judgement_areas.all() if not ja.is_flat]
+		if not jas:
+			continue
+		rung_jas.append((s, jas))
+		ja_ids.update(ja.id for ja in jas)
+	all_jas = [ja for _s, jas in rung_jas for ja in jas]
 
 	review = InDepthReview.objects.filter(school=school, year=selected_year, area=area).first()
 	existing = {} if review is None else {
@@ -810,10 +893,25 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		for r in InDepthResponse.objects.filter(review=review, judgement_area__isnull=False)
 	}
 
-	def _build_params() -> str:
-		if request.user.is_superuser:
-			return f"?school={school.id}&year={selected_year_value}&area={area.id}"
-		return f"?year={selected_year_value}&area={area.id}"
+	def _build_params(target_page: str) -> str:
+		base = f"?school={school.id}&" if request.user.is_superuser else "?"
+		return f"{base}year={selected_year_value}&area={area.id}&page={target_page}"
+
+	def _rags_by_key(resp_map) -> dict:
+		"""Per-rung RAG lists ("" for un-rated) for grade computation."""
+		out = {}
+		for s, jas in rung_jas:
+			out[s.key] = [
+				(resp_map[ja.id].rag if ja.id in resp_map and resp_map[ja.id].rag else "")
+				for ja in jas
+			]
+		return out
+
+	# The commentary page only shows statements that were RAGed on the ladder.
+	if page == "commentary":
+		page_jas = [ja for ja in all_jas if ja.id in existing and existing[ja.id].rag]
+	else:
+		page_jas = all_jas
 
 	FormSetClass = formset_factory(InDepthJudgementAreaForm, extra=0)
 	formset = None
@@ -822,8 +920,6 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	if request.method == "POST" and can_edit:
 		formset = FormSetClass(request.POST)
 		if formset.is_valid():
-			overall_grade = (request.POST.get("overall_grade") or "").strip()
-			valid_grades = {c[0] for c in grade_choices if c[0]}
 			with transaction.atomic():
 				if review is None:
 					review = InDepthReview.objects.create(
@@ -833,34 +929,59 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 					ja_id = f.cleaned_data.get("judgement_area_id")
 					if ja_id not in ja_ids:
 						continue
-					rag = f.cleaned_data["rag"]
-					commentary = f.cleaned_data["commentary"]
-					next_steps = f.cleaned_data["next_steps"]
-					if rag or commentary or next_steps:
-						InDepthResponse.objects.update_or_create(
-							review=review,
-							judgement_area_id=ja_id,
-							defaults={
-								"rag": rag,
-								"evidence_text": commentary,
-								"next_steps": next_steps,
-							},
-						)
+					resp = InDepthResponse.objects.filter(
+						review=review, judgement_area_id=ja_id
+					).first()
+					if page == "commentary":
+						# Only touch the write-up fields; leave the RAG intact.
+						commentary = f.cleaned_data["commentary"]
+						next_steps = f.cleaned_data["next_steps"]
+						if resp:
+							resp.evidence_text = commentary
+							resp.next_steps = next_steps
+							if not (resp.rag or commentary or next_steps):
+								resp.delete()
+							else:
+								resp.save()
+						elif commentary or next_steps:
+							InDepthResponse.objects.create(
+								review=review, judgement_area_id=ja_id,
+								evidence_text=commentary, next_steps=next_steps,
+							)
 					else:
-						# Nothing entered — don't create a blank row, and clear any
-						# previously-saved response for this judgement area.
-						InDepthResponse.objects.filter(
-							review=review, judgement_area_id=ja_id
-						).delete()
-				# Only overwrite the area grade with a valid value; never blank a
-				# previously-saved grade on an invalid or empty submission.
-				if overall_grade in valid_grades:
-					review.overall_grade = overall_grade
+						# RAG page — only touch the rating. A blank rating means the
+						# statement is not (or no longer) rated; drop the whole
+						# response so no orphaned commentary lingers on an abandoned
+						# branch (page 2 only ever shows rated statements).
+						rag = f.cleaned_data["rag"]
+						if rag:
+							if resp:
+								resp.rag = rag
+								resp.save()
+							else:
+								InDepthResponse.objects.create(
+									review=review, judgement_area_id=ja_id, rag=rag,
+								)
+						elif resp:
+							resp.delete()
+
+				# Recompute and store the grade from the now-saved RAG state.
+				refreshed = {
+					r.judgement_area_id: r
+					for r in InDepthResponse.objects.filter(
+						review=review, judgement_area__isnull=False
+					)
+				}
+				review.overall_grade = conclude_indepth_grade(
+					_rags_by_key(refreshed), is_safeguarding=is_safeguarding
+				)
 				review.step = "review"
 				review.updated_by = request.user
 				review.save()
 			messages.success(request, "In-depth review saved.")
-			return redirect(f"{reverse('review:indepth_review')}{_build_params()}")
+			# 'Save & continue' takes the user from the ladder to the write-up.
+			target = "commentary" if (page == "rag" and request.POST.get("save_continue")) else page
+			return redirect(f"{reverse('review:indepth_review')}{_build_params(target)}")
 
 	# ── Build formset for GET (or re-render after an invalid POST) ───────────────
 	if formset is None:
@@ -871,7 +992,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				"commentary": existing[ja.id].evidence_text if ja.id in existing else "",
 				"next_steps": existing[ja.id].next_steps if ja.id in existing else "",
 			}
-			for ja in judgement_areas
+			for ja in page_jas
 		]
 		formset = FormSetClass(initial=initial)
 
@@ -880,48 +1001,51 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			for field in f.fields.values():
 				field.disabled = True
 
-	# Align forms to judgement areas (same order they were built in) and group
-	# them under their standard for rendering.
-	form_iter = iter(formset.forms)
+	# Map each rendered form to its judgement area by id, so rendering stays
+	# correct whether the formset came from initial data or a (possibly partial)
+	# POST re-render.
+	form_by_ja = {}
+	for f in formset.forms:
+		raw = f["judgement_area_id"].value()
+		try:
+			form_by_ja[int(raw)] = f
+		except (TypeError, ValueError):
+			continue
+
+	# Group forms under their rung for rendering.
 	rich_blocks = []
-	for s in rich_standards:
+	for s, jas in rung_jas:
 		rows = []
-		for ja in s.judgement_areas.all():
-			if ja.is_flat:
+		for ja in jas:
+			if ja.id not in form_by_ja:
 				continue
-			f = next(form_iter)
 			resp = existing.get(ja.id)
 			rows.append({
 				"ja": ja,
-				"form": f,
+				"form": form_by_ja[ja.id],
 				"current_rag": resp.rag if resp else "",
 			})
+		if not rows:
+			continue
 		rich_blocks.append({
 			"standard": s,
+			"key": s.key,
 			"label": s.get_key_display(),
 			"focus": s.focus,
+			"is_downpath": s.key == "urgent_improvement",
 			"rows": rows,
 		})
 
-	# Reference (flat) trigger/example lists — read-only context for the grade.
-	ref_blocks = []
-	for k in ref_keys:
-		s = standards.get(k)
-		if s is None:
-			continue
-		statements = [ja.statement for ja in s.judgement_areas.all() if ja.is_flat]
-		ref_blocks.append({
-			"standard": s,
-			"label": s.get_key_display(),
-			"statements": statements,
-			"notes": s.usage_notes or [],
-		})
-
 	overall_grade = review.overall_grade if review else ""
+	template = (
+		"review/indepth_review_commentary.html"
+		if page == "commentary"
+		else "review/indepth_review.html"
+	)
 
 	return render(
 		request,
-		"review/indepth_review.html",
+		template,
 		{
 			"school": school,
 			"schools": schools,
@@ -931,14 +1055,13 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"academic_year_options": academic_year_options,
 			"review": review,
 			"rich_blocks": rich_blocks,
-			"ref_blocks": ref_blocks,
 			"formset": formset,
 			"can_edit": can_edit,
 			"is_safeguarding": is_safeguarding,
+			"page": page,
 			"overall_grade": overall_grade,
 			"overall_grade_label": _GRADE_LABELS.get(overall_grade, ""),
 			"overall_grade_css": _GRADE_CSS.get(overall_grade, ""),
-			"grade_choices": grade_choices,
 		},
 	)
 

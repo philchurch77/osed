@@ -2023,3 +2023,81 @@ summary:focus-visible {
     animation: none;
   }
 }
+
+/* ── In-depth review: two-step ladder flow ────────────────────────────────── */
+
+/* Rungs not yet reached are hidden until the JS reveals them. */
+.indepth-rung.is-hidden {
+  display: none;
+}
+
+/* Step navigation between the ratings page and the commentary page. */
+.indepth-steps {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 20px;
+  font-size: 14px;
+}
+
+.indepth-steps .indepth-step {
+  color: var(--colour-primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.indepth-steps .indepth-step--current {
+  color: var(--colour-text);
+  font-weight: 700;
+}
+
+.indepth-step-sep {
+  color: var(--colour-muted);
+}
+
+/* Flipped-polarity warning on the Urgent Improvement rung. */
+.indepth-downpath-note {
+  background: #fdf3f3;
+  border-left: 4px solid var(--rag-red);
+  padding: 10px 14px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+/* The concluded-grade box while the ladder is still incomplete. */
+.review-outcome--pending {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.review-outcome--pending .review-outcome-badge {
+  background: var(--colour-surface-2, #eef0f3);
+  color: var(--colour-muted);
+  font-weight: 600;
+}
+
+/* Carried-over RAG tag shown beside each statement on the commentary page. */
+.indepth-rag-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.indepth-rag-tag--red { background: var(--rag-red); color: var(--colour-white); }
+.indepth-rag-tag--amber { background: var(--rag-amber); color: #000; }
+.indepth-rag-tag--green { background: var(--rag-green); color: var(--colour-white); }
+
+.indepth-empty {
+  padding: 16px;
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+}

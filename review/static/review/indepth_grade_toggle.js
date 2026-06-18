@@ -30,9 +30,4 @@
   document.querySelectorAll('[data-judgement] .indepth-rag-options').forEach(function (group) {
     initGroup(group, '.indepth-rag-btn', 'indepth-rag-btn--selected');
   });
-
-  // Overall area grade selector
-  document.querySelectorAll('.indepth-overall .indepth-grade-options').forEach(function (group) {
-    initGroup(group, '.indepth-grade-btn', 'indepth-grade-btn--selected');
-  });
 })();

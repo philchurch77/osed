@@ -1,6 +1,6 @@
 {% extends "review/base.html" %}
 
-{% block title %}In-depth review{% endblock %}
+{% block title %}In-depth review — ratings{% endblock %}
 
 {% block content %}
   <header class="page-header">
@@ -36,20 +36,16 @@
   {% endif %}
 
   {% if not can_edit %}
-    <p><strong>Read-only:</strong> you can view responses, but you cannot make changes.</p>
+    <p><strong>Read-only:</strong> you can view ratings, but you cannot make changes.</p>
   {% endif %}
 
   {% if area %}
 
-    {# Overall grade banner — shown once a grade has been recorded #}
-    {% if overall_grade %}
-      <div class="review-outcome review-outcome--{{ overall_grade_css }}">
-        <span class="review-outcome-label">Overall grade:</span>
-        <span class="review-outcome-badge review-outcome-badge--{{ overall_grade_css }}">
-          {{ overall_grade_label }}
-        </span>
-      </div>
-    {% endif %}
+    <nav class="indepth-steps" aria-label="In-depth review steps">
+      <span class="indepth-step indepth-step--current">1. Ratings</span>
+      <span class="indepth-step-sep">→</span>
+      <a class="indepth-step" href="{% url 'review:indepth_review' %}?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&page=commentary">2. Commentary &amp; next steps</a>
+    </nav>
 
     {% if area.purpose %}
       <div class="indepth-area-purpose">
@@ -57,46 +53,40 @@
       </div>
     {% endif %}
 
-    {# How-to / RAG guidance from the Guidance sheet #}
+    {# How-to / RAG guidance #}
     <details class="indepth-criteria-details indepth-guidance">
-      <summary class="indepth-criteria-summary">How to complete this review (guidance)</summary>
+      <summary class="indepth-criteria-summary">How to complete the ratings (guidance)</summary>
       <div class="indepth-criteria-body">
         {% if is_safeguarding %}
-          <p>Work through each <strong>judgement area</strong> for the Met standard. For each one:</p>
+          <p>Apply a RAG self-rating to each <strong>Met</strong> judgement area. Any red
+          means safeguarding cannot be judged Met.</p>
         {% else %}
-          <p>Work through each <strong>judgement area</strong>, starting with the
-          Expected Standard and working up to Strong. For each one:</p>
-        {% endif %}
-        <ol>
-          <li>Read the statement and use the key questions to frame your evaluation.</li>
-          <li>Triangulate the suggested evidence (data, documents, stakeholder feedback) — treat it as a guide, not a checklist.</li>
-          <li>Apply a RAG self-rating:
-            <ul>
-              <li><strong>Red</strong> — insufficient evidence to meet the standard.</li>
-              <li><strong>Amber</strong> — partial evidence; standard likely met but gaps remain.</li>
-              <li><strong>Green</strong> — strong, comprehensive evidence supports your judgement.</li>
-            </ul>
-          </li>
-          <li>Write a commentary of up to 150 words, in a formal, objective style, focused on impact and improvement.</li>
-          <li>Add next steps — specific, actionable, and showing how progress will be monitored.</li>
-        </ol>
-        {% if is_safeguarding %}
-          <p>Safeguarding is judged <strong>Met</strong> or <strong>Not Met</strong>. If any
-          judgement area lacks sufficient evidence (red), the area cannot be Met. Use the
-          Not Met reference list below to check whether any trigger applies.</p>
-        {% else %}
-          <p>When all Expected judgement areas are green, refer to the Strong Standard to
-          see what further improvement would require. Use the reference lists below
-          (Urgent Improvement / Needs Attention / Exceptional) to inform the overall grade.</p>
+          <p>Start with the <strong>Expected Standard</strong> statements and RAG each one:</p>
+          <ul>
+            <li><strong>Red</strong> — insufficient evidence to meet the standard.</li>
+            <li><strong>Amber</strong> — partial evidence; standard likely met but gaps remain.</li>
+            <li><strong>Green</strong> — strong, comprehensive evidence supports your judgement.</li>
+          </ul>
+          <p>The next set of statements appears automatically based on your ratings:
+          all green climbs to the next standard, an amber holds you where you are, and a
+          red drops you to check the Urgent Improvement statements. Your grade is concluded
+          for you in the box at the bottom.</p>
         {% endif %}
       </div>
     </details>
+
+    {# Without JS the ladder cannot reveal rungs — show them all so the review
+       stays completable. #}
+    <noscript>
+      <style>.indepth-rung.is-hidden { display: block; }</style>
+    </noscript>
 
     <form method="post" id="indepth-review-form">
       {% csrf_token %}
       <input type="hidden" name="school_id" value="{{ school.id }}" />
       <input type="hidden" name="year" value="{{ selected_year_value }}" />
       <input type="hidden" name="area_id" value="{{ area.id }}" />
+      <input type="hidden" name="page" value="rag" />
       {{ formset.management_form }}
 
       {% if formset.non_form_errors %}
@@ -104,11 +94,21 @@
       {% endif %}
 
       {% for block in rich_blocks %}
-        <section class="indepth-standard indepth-standard--{{ block.standard.key }}">
+        <section class="indepth-standard indepth-rung indepth-standard--{{ block.key }}{% if not forloop.first %} is-hidden{% endif %}"
+                 data-rung="{{ block.key }}">
           <header class="indepth-standard-header">
             <h2 class="indepth-standard-title">{{ block.label }}</h2>
             {% if block.focus %}
               <p class="indepth-standard-focus">{{ block.focus }}</p>
+            {% endif %}
+            {% if block.is_downpath %}
+              <p class="indepth-downpath-note">
+                <strong>Note — these read in reverse.</strong> Each statement describes a
+                serious failing. RAG <strong>green</strong> if the failing <em>applies</em>
+                to your school, and <strong>red</strong> if it does not. If every statement
+                is red (no failings apply) the grade is <em>Needs Attention</em>; otherwise
+                it is <em>Urgent Improvement</em>.
+              </p>
             {% endif %}
           </header>
 
@@ -117,30 +117,6 @@
               {{ row.form.judgement_area_id }}
 
               <div class="indepth-judgement-statement">{{ row.ja.statement }}</div>
-
-              {% if row.ja.key_questions %}
-                <div class="indepth-ja-meta">
-                  <span class="indepth-ja-meta-label">Key questions</span>
-                  <ul class="indepth-ja-list">
-                    {% for q in row.ja.key_questions %}<li>{{ q }}</li>{% endfor %}
-                  </ul>
-                </div>
-              {% endif %}
-
-              {% if row.ja.suggested_evidence %}
-                <details class="indepth-criteria-details">
-                  <summary class="indepth-criteria-summary">Suggested evidence ({{ row.ja.suggested_evidence|length }})</summary>
-                  <div class="indepth-criteria-body">
-                    <ul class="indepth-ja-list">
-                      {% for e in row.ja.suggested_evidence %}<li>{{ e }}</li>{% endfor %}
-                    </ul>
-                  </div>
-                </details>
-              {% endif %}
-
-              {% if row.ja.sources %}
-                <p class="indepth-ja-sources"><strong>Sources:</strong> {{ row.ja.sources|join:"; " }}</p>
-              {% endif %}
 
               {# RAG self-rating #}
               <div class="indepth-rag-section">
@@ -156,72 +132,31 @@
                   {% endfor %}
                 </div>
               </div>
-
-              {# Commentary #}
-              <div class="indepth-field">
-                <label class="indepth-field-label" for="{{ row.form.commentary.id_for_label }}">
-                  Commentary <small>(max 150 words)</small>
-                </label>
-                {{ row.form.commentary.errors }}
-                {{ row.form.commentary }}
-              </div>
-
-              {# Next steps #}
-              <div class="indepth-field">
-                <label class="indepth-field-label" for="{{ row.form.next_steps.id_for_label }}">
-                  Next steps <small>(max 150 words)</small>
-                </label>
-                {{ row.form.next_steps.errors }}
-                {{ row.form.next_steps }}
-              </div>
             </div>{# end .indepth-judgement #}
           {% endfor %}
         </section>
       {% endfor %}
 
-      {# Reference lists — trigger/example statements that inform the overall grade #}
-      {% if ref_blocks %}
-        <section class="indepth-reference">
-          <h2 class="indepth-standard-title">Reference: other grade bands</h2>
-          <p class="indepth-reference-intro">These statements are not rated individually — use them to decide the overall grade for the area.</p>
-          {% for block in ref_blocks %}
-            <details class="indepth-criteria-details">
-              <summary class="indepth-criteria-summary">{{ block.label }} ({{ block.statements|length }})</summary>
-              <div class="indepth-criteria-body">
-                {% for note in block.notes %}
-                  <p class="indepth-ref-note">{{ note }}</p>
-                {% endfor %}
-                <ul class="indepth-ja-list">
-                  {% for s in block.statements %}<li>{{ s }}</li>{% endfor %}
-                </ul>
-              </div>
-            </details>
-          {% endfor %}
-        </section>
-      {% endif %}
-
-      {# Overall grade for the area #}
-      <section class="indepth-overall">
-        <h2 class="indepth-standard-title">Overall grade for this area</h2>
-        <div class="indepth-grade-options {% if is_safeguarding %}indepth-grade-options--binary{% endif %}">
-          {% for value, label in grade_choices %}
-            {% if value %}
-              <label class="indepth-grade-btn indepth-grade-btn--{{ value }}" data-grade="{{ value }}">
-                <input type="radio" name="overall_grade" value="{{ value }}"
-                       {% if value == overall_grade %}checked{% endif %}
-                       {% if not can_edit %}disabled{% endif %} />
-                <span class="indepth-grade-btn-label">{{ label }}</span>
-              </label>
-            {% endif %}
-          {% endfor %}
+      {# Concluded grade — computed from the ladder, updated live by JS #}
+      <section class="indepth-conclusion" id="indepth-conclusion"
+               data-safeguarding="{% if is_safeguarding %}1{% else %}0{% endif %}">
+        <div class="review-outcome review-outcome--{{ overall_grade_css }}{% if not overall_grade %} review-outcome--pending{% endif %}"
+             id="indepth-grade-box" aria-live="polite">
+          <span class="review-outcome-label">Your self-evaluation grade for this evaluation area is:</span>
+          <span class="review-outcome-badge review-outcome-badge--{{ overall_grade_css }}" id="indepth-grade-badge">
+            {% if overall_grade %}{{ overall_grade_label }}{% else %}Complete the ratings to see your grade{% endif %}
+          </span>
         </div>
       </section>
 
-      <div class="actions">
-        {% if can_edit %}
-          <button type="submit">Save</button>
-        {% endif %}
-      </div>
+      {% if can_edit %}
+        <div class="actions">
+          <button type="submit" name="save" value="1">Save</button>
+          <button type="submit" name="save_continue" value="1" class="btn-primary">
+            Save &amp; continue to commentary →
+          </button>
+        </div>
+      {% endif %}
     </form>
 
   {% endif %}{# end if area #}
@@ -229,9 +164,9 @@
 
 {% block scripts %}
   {% load static %}
-  <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260613-1"></script>
+  <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260617-1"></script>
+  <script defer src="{% static 'review/indepth_ladder.js' %}?v=20260617-1"></script>
   {% if can_edit %}
-    <script defer src="{% static 'review/word_limit.js' %}?v=20260613-1"></script>
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
   {% endif %}
 {% endblock %}

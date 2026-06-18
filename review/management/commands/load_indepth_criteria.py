@@ -50,6 +50,15 @@ KEY_ORDER = {
     InDepthStandard.Key.MET: 2,
 }
 
+# Flat-shape standards whose statements are nonetheless RAG-able in the new
+# ladder flow (the up-path tops out at Exceptional; the down-path RAGs Urgent
+# Improvement). Needs Attention is never RAGed — it is only an outcome label —
+# so it stays a non-rateable reference list.
+RATEABLE_FLAT_KEYS = {
+    InDepthStandard.Key.URGENT_IMPROVEMENT,
+    InDepthStandard.Key.EXCEPTIONAL,
+}
+
 DEFAULT_PATH = Path(settings.BASE_DIR) / "review" / "data" / "criteria.json"
 
 
@@ -130,12 +139,16 @@ class Command(BaseCommand):
                             )
                         )
                 else:  # flat statements/notes shape
+                    # Urgent Improvement and Exceptional statements are RAG-able
+                    # rungs in the ladder, so load them as non-flat judgement
+                    # areas; all other flat lists stay reference-only.
+                    is_flat = key not in RATEABLE_FLAT_KEYS
                     for i, stmt in enumerate(body.get("statements", [])):
                         rows.append(
                             InDepthJudgementArea(
                                 standard=standard,
                                 statement=stmt,
-                                is_flat=True,
+                                is_flat=is_flat,
                                 order=i + 1,
                             )
                         )
