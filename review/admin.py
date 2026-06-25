@@ -121,13 +121,23 @@ class EvaluationAdmin(admin.ModelAdmin):
 		"period",
 		"category",
 		"rating",
+		"rating_overridden",
 		"updated_at",
 		"updated_by",
 	)
-	list_filter = ("school", "period", "category")
+	list_filter = ("school", "period", "category", "rating_overridden")
 	search_fields = ("category__name", "judgement_evidence", "to_progress")
 	list_select_related = ("school", "period", "category")
-	readonly_fields = ("created_at", "updated_at", "updated_by")
+	readonly_fields = (
+		"created_at",
+		"updated_at",
+		"updated_by",
+		"rating_overridden",
+		"system_rating",
+		"overridden_by",
+		"overridden_at",
+		"override_reason",
+	)
 
 	def save_model(self, request, obj, form, change):
 		obj.updated_by = request.user

@@ -495,3 +495,133 @@ class InDepthJudgementAreaFlowTests(TestCase):
 		review = self._review()
 		self.assertEqual(InDepthResponse.objects.filter(review=review).count(), 0)
 		self.assertEqual(review.overall_grade, "")
+
+
+class GradeOverrideTests(TestCase):
+	"""Over-writing an evaluation grade with the in-depth-review-derived grade."""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Test School")
+		# Category name must match the in-depth area name for the link to resolve.
+		self.category = Category.objects.create(name="Achievement", order=4, is_active=True)
+		self.area = InDepthArea.objects.create(name="Achievement", order=4)
+
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+
+		self.staff = User.objects.create_user(username="staff", email="staff@example.com")
+		SchoolProfile.objects.create(user=self.staff, school=self.school)
+		self.staff.schoolprofile.schools.add(self.school)
+		for codename in ("add_evaluation", "change_evaluation"):
+			self.staff.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.viewer = User.objects.create_user(username="viewer", email="viewer@example.com")
+		SchoolProfile.objects.create(user=self.viewer, school=self.school)
+		self.viewer.schoolprofile.schools.add(self.school)
+
+		# An in-depth review that concluded "exceptional" -> rating 1.
+		InDepthReview.objects.create(
+			school=self.school, year=2026, area=self.area, overall_grade="exceptional"
+		)
+		# A manual evaluation currently sitting at "expected" (rating 3).
+		self.evaluation = Evaluation.objects.create(
+			school=self.school, period=self.period, category=self.category, rating=3
+		)
+
+	def _override_post(self, user, reason=""):
+		self.client.force_login(user)
+		return self.client.post(
+			reverse("review:evaluation"),
+			data={
+				"action": "override_grade",
+				"school_id": str(self.school.id),
+				"year": "2026-2027",
+				"round": "1",
+				"category_id": str(self.category.id),
+				"reason": reason,
+			},
+		)
+
+	def test_override_sets_rating_and_records_audit(self):
+		resp = self._override_post(self.staff, reason="In-depth review evidence is stronger.")
+		self.assertEqual(resp.status_code, 302)
+
+		self.evaluation.refresh_from_db()
+		self.assertEqual(self.evaluation.rating, 1)  # exceptional
+		self.assertEqual(self.evaluation.system_rating, 3)  # prior rating preserved
+		self.assertTrue(self.evaluation.rating_overridden)
+		self.assertEqual(self.evaluation.overridden_by, self.staff)
+		self.assertIsNotNone(self.evaluation.overridden_at)
+		self.assertEqual(self.evaluation.override_reason, "In-depth review evidence is stronger.")
+
+	def test_override_reason_is_optional(self):
+		resp = self._override_post(self.staff, reason="")
+		self.assertEqual(resp.status_code, 302)
+		self.evaluation.refresh_from_db()
+		self.assertEqual(self.evaluation.rating, 1)
+		self.assertEqual(self.evaluation.override_reason, "")
+
+	def test_viewer_cannot_override(self):
+		resp = self._override_post(self.viewer)
+		self.assertEqual(resp.status_code, 302)
+		self.evaluation.refresh_from_db()
+		self.assertEqual(self.evaluation.rating, 3)  # unchanged
+		self.assertFalse(self.evaluation.rating_overridden)
+
+	def test_override_offered_only_when_grades_differ(self):
+		self.client.force_login(self.staff)
+		# Differs (in-depth=1 vs current=3): offered.
+		resp = self.client.get(
+			reverse("review:evaluation"), {"year": "2026-2027", "round": "1"}
+		)
+		self.assertTrue(any(o["category"].id == self.category.id for o in resp.context["override_rows"]))
+
+		# Make them match -> no longer offered.
+		self.evaluation.rating = 1
+		self.evaluation.save(update_fields=["rating"])
+		resp = self.client.get(
+			reverse("review:evaluation"), {"year": "2026-2027", "round": "1"}
+		)
+		self.assertFalse(any(o["category"].id == self.category.id for o in resp.context["override_rows"]))
+
+
+class ImportWorkbooksTests(TestCase):
+	"""The .xlsx supporting-tool importer is idempotent and per-tool aware."""
+
+	def _import(self):
+		from django.core.management import call_command
+		call_command("import_indepth_workbooks", verbosity=0)
+
+	def test_import_is_idempotent_and_parses_per_tool_columns(self):
+		import os
+		from django.conf import settings
+
+		wb_dir = os.path.join(settings.BASE_DIR, "review", "data", "workbooks")
+		if not os.path.isdir(wb_dir) or not any(f.endswith(".xlsx") for f in os.listdir(wb_dir)):
+			self.skipTest("No workbooks present to import.")
+
+		self._import()
+		lg = InDepthArea.objects.get(name="Leadership and Governance")
+		first_counts = {
+			a.name: InDepthJudgementArea.objects.filter(standard__area=a).count()
+			for a in InDepthArea.objects.filter(
+				name__in=["Achievement", "Inclusion", "Leadership and Governance"]
+			)
+		}
+		# Leadership's extra "How do we know this?" column is captured.
+		self.assertTrue(
+			InDepthJudgementArea.objects.filter(standard__area=lg)
+			.exclude(how_we_know=[])
+			.exists()
+		)
+
+		# Re-running must not duplicate rows.
+		self._import()
+		second_counts = {
+			a.name: InDepthJudgementArea.objects.filter(standard__area=a).count()
+			for a in InDepthArea.objects.filter(
+				name__in=["Achievement", "Inclusion", "Leadership and Governance"]
+			)
+		}
+		self.assertEqual(first_counts, second_counts)

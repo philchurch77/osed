@@ -31,6 +31,7 @@ if [ -f "$APP_ROOT/manage.py" ]; then
   python manage.py seed_categories         || echo "seed_categories failed (continuing)."
   python manage.py load_indepth_blueprint  || echo "load_indepth_blueprint failed (continuing)."
   python manage.py load_indepth_criteria   || echo "load_indepth_criteria failed (continuing)."
+  python manage.py import_indepth_workbooks || echo "import_indepth_workbooks failed (continuing)."
   python manage.py seed_schools            || echo "seed_schools failed (continuing)."
   python manage.py seed_branding           || echo "seed_branding failed (continuing)."
 

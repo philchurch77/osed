@@ -7,6 +7,7 @@ from django.forms import formset_factory
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone
 
 from allauth.account.views import LoginView
 
@@ -568,6 +569,34 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 	)
 
 
+def _indepth_grade_for_categories(school, year, categories):
+	"""Map each category to the grade its in-depth review concluded (if any).
+
+	The link between a dashboard category and an in-depth area is by name
+	(e.g. category 'Achievement' ↔ area 'Achievement'). Returns
+	{category_id: {grade_key, grade_label, rating}} only for categories whose
+	matching review has reached a conclusion.
+	"""
+	reviews = {
+		(r.area.name or "").strip().lower(): r
+		for r in InDepthReview.objects.filter(school=school, year=year).select_related("area")
+	}
+	out = {}
+	for category in categories:
+		review = reviews.get((category.name or "").strip().lower())
+		if not (review and review.overall_grade):
+			continue
+		rating = GRADE_TO_RATING.get(review.overall_grade)
+		if rating is None:
+			continue
+		out[category.id] = {
+			"grade_key": review.overall_grade,
+			"grade_label": _GRADE_LABELS.get(review.overall_grade, ""),
+			"rating": rating,
+		}
+	return out
+
+
 @login_required
 def evaluation(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
@@ -616,6 +645,45 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			e.category_id: e
 			for e in Evaluation.objects.filter(school=school, period=period_db, category__in=categories)
 		}
+
+	# Grade each category's in-depth review concluded, for the over-write feature.
+	indepth_grades = _indepth_grade_for_categories(school, selected_year, categories)
+
+	# Over-write action: set an area's evaluation grade to the grade its in-depth
+	# review concluded. Gated by can_edit (non-editors are bounced at the top).
+	if request.method == "POST" and request.POST.get("action") == "override_grade":
+		try:
+			cat_id = int(request.POST.get("category_id") or 0)
+		except (TypeError, ValueError):
+			cat_id = 0
+		info = indepth_grades.get(cat_id)
+		if info is not None and period_db is not None and cat_id in category_ids:
+			existing_ev = existing.get(cat_id)
+			prior_rating = existing_ev.rating if existing_ev else None
+			Evaluation.objects.update_or_create(
+				school=school,
+				period=period_db,
+				category_id=cat_id,
+				defaults={
+					"rating": info["rating"],
+					"system_rating": prior_rating,
+					"rating_overridden": True,
+					"overridden_by": request.user,
+					"overridden_at": timezone.now(),
+					"override_reason": (request.POST.get("reason") or "").strip(),
+					"updated_by": request.user,
+				},
+			)
+			messages.success(
+				request,
+				f"Grade over-written to the in-depth review grade ({info['grade_label']}).",
+			)
+		else:
+			messages.error(request, "Could not over-write that grade.")
+		params = f"?year={selected_year_value}&round={period.round}"
+		if request.user.is_superuser:
+			params = f"?school={school.id}&year={selected_year_value}&round={period.round}"
+		return redirect(f"{reverse('review:evaluation')}{params}")
 
 	EvaluationFormSet = formset_factory(EvaluationEntryForm, extra=0)
 
@@ -679,6 +747,23 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 	for category, form in zip(categories, formset.forms):
 		rows.append({"category": category, "form": form})
 
+	# Areas whose in-depth review concluded a grade that differs from the current
+	# evaluation rating — these are offered for over-write.
+	override_rows = []
+	for category in categories:
+		info = indepth_grades.get(category.id)
+		if not info:
+			continue
+		existing_ev = existing.get(category.id)
+		current_rating = existing_ev.rating if existing_ev else None
+		if current_rating != info["rating"]:
+			override_rows.append({
+				"category": category,
+				"grade_label": info["grade_label"],
+				"indepth_rating": info["rating"],
+				"current_rating": current_rating,
+			})
+
 	return render(
 		request,
 		"review/evaluation.html",
@@ -691,6 +776,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			"rows": rows,
 			"formset": formset,
 			"can_edit": can_edit,
+			"override_rows": override_rows,
 		},
 	)
 
@@ -713,6 +799,20 @@ _GRADE_CSS = {
 	"strong_standard": "strong_standard",
 	"exceptional": "exceptional",
 	"met": "met",
+}
+
+# Maps an in-depth-review grade key to the 1–5 evaluation rating scale
+# (1 = best). See RATING_CHOICES_DEFAULT / RATING_CHOICES_SAFEGUARDING in
+# forms.py — this is the inverse, used when over-writing a dashboard grade with
+# the grade an in-depth review concluded.
+GRADE_TO_RATING = {
+	"exceptional": 1,
+	"strong_standard": 2,
+	"expected_standard": 3,
+	"needs_attention": 4,
+	"urgent_improvement": 5,
+	"met": 1,
+	"not_met": 5,
 }
 
 # RAG-able rungs, in DOM/reveal order. The ladder starts on Expected; the

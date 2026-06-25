@@ -90,6 +90,24 @@ class Evaluation(models.Model):
     )
     judgement_evidence = models.TextField(blank=True, default="")
     to_progress = models.TextField(blank=True, default="")
+    # In-depth-review grade over-write audit trail. When a leader pushes the
+    # grade derived from the in-depth review onto the dashboard, `rating` becomes
+    # the grade of record and the prior value is kept in `system_rating`.
+    rating_overridden = models.BooleanField(default=False)
+    system_rating = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    overridden_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="overridden_evaluations",
+    )
+    overridden_at = models.DateTimeField(null=True, blank=True)
+    override_reason = models.TextField(blank=True, default="")
 
     class Meta:
         constraints = [
@@ -308,7 +326,14 @@ class InDepthJudgementArea(models.Model):
     statement = models.TextField()
     key_questions = models.JSONField(default=list, blank=True)
     suggested_evidence = models.JSONField(default=list, blank=True)
+    # Leadership & Governance carries an extra "How do we know this?" column;
+    # empty for tools without it.
+    how_we_know = models.JSONField(default=list, blank=True)
     sources = models.JSONField(default=list, blank=True)
+    # Worked "Example" commentary/next-steps from the rich sheets (Expected/
+    # Strong), present on some judgement areas. Displayed as an in-app exemplar.
+    example_commentary = models.TextField(blank=True, default="")
+    example_next_steps = models.TextField(blank=True, default="")
     # True for the flat trigger/example lists (Urgent Improvement, Needs
     # Attention, Exceptional, Not Met), where each row is a single statement
     # with no key questions / evidence / sources.

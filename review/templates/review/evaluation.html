@@ -35,6 +35,38 @@
     <p><strong>Read-only:</strong> you can view entries, but you can’t make changes.</p>
   {% endif %}
 
+  {% if can_edit and override_rows %}
+    <section class="indepth-override-panel">
+      <h2 class="indepth-override-title">In-depth review grades differ</h2>
+      <p class="indepth-override-intro">
+        The in-depth review for these areas concluded a grade that differs from the current
+        evaluation judgement. You can over-write the evaluation grade with the in-depth review grade.
+      </p>
+      {% for o in override_rows %}
+        <form method="post" class="indepth-override-row">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="override_grade" />
+          <input type="hidden" name="school_id" value="{{ school.id }}" />
+          <input type="hidden" name="year" value="{{ selected_year_value }}" />
+          <input type="hidden" name="round" value="{{ period.round }}" />
+          <input type="hidden" name="category_id" value="{{ o.category.id }}" />
+          <div class="indepth-override-detail">
+            <strong>{{ o.category.name }}</strong> —
+            in-depth grade <span class="rag-current rag-current--{{ o.indepth_rating }}">({{ o.indepth_rating }}) {{ o.grade_label }}</span>
+            {% if o.current_rating %}
+              vs current <span class="rag-current rag-current--{{ o.current_rating }}">({{ o.current_rating }})</span>
+            {% else %}
+              <span class="indepth-override-muted">(no current judgement)</span>
+            {% endif %}
+          </div>
+          <input type="text" name="reason" class="indepth-override-reason"
+                 placeholder="Reason (optional)" maxlength="500" />
+          <button type="submit" class="btn-primary">Over-write with in-depth grade</button>
+        </form>
+      {% endfor %}
+    </section>
+  {% endif %}
+
   <form method="post">
     {% csrf_token %}
     <input type="hidden" name="school_id" value="{{ school.id }}" />

@@ -1957,7 +1957,7 @@
     "• Combine multiple sources (data, observations, feedback) to inform your judgement.",
     "4. Apply the RAG Rating:",
     "• Red: Insufficient evidence to meet the standard",
-    "• Amber: Partial evidence; you believe the standard is met but gaps remain.",
+    "• Amber: Partial evidence; you believe the standard is met but some evidence is insecure.",
     "• Green: Strong, comprehensive evidence supports your judgement.",
     "5. Commentary and Next Steps:",
     "• For each area, write up to 150 words explaining your evidence and rationale.",
