@@ -68,16 +68,21 @@ if _render_external_hostname and _render_external_hostname not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_render_external_hostname)
 
 _render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
-if _render_external_url:
-    CSRF_TRUSTED_ORIGINS = [_render_external_url]
 
-# Azure App Service exposes the public hostname via WEBSITE_HOSTNAME.
+# Azure App Service exposes the public hostname via WEBSITE_HOSTNAME. Custom
+# domains (e.g. osed.oxlip.uk) aren't covered by this and must be added via
+# the ALLOWED_HOSTS env var instead.
 _azure_hostname = os.getenv("WEBSITE_HOSTNAME", "").strip()
-if _azure_hostname:
-    if _azure_hostname not in ALLOWED_HOSTS:
-        ALLOWED_HOSTS.append(_azure_hostname)
-    _azure_origin = f"https://{_azure_hostname}"
-    CSRF_TRUSTED_ORIGINS = list(set(globals().get("CSRF_TRUSTED_ORIGINS", []) + [_azure_origin]))
+if _azure_hostname and _azure_hostname not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_azure_hostname)
+
+# Trust every configured host as an HTTPS CSRF origin, so a custom domain
+# only needs to be added in one place (the ALLOWED_HOSTS env var).
+CSRF_TRUSTED_ORIGINS = list({
+    f"https://{host}" for host in ALLOWED_HOSTS if host not in ("localhost", "127.0.0.1")
+})
+if _render_external_url:
+    CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS + [_render_external_url]))
 
 
 # Application definition
