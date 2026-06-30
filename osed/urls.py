@@ -16,13 +16,25 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
+from django.http import HttpResponse
 from review import views as review_views
 
 from django.conf import settings
 from django.conf.urls.static import static
 
+# Google Search Console site verification (HTML file method). Google fetches
+# this exact path and checks the body matches the file it issued.
+GOOGLE_SITE_VERIFICATION = "google-site-verification: googlee57c3bde8e03885f.html\n"
+
 urlpatterns = [
     path('', review_views.home, name='home'),
+    path(
+        'googlee57c3bde8e03885f.html',
+        lambda request: HttpResponse(
+            GOOGLE_SITE_VERIFICATION, content_type="text/html"
+        ),
+        name='google_site_verification',
+    ),
     path('admin/', admin.site.urls),
     path('accounts/', include('allauth.urls')),
     path('review/', include('review.urls')),
