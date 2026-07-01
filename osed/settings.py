@@ -223,6 +223,17 @@ if not DEBUG:
 # Respect Render's proxy headers for https detection
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Production HTTPS/cookie hardening. Only applied when DEBUG is off so local
+# development over plain HTTP is unaffected.
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_SSL_REDIRECT = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
 
 SITE_ID = 1
 
@@ -237,6 +248,9 @@ ACCOUNT_LOGIN_METHODS = {'email'}
 # form when the site's signup fields include a password.
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*', 'password1*', 'password2*']
 ACCOUNT_EMAIL_VERIFICATION = 'none'
+# Access is by Microsoft SSO + pre-provisioning only. Block open self-registration
+# at /accounts/signup/ (login is unaffected).
+ACCOUNT_ALLOW_SIGNUPS = False
 
 SOCIALACCOUNT_QUERY_EMAIL = True
 SOCIALACCOUNT_AUTO_SIGNUP = False
