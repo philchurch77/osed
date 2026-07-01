@@ -209,35 +209,25 @@ class ConcludeGradeTests(TestCase):
 			"expected_standard",
 		)
 
-	def test_down_path_all_red_is_needs_attention(self):
+	def test_any_red_at_expected_is_needs_attention(self):
 		self.assertEqual(
-			conclude_indepth_grade({
-				"expected_standard": ["red", "green"],
-				"urgent_improvement": ["red", "red"],
-			}),
+			conclude_indepth_grade({"expected_standard": ["red", "green"]}),
 			"needs_attention",
 		)
 
-	def test_down_path_any_non_red_is_urgent_improvement(self):
-		self.assertEqual(
-			conclude_indepth_grade({
-				"expected_standard": ["red"],
-				"urgent_improvement": ["red", "green"],
-			}),
-			"urgent_improvement",
-		)
-
-	def test_down_path_incomplete_is_unconcluded(self):
-		self.assertEqual(
-			conclude_indepth_grade({
-				"expected_standard": ["red"],
-				"urgent_improvement": ["red", ""],
-			}),
-			"",
-		)
-
-	def test_down_path_without_urgent_rung_falls_to_needs_attention(self):
+	def test_single_red_at_expected_is_needs_attention(self):
 		self.assertEqual(conclude_indepth_grade({"expected_standard": ["red"]}), "needs_attention")
+
+	def test_red_at_expected_ignores_any_urgent_improvement_input(self):
+		# Urgent Improvement is no longer evaluated: whatever it holds, a red at
+		# Expected Standard concludes Needs Attention.
+		self.assertEqual(
+			conclude_indepth_grade({
+				"expected_standard": ["red"],
+				"urgent_improvement": ["red", "green", ""],
+			}),
+			"needs_attention",
+		)
 
 	def test_up_path_strong_red_drops_to_expected(self):
 		self.assertEqual(
@@ -349,6 +339,13 @@ class InDepthJudgementAreaFlowTests(TestCase):
 		self.ju1 = InDepthJudgementArea.objects.create(
 			standard=ui, statement="Pupils lack foundations.", order=1
 		)
+		na = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.NEEDS_ATTENTION, order=2
+		)
+		self.jna1 = InDepthJudgementArea.objects.create(
+			standard=na, statement="Progress is inconsistent across groups.",
+			is_flat=True, order=1,
+		)
 
 	def _rag_post(self, rags, save_continue=False):
 		"""rags: list of (judgement_area, rag_value)."""
@@ -408,15 +405,21 @@ class InDepthJudgementAreaFlowTests(TestCase):
 			InDepthResponse.objects.get(review=review, judgement_area=self.je1).rag, "green"
 		)
 
-	def test_rag_down_path_all_red_is_needs_attention(self):
+	def test_rag_red_at_expected_is_needs_attention(self):
 		self.client.force_login(self.staff)
-		self._rag_post([(self.je1, "red"), (self.je2, "green"), (self.ju1, "red")])
+		self._rag_post([(self.je1, "red"), (self.je2, "green")])
 		self.assertEqual(self._review().overall_grade, "needs_attention")
 
-	def test_rag_down_path_non_red_is_urgent_improvement(self):
+	def test_rag_red_at_expected_ignores_urgent_improvement(self):
+		# Urgent Improvement statements are no longer rated; a value posted for one
+		# is ignored and the grade stays Needs Attention.
 		self.client.force_login(self.staff)
 		self._rag_post([(self.je1, "red"), (self.je2, "green"), (self.ju1, "green")])
-		self.assertEqual(self._review().overall_grade, "urgent_improvement")
+		review = self._review()
+		self.assertEqual(review.overall_grade, "needs_attention")
+		self.assertFalse(
+			InDepthResponse.objects.filter(review=review, judgement_area=self.ju1).exists()
+		)
 
 	def test_rag_expected_amber_stays_expected(self):
 		self.client.force_login(self.staff)
@@ -459,6 +462,46 @@ class InDepthJudgementAreaFlowTests(TestCase):
 			for row in block["rows"]
 		}
 		self.assertEqual(shown, {self.js1.id})
+
+	def test_needs_attention_commentary_shows_expected_statements_and_na_bullets(self):
+		# A red at Expected concludes Needs Attention; the commentary page then
+		# writes up the Expected Standard statements and offers the flat Needs
+		# Attention bullets plus a comment box.
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "red"), (self.je2, "green")])
+		self.assertEqual(self._review().overall_grade, "needs_attention")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.get(url)
+		shown = {
+			row["ja"].id
+			for block in resp.context["rich_blocks"]
+			for row in block["rows"]
+		}
+		self.assertEqual(shown, {self.je1.id, self.je2.id})
+		self.assertEqual([b.id for b in resp.context["na_bullets"]], [self.jna1.id])
+		self.assertContains(resp, "needs_attention_comment")
+
+	def test_needs_attention_comment_persists(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "red"), (self.je2, "green")])
+		data = {
+			"school_id": str(self.school.id),
+			"year": "2026-2027",
+			"area_id": str(self.area.id),
+			"page": "commentary",
+			"form-TOTAL_FORMS": "0",
+			"form-INITIAL_FORMS": "0",
+			"form-MIN_NUM_FORMS": "0",
+			"form-MAX_NUM_FORMS": "1000",
+			"needs_attention_comment": "Two of the listed statements also apply.",
+		}
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.post(url, data=data)
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(
+			self._review().needs_attention_comment,
+			"Two of the listed statements also apply.",
+		)
 
 	def test_commentary_word_limit_blocks_save(self):
 		self.client.force_login(self.staff)

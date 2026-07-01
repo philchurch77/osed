@@ -189,6 +189,10 @@ class InDepthReview(models.Model):
     step = models.CharField(max_length=20, choices=Step.choices, default=Step.REVIEW)
     overall_grade = models.CharField(max_length=25, blank=True, default="")
     qa_reflection = models.TextField(blank=True, default="")
+    # Free-text comment captured on the commentary page when the grade is Needs
+    # Attention, in response to "in addition, does one or more of the following
+    # (Needs Attention statements) apply?".
+    needs_attention_comment = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(

@@ -822,7 +822,6 @@ _RICH_KEYS_DEFAULT = [
 	"expected_standard",
 	"strong_standard",
 	"exceptional",
-	"urgent_improvement",
 ]
 _RICH_KEYS_SAFEGUARDING = ["met"]
 
@@ -835,8 +834,9 @@ _GRADE_TO_COMMENTARY_RUNG = {
 	"expected_standard": "expected_standard",
 	"strong_standard": "strong_standard",
 	"exceptional": "exceptional",
-	"urgent_improvement": "urgent_improvement",
-	"needs_attention": "urgent_improvement",
+	# Needs Attention writes up the Expected Standard statements (with their RAG),
+	# so leaders explain why each is red/amber.
+	"needs_attention": "expected_standard",
 	"met": "met",
 	"not_met": "met",
 }
@@ -879,15 +879,9 @@ def conclude_indepth_grade(rags_by_key, *, is_safeguarding: bool = False) -> str
 		return ""
 
 	if expected == "has_red":
-		# Down-path. Polarity is flipped: on Urgent Improvement, a red means the
-		# failing does NOT apply. All red => no failings apply => Needs Attention.
-		ui_list = rags_by_key.get("urgent_improvement")
-		ui = _rung_state(ui_list)
-		if ui == "absent":
-			return "needs_attention"
-		if ui == "incomplete":
-			return ""
-		return "needs_attention" if all(r == "red" for r in ui_list) else "urgent_improvement"
+		# Any red at Expected Standard concludes Needs Attention. (Urgent
+		# Improvement is no longer an auto-concluded grade.)
+		return "needs_attention"
 
 	if expected == "has_amber":
 		return "expected_standard"
@@ -1025,6 +1019,8 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	# The commentary page only asks for write-ups on the band the grade landed
 	# on: the RAGed statements belonging to the awarded grade's rung. (Earlier
 	# rungs were RAGed to reach that grade but don't need their own commentary.)
+	na_bullets = []
+	na_comment = ""
 	if page == "commentary":
 		rated = [ja for ja in all_jas if ja.id in existing and existing[ja.id].rag]
 		ja_rung_key = {ja.id: s.key for s, jas in rung_jas for ja in jas}
@@ -1036,6 +1032,17 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			page_jas = band_jas or rated
 		else:
 			page_jas = rated
+		# On a Needs Attention grade, offer the flat Needs Attention statements as
+		# a prompt: "in addition, does one or more of the following apply?".
+		if review and review.overall_grade == "needs_attention":
+			na_bullets = list(
+				InDepthJudgementArea.objects.filter(
+					standard__area=area,
+					standard__key="needs_attention",
+					is_flat=True,
+				).order_by("order")
+			)
+			na_comment = review.needs_attention_comment
 	else:
 		page_jas = all_jas
 
@@ -1090,6 +1097,14 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 								)
 						elif resp:
 							resp.delete()
+
+				# The "one or more of the following applies" comment is only
+				# rendered (and therefore posted) on a Needs Attention commentary
+				# page; persist it when present.
+				if page == "commentary" and "needs_attention_comment" in request.POST:
+					review.needs_attention_comment = (
+						request.POST.get("needs_attention_comment") or ""
+					)
 
 				# Recompute and store the grade from the now-saved RAG state.
 				refreshed = {
@@ -1158,7 +1173,6 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"key": s.key,
 			"label": s.get_key_display(),
 			"focus": s.focus,
-			"is_downpath": s.key == "urgent_improvement",
 			"rows": rows,
 		})
 
@@ -1188,6 +1202,8 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"overall_grade": overall_grade,
 			"overall_grade_label": _GRADE_LABELS.get(overall_grade, ""),
 			"overall_grade_css": _GRADE_CSS.get(overall_grade, ""),
+			"na_bullets": na_bullets,
+			"na_comment": na_comment,
 		},
 	)
 

@@ -64,10 +64,6 @@
     return 'all_green';
   }
 
-  function allRed(list) {
-    return list.length > 0 && list.every(function (r) { return r === 'red'; });
-  }
-
   // Returns { grade: <key|''>, visible: { rungKey: true } }
   function evaluate() {
     var visible = {};
@@ -88,14 +84,9 @@
     var es = state(expected);
 
     if (es === 'has_red') {
-      visible.urgent_improvement = true;
-      var ui = ragList(section('urgent_improvement'));
-      var us = state(ui);
-      if (us === 'absent') {
-        grade = 'needs_attention';
-      } else if (us !== 'incomplete') {
-        grade = allRed(ui) ? 'needs_attention' : 'urgent_improvement';
-      }
+      // Any red at Expected Standard concludes Needs Attention; the Urgent
+      // Improvement rung is no longer shown or evaluated.
+      grade = 'needs_attention';
     } else if (es === 'has_amber') {
       grade = 'expected_standard';
     } else if (es === 'all_green') {

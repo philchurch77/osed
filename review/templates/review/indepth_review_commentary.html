@@ -169,6 +169,29 @@
           </section>
         {% endfor %}
 
+        {% if overall_grade == "needs_attention" and na_bullets %}
+          <section class="indepth-standard indepth-standard--needs_attention">
+            <header class="indepth-standard-header">
+              <h2 class="indepth-standard-title">In addition — does one or more of the following apply?</h2>
+            </header>
+            <details class="indepth-criteria-details">
+              <summary class="indepth-criteria-summary">Needs Attention statements ({{ na_bullets|length }})</summary>
+              <div class="indepth-criteria-body">
+                <ul class="indepth-ja-list">
+                  {% for b in na_bullets %}<li>{{ b.statement }}</li>{% endfor %}
+                </ul>
+              </div>
+            </details>
+            <div class="indepth-field">
+              <label class="indepth-field-label" for="id_needs_attention_comment">
+                Comment on whether, in addition, one or more of the above applies
+              </label>
+              <textarea id="id_needs_attention_comment" name="needs_attention_comment"
+                        rows="4"{% if not can_edit %} disabled{% endif %}>{{ na_comment }}</textarea>
+            </div>
+          </section>
+        {% endif %}
+
         {% if can_edit %}
           <div class="actions">
             <button type="submit">Save</button>

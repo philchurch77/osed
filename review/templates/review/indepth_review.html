@@ -68,8 +68,8 @@
             <li><strong>Green</strong> — Strong, comprehensive evidence supports your judgement.</li>
           </ul>
           <p>The next set of statements appears automatically based on your ratings:
-          all green climbs to the next standard, an amber holds you where you are, and a
-          red drops you to check the Urgent Improvement statements. Your grade is concluded
+          all green climbs to the next standard, an amber holds you where you are, and any
+          red concludes <em>Needs Attention</em>. Your grade is concluded
           for you in the box at the bottom.</p>
         {% endif %}
       </div>
@@ -99,15 +99,6 @@
             <h2 class="indepth-standard-title">{{ block.label }}</h2>
             {% if block.focus %}
               <p class="indepth-standard-focus">{{ block.focus }}</p>
-            {% endif %}
-            {% if block.is_downpath %}
-              <p class="indepth-downpath-note">
-                <strong>Note — these read in reverse.</strong> Each statement describes a
-                serious failing. RAG <strong>green</strong> if the failing <em>applies</em>
-                to your school, and <strong>red</strong> if it does not. If every statement
-                is red (no failings apply) the grade is <em>Needs Attention</em>; otherwise
-                it is <em>Urgent Improvement</em>.
-              </p>
             {% endif %}
           </header>
 
@@ -164,7 +155,7 @@
 {% block scripts %}
   {% load static %}
   <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260617-1"></script>
-  <script defer src="{% static 'review/indepth_ladder.js' %}?v=20260617-1"></script>
+  <script defer src="{% static 'review/indepth_ladder.js' %}?v=20260701-1"></script>
   {% if can_edit %}
     <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
   {% endif %}
