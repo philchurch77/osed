@@ -252,9 +252,17 @@ ACCOUNT_EMAIL_VERIFICATION = 'none'
 # at /accounts/signup/ (login is unaffected).
 ACCOUNT_ALLOW_SIGNUPS = False
 
+# Skip allauth's unstyled "Sign out?" confirmation page — log out straight away
+# on GET. Trade-off: allows logout-CSRF (a third party could sign a user out via
+# a crafted link); harmless here (no data exposure, just re-login).
+ACCOUNT_LOGOUT_ON_GET = True
+
 SOCIALACCOUNT_QUERY_EMAIL = True
 SOCIALACCOUNT_AUTO_SIGNUP = False
 SOCIALACCOUNT_ADAPTER = 'review.allauth_adapters.RestrictMicrosoftLoginAdapter'
+# Skip allauth's unstyled "Continue with Microsoft" intermediate page — the login
+# link redirects straight to Microsoft on GET. Safe with a single SSO provider.
+SOCIALACCOUNT_LOGIN_ON_GET = True
 
 MICROSOFT_CLIENT_ID = os.getenv('MICROSOFT_CLIENT_ID', '')
 MICROSOFT_CLIENT_SECRET = os.getenv('MICROSOFT_CLIENT_SECRET', '')

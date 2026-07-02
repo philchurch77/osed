@@ -816,8 +816,8 @@ GRADE_TO_RATING = {
 }
 
 # RAG-able rungs, in DOM/reveal order. The ladder starts on Expected; the
-# up-path climbs Expected -> Strong -> Exceptional, the down-path drops to
-# Urgent Improvement. Needs Attention is only an outcome label, never RAGed.
+# up-path climbs Expected -> Strong -> Exceptional. Any red at Expected
+# concludes Needs Attention (an outcome label, never RAGed).
 _RICH_KEYS_DEFAULT = [
 	"expected_standard",
 	"strong_standard",
