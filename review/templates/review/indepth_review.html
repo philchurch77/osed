@@ -53,27 +53,26 @@
       </div>
     {% endif %}
 
-    {# How-to / RAG guidance #}
-    <details class="indepth-criteria-details indepth-guidance">
-      <summary class="indepth-criteria-summary">How to complete the ratings (guidance)</summary>
-      <div class="indepth-criteria-body">
-        {% if is_safeguarding %}
-          <p>Apply a RAG self-rating to each <strong>Met</strong> judgement area. Any red
-          means safeguarding cannot be judged Met.</p>
-        {% else %}
-          <p>Start with the <strong>Expected Standard</strong> statements and RAG each one:</p>
-          <ul>
-            <li><strong>Red</strong> — Insufficient evidence to meet the standard</li>
-            <li><strong>Amber</strong> — Partial evidence; you believe the standard is met but some evidence is insecure.</li>
-            <li><strong>Green</strong> — Strong, comprehensive evidence supports your judgement.</li>
-          </ul>
-          <p>The next set of statements appears automatically based on your ratings:
-          all green climbs to the next standard, an amber holds you where you are, and any
-          red concludes <em>Needs Attention</em>. Your grade is concluded
-          for you in the box at the bottom.</p>
-        {% endif %}
-      </div>
-    </details>
+    {# How-to / RAG guidance — always visible; crucial for how the RAG is decided #}
+    <div class="indepth-guidance-box">
+      <h2 class="indepth-guidance-title">How to complete the ratings</h2>
+      {% if is_safeguarding %}
+        <p>Apply a RAG self-rating to each <strong>Met</strong> judgement area. Any red
+        means safeguarding cannot be judged Met.</p>
+      {% else %}
+        <p>Start with the <strong>Expected Standard</strong> statements and RAG each one:</p>
+        <ul>
+          <li><strong>Red</strong> — Insufficient evidence to meet the standard</li>
+          <li><strong>Amber</strong> — Partial evidence; you believe the standard is met but some evidence is insecure.</li>
+          <li><strong>Green</strong> — Comprehensive evidence supports your judgement.</li>
+        </ul>
+        <p>You should use the supporting tool to help arrive at your judgement.</p>
+        <p>The next set of statements appears automatically based on your ratings:
+        all green climbs to the next standard, an amber holds you where you are, and any
+        red concludes <em>Needs Attention</em>. Your grade is concluded
+        for you in the box at the bottom.</p>
+      {% endif %}
+    </div>
 
     {% comment %}Without JS the ladder cannot reveal rungs — show them all so the review stays completable.{% endcomment %}
     <noscript>

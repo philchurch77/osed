@@ -109,28 +109,6 @@
                   </details>
                 {% endif %}
 
-                {% if row.ja.how_we_know %}
-                  <details class="indepth-criteria-details">
-                    <summary class="indepth-criteria-summary">How do we know this? ({{ row.ja.how_we_know|length }})</summary>
-                    <div class="indepth-criteria-body">
-                      <ul class="indepth-ja-list">
-                        {% for h in row.ja.how_we_know %}<li>{{ h }}</li>{% endfor %}
-                      </ul>
-                    </div>
-                  </details>
-                {% endif %}
-
-                {% if row.ja.sources %}
-                  <details class="indepth-criteria-details">
-                    <summary class="indepth-criteria-summary">Sources ({{ row.ja.sources|length }})</summary>
-                    <div class="indepth-criteria-body">
-                      <ul class="indepth-ja-list">
-                        {% for s in row.ja.sources %}<li>{{ s }}</li>{% endfor %}
-                      </ul>
-                    </div>
-                  </details>
-                {% endif %}
-
                 {% if row.ja.example_commentary or row.ja.example_next_steps %}
                   <details class="indepth-criteria-details indepth-criteria-details--example">
                     <summary class="indepth-criteria-summary">Example write-up</summary>
