@@ -50,11 +50,11 @@ class EvaluationEntryForm(forms.Form):
     )
     judgement_evidence = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4, "aria-label": "Judgement evidence"}),
+        widget=forms.Textarea(attrs={"rows": 4, "aria-label": "Commentary"}),
     )
     to_progress = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4, "aria-label": "To progress"}),
+        widget=forms.Textarea(attrs={"rows": 4, "aria-label": "Next steps"}),
     )
 
     def clean_judgement_evidence(self) -> str:

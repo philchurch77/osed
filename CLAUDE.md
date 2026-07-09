@@ -67,11 +67,19 @@ python manage.py runserver
 
 ## Data / seeding management commands (idempotent)
 
-Run at deploy time by `startup.sh` (Azure) / `render.yaml` (Render):
-`ensure_schema`, `seed_categories`, `seed_schools`, `seed_branding`,
-`load_indepth_blueprint`, `load_indepth_criteria`, `import_indepth_workbooks`,
+Run at deploy time on **Azure** by `startup.sh` (the live path): `migrate`,
+`ensure_schema`, `seed_categories`, `load_indepth_blueprint`, `load_indepth_criteria`,
+`import_indepth_workbooks`, `seed_schools`, `seed_branding`, `collectstatic`,
 `copy_demo_media_to_static`. One-off: `ensure_osed_staff_group` (creates the **OSED
-Staff** editor group). In-depth criteria source data lives in `review/data/`.
+Staff** editor group). In-depth criteria source data lives in `review/data/` — the
+per-area supporting-tool workbooks (e.g. `Updated P16 2026.xlsx`) drop into
+`review/data/workbooks/` and are picked up by `import_indepth_workbooks`.
+
+> `render.yaml` (a free-plan test env, DB `osed-test-db`) runs only a **subset** —
+> `ensure_schema`, `migrate`, `load_indepth_blueprint`, `seed_schools`, `seed_branding`,
+> `copy_demo_media_to_static`. It does **not** run `seed_categories`,
+> `load_indepth_criteria` or `import_indepth_workbooks`, so in-depth criteria/workbook
+> updates only reach production via the Azure `startup.sh` path.
 
 > `ensure_schema` and migrations `0023`/`0024` are deliberate `IF NOT EXISTS` repair
 > shims for the Render Postgres DB (migration `0020` was partially applied there). Keep

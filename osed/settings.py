@@ -76,6 +76,28 @@ _azure_hostname = os.getenv("WEBSITE_HOSTNAME", "").strip()
 if _azure_hostname and _azure_hostname not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_azure_hostname)
 
+# Azure's platform warm-up/liveness probes reach the container internally,
+# not via the public hostname, so Django rejects them with DisallowedHost.
+# They arrive with two kinds of Host header:
+#   * the container's own private link-local IP (e.g. 169.254.129.4:8000) —
+#     the IP changes per container, so it must be discovered at runtime, and
+#   * a loopback name (e.g. localhost:8080).
+# Trust both so the probes pass. Gated on Azure (WEBSITE_HOSTNAME) so local /
+# Render behaviour is unchanged. These are all host values that only something
+# already inside the container's network can present, so this does not widen
+# the set of externally reachable hosts or weaken the security model.
+if _azure_hostname:
+    import socket
+
+    try:
+        _container_ips = {
+            info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None)
+        }
+    except OSError:
+        _container_ips = set()
+    _internal_probe_hosts = _container_ips | {"localhost", "127.0.0.1"}
+    ALLOWED_HOSTS.extend(h for h in _internal_probe_hosts if h not in ALLOWED_HOSTS)
+
 # Trust every configured host as an HTTPS CSRF origin, so a custom domain
 # only needs to be added in one place (the ALLOWED_HOSTS env var).
 CSRF_TRUSTED_ORIGINS = list({
