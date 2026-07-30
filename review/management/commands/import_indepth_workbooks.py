@@ -8,6 +8,9 @@ One workbook == one evaluation area, with six sheets:
     Guidance, Expected Standard, Strong Standard,
     Urgent Improvement, Needs Attention, Exceptional
 
+Safeguarding is the exception: it is judged binary, so its workbook carries
+just the two sheets Met / Not Met.
+
 Columns are located by *header text*, not position, so per-tool variations are
 handled automatically — notably Leadership & Governance's extra
 "How do we know this?" column, which other tools omit.
@@ -54,10 +57,15 @@ SHEET_TO_KEY = {
     "Not Met": InDepthStandard.Key.NOT_MET,
 }
 
-# The two "rich" sheets carry full judgement-area blocks; the rest are flat lists.
+# "Rich" sheets carry full judgement-area blocks (area name + focus on row 1,
+# header on row 2, data from row 3); the rest are flat lists. Safeguarding's
+# Met/Not Met sheets use the rich layout too, even though Not Met carries a
+# reduced column set (no key questions/evidence).
 RICH_KEYS = {
     InDepthStandard.Key.EXPECTED_STANDARD,
     InDepthStandard.Key.STRONG_STANDARD,
+    InDepthStandard.Key.MET,
+    InDepthStandard.Key.NOT_MET,
 }
 
 # Display/import order of the standards within an area.
@@ -71,12 +79,13 @@ KEY_ORDER = {
     InDepthStandard.Key.MET: 2,
 }
 
-# Flat-shape standards whose statements are nonetheless RAG-able rungs in the
-# ladder (Urgent Improvement on the down-path, Exceptional on the up-path).
-# Needs Attention is only an outcome label, so it stays reference-only.
-RATEABLE_FLAT_KEYS = {
-    InDepthStandard.Key.URGENT_IMPROVEMENT,
-    InDepthStandard.Key.EXCEPTIONAL,
+# Standards whose statements are never RAG-able rungs in the ladder, whatever
+# sheet shape they arrive in: Needs Attention is only an outcome label, and
+# Safeguarding's Not Met is the outcome of RAGing Met. Everything else is
+# rateable (Urgent Improvement on the down-path, Exceptional on the up-path).
+REFERENCE_ONLY_KEYS = {
+    InDepthStandard.Key.NEEDS_ATTENTION,
+    InDepthStandard.Key.NOT_MET,
 }
 
 DEFAULT_DIR = Path(settings.BASE_DIR) / "review" / "data" / "workbooks"
@@ -160,7 +169,7 @@ class Command(BaseCommand):
 
                 ws = wb[sheet_title]
                 if key in RICH_KEYS:
-                    focus, jas = self._parse_rich(ws)
+                    focus, jas = self._parse_rich(ws, key)
                     usage_notes = []
                 else:
                     focus, usage_notes, jas = self._parse_flat(ws, key)
@@ -204,10 +213,12 @@ class Command(BaseCommand):
         return ""
 
     # ── rich sheet (Expected / Strong) ──────────────────────────────────────
-    def _parse_rich(self, ws):
+    def _parse_rich(self, ws, key):
         rows = list(ws.iter_rows(values_only=True))
         if len(rows) < 2:
             return "", []
+
+        is_flat = key in REFERENCE_ONLY_KEYS
 
         header = rows[1]  # row 2
         cols = self._rich_columns(header)
@@ -236,7 +247,7 @@ class Command(BaseCommand):
                     "sources": [],
                     "example_commentary": cell(row, "commentary"),
                     "example_next_steps": cell(row, "next_steps"),
-                    "is_flat": False,
+                    "is_flat": is_flat,
                 }
                 jas.append(current)
             elif current is None:
@@ -320,7 +331,7 @@ class Command(BaseCommand):
         if statement_col is None:
             statement_col = 1  # fall back to column B
 
-        is_flat = key not in RATEABLE_FLAT_KEYS
+        is_flat = key in REFERENCE_ONLY_KEYS
         statements = []
         usage_notes = []
         for row in rows[1:]:
