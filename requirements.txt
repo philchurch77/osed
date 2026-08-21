@@ -7,6 +7,6 @@ whitenoise
 dj-database-url
 python-dotenv
 
-# Render (Linux) production server + Postgres driver
+# Production (Linux) server + Postgres driver
 gunicorn; platform_system != "Windows"
 psycopg[binary]; platform_system != "Windows"

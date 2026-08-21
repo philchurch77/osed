@@ -28,8 +28,9 @@ python manage.py runserver
 
 - **`osed/settings.py`** — all config is env-driven. `DEBUG` defaults to **False**;
   production raises `ImproperlyConfigured` if `SECRET_KEY` or `DATABASE_URL` is missing.
-  `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS` are derived from `WEBSITE_HOSTNAME` (Azure) /
-  `RENDER_EXTERNAL_HOSTNAME` (Render). Production HTTPS hardening (HSTS, secure cookies,
+  `ALLOWED_HOSTS` is derived from the `ALLOWED_HOSTS` env var plus Azure's
+  `WEBSITE_HOSTNAME`, and `CSRF_TRUSTED_ORIGINS` is derived from `ALLOWED_HOSTS` — so a
+  custom domain is added in one place. Production HTTPS hardening (HSTS, secure cookies,
   SSL redirect) is gated behind `if not DEBUG`.
 - **`review/views.py`** — function-based views (dashboard, overview, board, evaluation,
   in-depth review, reflection). The in-depth grade is derived from a RAG "ladder" by
@@ -75,21 +76,28 @@ Staff** editor group). In-depth criteria source data lives in `review/data/` —
 per-area supporting-tool workbooks (e.g. `Updated P16 2026.xlsx`) drop into
 `review/data/workbooks/` and are picked up by `import_indepth_workbooks`.
 
-> `render.yaml` (a free-plan test env, DB `osed-test-db`) runs only a **subset** —
-> `ensure_schema`, `migrate`, `load_indepth_blueprint`, `seed_schools`, `seed_branding`,
-> `copy_demo_media_to_static`. It does **not** run `seed_categories`,
-> `load_indepth_criteria` or `import_indepth_workbooks`, so in-depth criteria/workbook
-> updates only reach production via the Azure `startup.sh` path.
+> Ordering matters: `load_indepth_criteria` (from `criteria.json`) runs **before**
+> `import_indepth_workbooks`, so where an area has a workbook, the workbook wins. An
+> area with no workbook keeps its `criteria.json` text.
+
+> The importer takes the area name from **A1** of the first standard sheet (falling back
+> to A2 of `Expected Standard`/`Strong Standard`). A workbook that arrives with a blank
+> A1 on its first sheet will fail with "Could not determine area name" — fix the cell in
+> the workbook rather than the importer.
 
 > `ensure_schema` and migrations `0023`/`0024` are deliberate `IF NOT EXISTS` repair
-> shims for the Render Postgres DB (migration `0020` was partially applied there). Keep
-> them; `ensure_schema` must run before `migrate`.
+> shims for a production Postgres DB on which migration `0020` was only partially
+> applied. Keep them; `ensure_schema` must run before `migrate`.
 
 ## Deployment
 
-- **Render**: `render.yaml` blueprint (Postgres, WhiteNoise, gunicorn).
-- **Azure App Service**: see **`AZURE_DEPLOYMENT.md`** (the single source of truth) —
-  startup command `bash startup.sh`, Postgres Flexible Server, and required App Settings.
+**Azure App Service is the only deployment target.** There is no second environment.
+
+- See **`AZURE_DEPLOYMENT.md`** (the single source of truth) — startup command
+  `bash startup.sh`, Postgres Flexible Server, and required App Settings.
+- `startup.sh` is the live deploy path: it runs migrations, the seed/import commands and
+  `collectstatic`, then launches gunicorn. Anything that must reach production has to be
+  wired into that script.
 - Media: local disk in dev; production uses `MEDIA_AS_STATIC=1` (demo assets via
   WhiteNoise) or Azure Blob (`USE_AZURE_MEDIA_STORAGE=1`).
 

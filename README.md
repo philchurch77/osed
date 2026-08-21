@@ -10,20 +10,23 @@ Local development (Windows)
 4. Start the dev server:
    - `python manage.py runserver`
 
-Deploy to Render
+Deploy to Azure App Service
 
-- This repo includes a `render.yaml` blueprint.
-- Render will:
-  - install requirements
-  - run `collectstatic`
-  - run `migrate`
-  - start the app with `gunicorn osed.wsgi:application`
+- **`AZURE_DEPLOYMENT.md` is the single source of truth** for deployment.
+- The startup command is `bash startup.sh`, which runs migrations, the seed/import
+  management commands, and `collectstatic`, then starts
+  `gunicorn osed.wsgi:application`.
+- The database is an Azure Postgres Flexible Server, reached via `DATABASE_URL`.
 
 Environment variables
 
-- `SECRET_KEY` (Render generates this from `render.yaml`)
-- `DEBUG` (Render sets `0`)
-- `DATABASE_URL` (Render sets from the managed Postgres database)
+Set these as App Settings on the App Service (see `AZURE_DEPLOYMENT.md` for the full list):
+
+- `SECRET_KEY` (required when `DEBUG=0`)
+- `DEBUG` (`0` in production)
+- `DATABASE_URL` (Azure Postgres connection string)
+- `ALLOWED_HOSTS` (needed for custom domains, e.g. `osed.oxlip.uk`; the Azure
+  `WEBSITE_HOSTNAME` is picked up automatically)
 - Optional (Microsoft login):
   - `MICROSOFT_CLIENT_ID`
   - `MICROSOFT_CLIENT_SECRET`
@@ -32,11 +35,11 @@ Environment variables
 Notes
 
 - In local dev, SQLite is used by default.
-- In Render, the app uses Postgres via `DATABASE_URL`.
+- In production, the app uses Postgres via `DATABASE_URL`.
 - Migrations `0023`/`0024` and the `ensure_schema` management command are intentional
-  repair shims for the Render Postgres database (migration `0020` was partially applied
-  there). They use defensive `IF NOT EXISTS` SQL and must be kept; `render.yaml` runs
-  `ensure_schema` before `migrate` during each build.
+  repair shims for a production Postgres database on which migration `0020` was only
+  partially applied. They use defensive `IF NOT EXISTS` SQL and must be kept;
+  `startup.sh` runs `ensure_schema` before `migrate` on each deploy.
 
 User accounts / roles
 
@@ -64,22 +67,24 @@ Local development
    - `media/branding/...`
 - When running `python manage.py runserver`, Django serves them at URLs like `/media/...`.
 
-Render / production
+Production
 
-On Render’s free plan, the filesystem is ephemeral. If you save uploads into `media/` on the web service, they may disappear on redeploy/restart and won’t be shared across instances.
+The App Service filesystem should not be treated as durable storage for uploads: files
+written into `media/` on the web instance can be lost on redeploy/restart and are not
+shared across instances. Use Azure Blob Storage (below) for anything that must persist.
 
 Demo logos/branding (committed assets)
 
-This repo includes demo logo + branding images committed under `media/branding/` and `media/school_logos/`, and the Render blueprint seeds the database to reference them.
+This repo includes demo logo + branding images committed under `media/branding/` and `media/school_logos/`, and `seed_branding` points the database at them.
 
-To make those demo images reliably visible on Render without setting up cloud storage, `render.yaml` enables `MEDIA_AS_STATIC=1` and runs `python manage.py copy_demo_media_to_static` during the build. That copies the demo media assets into `staticfiles/media/...`, and Django will generate ImageField URLs like `/static/media/...` which WhiteNoise can serve.
+To make those demo images reliably visible without setting up cloud storage, set `MEDIA_AS_STATIC=1` and run `python manage.py copy_demo_media_to_static` at deploy time (`startup.sh` already does this). That copies the demo media assets into `staticfiles/media/...`, and Django will generate ImageField URLs like `/static/media/...` which WhiteNoise can serve.
 
 Recommended: Azure Blob Storage for media
 
 This repo already includes `django-storages[azure]`. To make admin uploads persist in production, enable Azure media storage:
 
 1. Create an Azure Storage Account + a Blob Container (e.g. `media`).
-2. In Render, set these environment variables on your web service:
+2. Set these App Settings on the App Service:
     - `USE_AZURE_MEDIA_STORAGE=1`
     - `AZURE_ACCOUNT_NAME=...`
     - `AZURE_ACCOUNT_KEY=...`

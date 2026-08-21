@@ -5,9 +5,9 @@
 > and ask it to apply the changes in the "Code changes required" section.
 >
 > **Reviewed:** 2026-06-13 · **Target platform:** Azure App Service for Linux (Python 3.13)
-> **Current state:** The project is fully configured for **Render**. It has good Azure
-> bones already (`dj-database-url`, `django-storages[azure]`, WhiteNoise), but a handful
-> of changes are needed before it will run correctly on Azure.
+> **Current state:** Azure App Service is the **only** platform this app is published to.
+> The code changes in §2 have all been applied; that section is kept as a record of what
+> was done and why, and is useful when reasoning about `settings.py`.
 
 ---
 
@@ -19,41 +19,30 @@
 | Static files (WhiteNoise) | ✅ Ready | No change needed |
 | Database driver | ✅ Ready | `psycopg[binary]` + `dj-database-url` already wired |
 | Azure Blob media | ✅ Ready | `django-storages[azure]` already wired behind `USE_AZURE_MEDIA_STORAGE` |
-| **ALLOWED_HOSTS on Azure** | ❌ **Broken** | Reads Render env var only — **must add `WEBSITE_HOSTNAME`** |
-| **CSRF_TRUSTED_ORIGINS on Azure** | ❌ **Broken** | Same — must derive from `WEBSITE_HOSTNAME` |
-| **Migrations / seed data** | ⚠️ Needs work | Currently in Render `buildCommand`; needs an Azure startup script |
-| **Startup command** | ⚠️ Needs work | Must be set explicitly in Azure (see §5) |
+| **ALLOWED_HOSTS on Azure** | ✅ Done | Derived from `WEBSITE_HOSTNAME` (see §2.1) |
+| **CSRF_TRUSTED_ORIGINS on Azure** | ✅ Done | Derived from `ALLOWED_HOSTS` (see §2.1) |
+| **Migrations / seed data** | ✅ Done | Run by `startup.sh` on each deploy (see §2.3) |
+| **Startup command** | ⚠️ Config | Must be set explicitly in Azure (see §5) |
 | Database choice | ⚠️ Decision | **Recommend Postgres Flexible Server** — see §3 |
 | Secrets / `SECRET_KEY` | ⚠️ Decision | Must set as App Setting (see §4) |
 
-**Bottom line:** ~30 minutes of code changes (§2) + Azure portal config (§4–§6). The app
-will not start on Azure until the `WEBSITE_HOSTNAME` change in §2 is applied, because
-`DEBUG=0` with an empty `ALLOWED_HOSTS` rejects every request with a 400.
+**Bottom line:** the code side (§2) is done; what remains for a new environment is the
+Azure portal config (§4–§6). Note that `DEBUG=0` with an empty `ALLOWED_HOSTS` rejects
+every request with a 400, so the `WEBSITE_HOSTNAME` handling in §2.1 is what keeps the
+app reachable.
 
 ---
 
 ## 2. Code changes required
 
-These are the edits Claude Code should make. File: `osed/settings.py`.
+These edits have been applied to `osed/settings.py`; this section records what they are.
 
-### 2.1 — Add Azure host + CSRF detection (CRITICAL)
-
-The current code only recognises Render's hostname env vars:
-
-```python
-# osed/settings.py (current — lines ~53-60)
-_render_external_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
-if _render_external_hostname and _render_external_hostname not in ALLOWED_HOSTS:
-    ALLOWED_HOSTS.append(_render_external_hostname)
-
-_render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
-if _render_external_url:
-    CSRF_TRUSTED_ORIGINS = [_render_external_url]
-```
+### 2.1 — Azure host + CSRF detection (CRITICAL)
 
 Azure App Service exposes the public hostname as `WEBSITE_HOSTNAME` (e.g.
-`osed.azurewebsites.net`). **Add the following directly after the Render block** so the
-app works on either platform:
+`osed.azurewebsites.net`). `settings.py` appends it to `ALLOWED_HOSTS`, and
+`CSRF_TRUSTED_ORIGINS` is then derived from every configured host, so a custom domain
+only has to be added in one place (the `ALLOWED_HOSTS` App Setting):
 
 ```python
 # --- Azure App Service (Linux) host + CSRF detection ---
@@ -96,8 +85,7 @@ python manage.py seed_branding
 python manage.py createsuperuser --noinput || true
 
 # Launch the app. Azure's built-in Python container injects PORT (and nginx
-# forwards to it); default to 8000 if it's ever unset. Using ${PORT} keeps this
-# script portable across Azure and Render with no edits.
+# forwards to it); default to 8000 if it's ever unset.
 # --access-logfile/--error-logfile '-' send gunicorn logs to stdout/stderr so
 # they surface in the App Service Log Stream.
 exec gunicorn osed.wsgi:application \
@@ -201,7 +189,7 @@ Azure Blob Storage (already supported in code):
 
 > If you're only relying on the **committed demo branding/logo assets** (not user uploads),
 > you can instead set `MEDIA_AS_STATIC=1` and skip Blob storage entirely — WhiteNoise will
-> serve them from `/static/media/`. This matches the current Render setup.
+> serve them from `/static/media/`.
 
 **Generate a SECRET_KEY:**
 ```bash
@@ -226,8 +214,7 @@ This points Azure at the script created in §2.3. Why this approach:
   proxy and exposes the expected port via the `PORT` environment variable (per the
   [App Service on Linux FAQ](https://learn.microsoft.com/troubleshoot/azure/app-service/faqs-app-service-linux-new#other-questions)).
   The script binds to `--bind=0.0.0.0:${PORT:-8000}`, which uses Azure's injected `PORT`
-  and falls back to `8000` if it's unset. This is also the Render convention, so the same
-  script works unchanged on either platform. (Don't hard-code `:8000` — it works today only
+  and falls back to `8000` if it's unset. (Don't hard-code `:8000` — it works today only
   because 8000 is the current default.)
 - `exec` replaces the shell with gunicorn so signals (restart/stop) are handled correctly.
 
@@ -297,5 +284,5 @@ superuser bootstrap.
 - The `DEBUG=0` guards in `settings.py` (lines ~42 and ~137) **require** `SECRET_KEY` and
   `DATABASE_URL` to be set, so a misconfigured deploy fails loudly rather than silently
   running insecure — this is good, just be aware of it.
-- `render.yaml` can stay in the repo (harmless on Azure) or be deleted once you've fully
-  migrated off Render.
+- Azure App Service is the only deployment target for this app; there is no second
+  platform to keep configuration in sync with.

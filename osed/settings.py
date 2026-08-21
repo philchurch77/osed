@@ -19,7 +19,7 @@ from django.core.exceptions import ImproperlyConfigured
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load a local .env file (for local development only). On Render/Azure the real
+# Load a local .env file (for local development only). On Azure the real
 # environment variables are set by the platform, so the .env file is absent there
 # and this is a no-op. The import is optional so settings never crash if
 # python-dotenv isn't installed.
@@ -62,13 +62,6 @@ ALLOWED_HOSTS = [h.strip() for h in _raw_allowed_hosts.split(",") if h.strip()]
 if DEBUG and not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
-# Render provides a stable external URL/hostname via env vars.
-_render_external_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
-if _render_external_hostname and _render_external_hostname not in ALLOWED_HOSTS:
-    ALLOWED_HOSTS.append(_render_external_hostname)
-
-_render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
-
 # Azure App Service exposes the public hostname via WEBSITE_HOSTNAME. Custom
 # domains (e.g. osed.oxlip.uk) aren't covered by this and must be added via
 # the ALLOWED_HOSTS env var instead.
@@ -82,8 +75,8 @@ if _azure_hostname and _azure_hostname not in ALLOWED_HOSTS:
 #   * the container's own private link-local IP (e.g. 169.254.129.4:8000) —
 #     the IP changes per container, so it must be discovered at runtime, and
 #   * a loopback name (e.g. localhost:8080).
-# Trust both so the probes pass. Gated on Azure (WEBSITE_HOSTNAME) so local /
-# Render behaviour is unchanged. These are all host values that only something
+# Trust both so the probes pass. Gated on Azure (WEBSITE_HOSTNAME) so local
+# behaviour is unchanged. These are all host values that only something
 # already inside the container's network can present, so this does not widen
 # the set of externally reachable hosts or weaken the security model.
 if _azure_hostname:
@@ -103,8 +96,6 @@ if _azure_hostname:
 CSRF_TRUSTED_ORIGINS = list({
     f"https://{host}" for host in ALLOWED_HOSTS if host not in ("localhost", "127.0.0.1")
 })
-if _render_external_url:
-    CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS + [_render_external_url]))
 
 
 # Application definition
@@ -184,10 +175,10 @@ if DATABASE_URL:
         ssl_require=not DEBUG,
     )
 elif not DEBUG:
-    # In production (Render), falling back to SQLite means data resets on each deploy.
+    # In production, falling back to SQLite means data resets on each deploy.
     raise ImproperlyConfigured(
         "DATABASE_URL is required when DEBUG=0 (production). "
-        "Set DATABASE_URL to your Render Postgres connection string."
+        "Set DATABASE_URL to your Azure Postgres connection string."
     )
 
 
@@ -238,11 +229,11 @@ STORAGES = {
     },
 }
 
-# Whitenoise static file serving (suitable for Render)
+# Whitenoise static file serving
 if not DEBUG:
     STORAGES["staticfiles"]["BACKEND"] = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Respect Render's proxy headers for https detection
+# Respect the platform's proxy headers for https detection
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Production HTTPS/cookie hardening. Only applied when DEBUG is off so local
@@ -311,7 +302,7 @@ LOGIN_REDIRECT_URL = "/review/dashboard/"
 LOGIN_URL = "/accounts/login/"
 LOGOUT_REDIRECT_URL = "/accounts/login/"
 
-# Logging — always emit Django errors to stderr so they appear in Render logs
+# Logging — always emit Django errors to stderr so they appear in the platform logs
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -347,7 +338,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 SERVE_MEDIA = _env_bool("SERVE_MEDIA", default=False)
 
 # If you are using committed demo media assets (e.g. seeded logos/branding) and
-# want them served by WhiteNoise on Render, enable MEDIA_AS_STATIC=1.
+# want them served by WhiteNoise, enable MEDIA_AS_STATIC=1.
 # This makes ImageField URLs resolve under STATIC_URL (e.g. /static/media/...).
 MEDIA_AS_STATIC = _env_bool("MEDIA_AS_STATIC", default=False)
 if MEDIA_AS_STATIC and not USE_AZURE_MEDIA_STORAGE:

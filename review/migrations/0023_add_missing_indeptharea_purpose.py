@@ -5,10 +5,10 @@ from django.db import migrations
 
 def add_purpose_if_missing(apps, schema_editor):
     """
-    Migration 0020 was applied on the production (Render) PostgreSQL database
-    before the 'purpose' AddField operation was added to it. This function
-    adds the column only when it is absent, so it is safe to run on both
-    Render (missing column) and local SQLite (column already exists).
+    Migration 0020 was applied on a production PostgreSQL database before the
+    'purpose' AddField operation was added to it. This function adds the
+    column only when it is absent, so it is safe to run on both that database
+    (missing column) and local SQLite (column already exists).
     """
     connection = schema_editor.connection
     vendor = connection.vendor

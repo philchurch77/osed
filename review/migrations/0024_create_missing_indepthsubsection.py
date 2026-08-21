@@ -5,7 +5,7 @@ from django.db import migrations
 
 def create_indepthsubsection_if_missing(apps, schema_editor):
     """
-    Migration 0020 was applied to the Render PostgreSQL database before the
+    Migration 0020 was applied to a production PostgreSQL database before the
     CreateModel InDepthSubSection block (and corresponding InDepthResponse
     columns) were added to it.  This migration recreates everything that
     should have been created by those missing operations, guarded so it is
