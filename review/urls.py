@@ -15,4 +15,7 @@ urlpatterns = [
     path("evaluation/", views.evaluation, name="evaluation"),
     path("in-depth/", views.indepth_review, name="indepth_review"),
     path("reflection/", views.reflection, name="reflection"),
+    path("operations/", views.operations, name="operations"),
+    path("risk/", views.risk_register, name="risk_register"),
+    path("risk/qa/", views.risk_qa, name="risk_qa"),
 ]

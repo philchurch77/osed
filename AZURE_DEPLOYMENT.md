@@ -66,7 +66,23 @@ and is correct for Azure too — Azure's front end sets `X-Forwarded-Proto`. No 
 ### 2.3 — Add a startup script
 
 Create a new file **`startup.sh`** in the project root (this becomes the Azure startup
-command — see §5). It runs migrations + first-time seeding, then launches gunicorn:
+command — see §5). It runs migrations + first-time seeding, then launches gunicorn.
+
+> **The committed `startup.sh` in the project root is the authority, not the listing
+> below.** The block here is illustrative and has drifted from it before. As of Aug 2026
+> the live script runs, in order: `migrate`, `ensure_schema`, `seed_categories`,
+> `load_indepth_blueprint`, `load_indepth_criteria`, `seed_trust_categories`,
+> `seed_operations_metrics`, `import_indepth_workbooks`, `seed_schools`, `seed_branding`,
+> `collectstatic`, `copy_demo_media_to_static`, then gunicorn. Read the file rather than
+> retyping it — anything that must reach production has to be wired into that script.
+>
+> Ordering that matters: `seed_trust_categories` after `load_indepth_criteria` (it matches
+> the nine evaluation areas by name against `InDepthArea`), and `seed_operations_metrics`
+> after `seed_trust_categories` (its metrics hang off the five domain rows).
+>
+> `ensure_osed_staff_group` and `ensure_risk_qa_group` are **one-off** commands and are
+> deliberately not in the script — run them by hand when provisioning editor / CFO
+> accounts.
 
 ```bash
 #!/usr/bin/env bash
@@ -226,7 +242,9 @@ python manage.py migrate --noinput && python manage.py ensure_schema && python m
 ```
 
 The script (§2.3) is preferred — it's readable, version-controlled, and includes the
-superuser bootstrap.
+superuser bootstrap. The one-liner above is **out of date** (it predates the criteria,
+trust-category and operations seed steps); if you use it, copy the command sequence from
+the committed `startup.sh` instead.
 
 ---
 

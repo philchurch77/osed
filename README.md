@@ -1,5 +1,21 @@
 # OSED
 
+A Django self-evaluation tool for a multi-academy trust. Schools record termly dashboard
+ratings and structured in-depth reviews; trust leaders view aggregated results. Access is
+via Microsoft SSO, scoped per school.
+
+Tabs: **School Dashboard**, **Evaluation**, **In-depth review**, **Reflection**,
+**School Progress**, **Trust Dashboard**, plus (added Aug 2026):
+
+- **Risk** — a per-school risk register scored on the Trust's Impact × Likelihood matrix,
+  routed to TFORS or SIV by category, CFO-QA'd, and rolled up to the Trust Dashboard as a
+  Red-only exception report. Live for all schools.
+- **Operations & Resources** — five domains of benchmarked termly RAG metrics, running as
+  a **pilot**: each metric is switched on per school and per year in the Django admin
+  (*Operations metric visibility → "Open the pilot visibility grid"*) and defaults to off.
+
+See **`CLAUDE.md`** for architecture, conventions and the rules these two tabs must keep.
+
 Local development (Windows)
 
 1. Create/activate a virtualenv

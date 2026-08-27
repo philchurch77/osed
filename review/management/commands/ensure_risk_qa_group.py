@@ -4,17 +4,14 @@ from django.contrib.auth.models import Group, Permission
 from django.core.management.base import BaseCommand, CommandError
 
 
-def _ensure_osed_staff_group() -> Group:
-    group, _ = Group.objects.get_or_create(name="OSED Staff")
+GROUP_NAME = "Risk QA"
+
+
+def _ensure_risk_qa_group() -> Group:
+    group, _ = Group.objects.get_or_create(name=GROUP_NAME)
 
     desired = [
-        ("review", "add_evaluation"),
-        ("review", "change_evaluation"),
-        ("review", "add_indepthresponse"),
-        ("review", "change_indepthresponse"),
-        # Principals log and close risks on their own school's register.
-        ("review", "add_risk"),
-        ("review", "change_risk"),
+        ("review", "qa_risk"),
     ]
 
     perms = []
@@ -34,8 +31,16 @@ def _ensure_osed_staff_group() -> Group:
 
 
 class Command(BaseCommand):
-    help = "Create/update the 'OSED Staff' group used to grant edit access in the user UI."
+    help = (
+        "Create/update the 'Risk QA' group, which lets the CFO sign risk "
+        "register entries off before TFORS and see the cross-school "
+        "'awaiting QA' view. One-off, like ensure_osed_staff_group."
+    )
 
     def handle(self, *args, **options):
-        group = _ensure_osed_staff_group()
+        group = _ensure_risk_qa_group()
         self.stdout.write(self.style.SUCCESS(f"Group ready: {group.name}"))
+        self.stdout.write(
+            "Members also need a SchoolProfile listing every school they QA — "
+            "the QA view still respects school scoping."
+        )

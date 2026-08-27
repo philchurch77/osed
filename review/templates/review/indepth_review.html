@@ -152,10 +152,10 @@
 {% endblock %}
 
 {% block scripts %}
-  {% load static %}
-  <script defer src="{% static 'review/indepth_grade_toggle.js' %}?v=20260617-1"></script>
-  <script defer src="{% static 'review/indepth_ladder.js' %}?v=20260701-1"></script>
+  {% load static asset_tags %}
+  <script defer src="{% static_v 'review/indepth_grade_toggle.js' %}"></script>
+  <script defer src="{% static_v 'review/indepth_ladder.js' %}"></script>
   {% if can_edit %}
-    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
+    <script defer src="{% static_v 'review/unsaved_changes.js' %}"></script>
   {% endif %}
 {% endblock %}

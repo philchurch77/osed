@@ -43,9 +43,9 @@
       <thead>
         <tr>
           <th>Area</th>
-          <th>Round 1</th>
-          <th>Round 2</th>
-          <th>Round 3</th>
+          <th>Autumn</th>
+          <th>Spring</th>
+          <th>Summer</th>
         </tr>
       </thead>
       <tbody>
@@ -109,9 +109,9 @@
 {% endblock %}
 
 {% block scripts %}
-  {% load static %}
-  <script defer src="{% static 'review/rag_toggle.js' %}?v=20260611-1"></script>
+  {% load static asset_tags %}
+  <script defer src="{% static_v 'review/rag_toggle.js' %}"></script>
   {% if can_edit %}
-    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260508-2"></script>
+    <script defer src="{% static_v 'review/unsaved_changes.js' %}"></script>
   {% endif %}
 {% endblock %}

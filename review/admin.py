@@ -17,17 +17,31 @@ from django.urls import path
 from .models import (
 	Branding,
 	Category,
+	ComplaintTheme,
 	Evaluation,
+	GrantPublication,
 	InDepthArea,
 	InDepthJudgementArea,
 	InDepthResponse,
 	InDepthReview,
 	InDepthStandard,
 	InDepthSubSection,
+	OperationsEntry,
+	OperationsMetric,
+	OperationsMetricBand,
+	OperationsMetricVisibility,
+	OperationsNote,
 	ReviewPeriod,
+	Risk,
+	RiskRating,
+	RiskSettings,
 	School,
 	SchoolProfile,
+	StatutoryComplianceItem,
+	TrustCategory,
+	current_academic_year_start,
 )
+from .views import MIN_ACADEMIC_YEAR_START
 
 
 def _request_schools(request):
@@ -59,7 +73,8 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(School)
 class SchoolAdmin(admin.ModelAdmin):
-	list_display = ("name", "phase", "logo")
+	list_display = ("name", "phase", "is_mainstream", "logo")
+	list_filter = ("phase", "is_mainstream")
 	search_fields = ("name",)
 
 	def get_queryset(self, request):
@@ -253,6 +268,326 @@ class InDepthJudgementAreaAdmin(admin.ModelAdmin):
 	@admin.display(description="Statement")
 	def short_statement(self, obj):
 		return obj.statement[:80]
+
+
+
+@admin.register(TrustCategory)
+class TrustCategoryAdmin(admin.ModelAdmin):
+	"""The shared 14-value list. Not the same thing as Category."""
+
+	list_display = ("order", "display_name", "group", "routes_to")
+	list_filter = ("group", "routes_to")
+	list_editable = ("routes_to",)
+	ordering = ("order", "id")
+	list_select_related = ("indepth_area",)
+
+	@admin.display(description="Name", ordering="order")
+	def display_name(self, obj):
+		return obj.name
+
+	def get_readonly_fields(self, request, obj=None):
+		# The nine evaluation-area rows take their name from InDepthArea; editing
+		# the link here would fork the list.
+		if obj is not None and obj.indepth_area_id:
+			return ("indepth_area", "domain_key", "domain_name")
+		return ()
+
+
+@admin.register(RiskSettings)
+class RiskSettingsAdmin(admin.ModelAdmin):
+	list_display = ("__str__", "escalate_bands", "escalate_persisting_amber")
+
+	def has_add_permission(self, request):
+		if RiskSettings.objects.exists():
+			return False
+		return super().has_add_permission(request)
+
+	def has_delete_permission(self, request, obj=None):
+		return False
+
+
+class RiskRatingInline(admin.TabularInline):
+	model = RiskRating
+	extra = 0
+	fields = ("period", "impact", "likelihood", "band", "note", "qa_by", "qa_at")
+	readonly_fields = ("band",)
+	ordering = ("-period__year", "-period__round")
+
+
+@admin.register(Risk)
+class RiskAdmin(admin.ModelAdmin):
+	list_display = (
+		"title",
+		"school",
+		"category",
+		"route",
+		"status",
+		"owner",
+		"review_point",
+		"updated_at",
+	)
+	list_filter = ("status", "school", "category__group", "category")
+	search_fields = ("title", "mitigation", "owner", "close_reason")
+	list_select_related = ("school", "category", "category__indepth_area")
+	readonly_fields = ("created_by", "created_at", "updated_at")
+	inlines = [RiskRatingInline]
+	fieldsets = (
+		(None, {
+			"fields": ("school", "category", "title", "mitigation", "owner", "review_point"),
+		}),
+		("Status", {
+			"fields": ("status", "opened_period", "closed_at", "closed_by", "close_reason"),
+		}),
+		("CFO sign-off", {
+			"fields": ("close_qa_by", "close_qa_at"),
+		}),
+		("Audit", {
+			"fields": ("created_by", "created_at", "updated_at"),
+		}),
+	)
+
+	@admin.display(description="Routes to")
+	def route(self, obj):
+		return obj.route
+
+	def save_model(self, request, obj, form, change):
+		if not change:
+			obj.created_by = request.user
+		super().save_model(request, obj, form, change)
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(school__in=_request_schools(request))
+
+
+@admin.register(RiskRating)
+class RiskRatingAdmin(admin.ModelAdmin):
+	list_display = ("risk", "period", "impact", "likelihood", "band", "qa_by", "qa_at")
+	list_filter = ("band", "impact", "likelihood", "period", "risk__school")
+	search_fields = ("risk__title", "note")
+	list_select_related = ("risk", "risk__school", "period")
+	# Derived from the matrix on every save — never editable by hand.
+	readonly_fields = ("band", "recorded_at")
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(risk__school__in=_request_schools(request))
+
+
+
+class OperationsMetricBandInline(admin.TabularInline):
+	model = OperationsMetricBand
+	extra = 0
+	fields = (
+		"phase",
+		"green_descriptor", "amber_descriptor", "red_descriptor",
+		"green_min", "green_max", "amber_min", "amber_max", "amber_tolerance",
+		"comparator_value", "comparator_year", "comparator_source",
+		"step_change",
+	)
+
+
+@admin.register(OperationsMetric)
+class OperationsMetricAdmin(admin.ModelAdmin):
+	list_display = ("order", "name", "domain", "rule", "evidence", "cycle", "band_count")
+	list_filter = ("domain", "evidence", "cycle", "rule")
+	ordering = ("domain__order", "order")
+	search_fields = ("name", "key", "benchmark_source")
+	list_select_related = ("domain",)
+	prepopulated_fields = {"key": ("name",)}
+	inlines = [OperationsMetricBandInline]
+
+	@admin.display(description="Bands")
+	def band_count(self, obj):
+		phases = [b.get_phase_display() or "All" for b in obj.bands.all()]
+		return ", ".join(phases) or "—"
+
+
+class VisibilityGridForm(forms.Form):
+	school = forms.ModelChoiceField(queryset=School.objects.none(), label="School")
+	year = forms.ChoiceField(label="Academic year")
+
+	def __init__(self, *args, schools=None, years=None, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.fields["school"].queryset = schools if schools is not None else School.objects.none()
+		self.fields["year"].choices = years or []
+
+
+@admin.register(OperationsMetricVisibility)
+class OperationsMetricVisibilityAdmin(admin.ModelAdmin):
+	"""Per-school pilot switches.
+
+	The grid view is the one the client will actually use between terms: pick a
+	school and a year, tick what is in the pilot, save. No deploy involved.
+	"""
+
+	change_list_template = "admin/review/operationsmetricvisibility/change_list.html"
+	list_display = ("school", "academic_year", "metric", "is_visible")
+	list_filter = ("is_visible", "school", "year", "metric__domain")
+	list_editable = ("is_visible",)
+	list_display_links = ("metric",)
+	ordering = ("school__name", "-year", "metric__order")
+	list_select_related = ("school", "metric", "metric__domain")
+
+	@admin.display(description="Academic year", ordering="year")
+	def academic_year(self, obj):
+		return f"{obj.year}/{obj.year + 1}"
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(school__in=_request_schools(request))
+
+	def get_urls(self):
+		urls = super().get_urls()
+		custom = [
+			path(
+				"grid/",
+				self.admin_site.admin_view(self.grid_view),
+				name="review_operationsmetricvisibility_grid",
+			),
+		]
+		return custom + urls
+
+	def grid_view(self, request):
+		schools = _request_schools(request).order_by("name")
+		if not schools.exists():
+			raise PermissionDenied
+
+		this_year = current_academic_year_start()
+		start = max(MIN_ACADEMIC_YEAR_START, this_year - 1)
+		years = [(str(y), f"{y}/{y + 1}") for y in range(start, this_year + 3)]
+
+		data = request.POST if request.method == "POST" else request.GET
+		selector = VisibilityGridForm(
+			data if data else None, schools=schools, years=years
+		)
+
+		school = None
+		year = max(this_year, MIN_ACADEMIC_YEAR_START)
+		if selector.is_bound and selector.is_valid():
+			school = selector.cleaned_data["school"]
+			year = int(selector.cleaned_data["year"])
+		else:
+			school = schools.first()
+			selector = VisibilityGridForm(
+				initial={"school": school, "year": str(year)}, schools=schools, years=years
+			)
+
+		metrics = list(
+			OperationsMetric.objects.select_related("domain").order_by(
+				"domain__order", "order"
+			)
+		)
+
+		if request.method == "POST" and request.POST.get("action") == "save" and school:
+			wanted = {
+				int(v) for v in request.POST.getlist("visible") if str(v).isdigit()
+			}
+			with transaction.atomic():
+				for metric in metrics:
+					OperationsMetricVisibility.objects.update_or_create(
+						school=school,
+						year=year,
+						metric=metric,
+						defaults={"is_visible": metric.id in wanted},
+					)
+			self.message_user(
+				request,
+				f"Saved. {len(wanted)} of {len(metrics)} metrics visible for "
+				f"{school.name} in {year}/{year + 1}.",
+			)
+			return redirect(
+				f"{request.path}?school={school.id}&year={year}"
+			)
+
+		visible_ids = set(
+			OperationsMetricVisibility.objects.filter(
+				school=school, year=year, is_visible=True
+			).values_list("metric_id", flat=True)
+		)
+
+		grouped = []
+		for metric in metrics:
+			if not grouped or grouped[-1]["domain"].id != metric.domain_id:
+				grouped.append({"domain": metric.domain, "metrics": []})
+			grouped[-1]["metrics"].append(
+				{"metric": metric, "is_visible": metric.id in visible_ids}
+			)
+
+		context = {
+			**self.admin_site.each_context(request),
+			"opts": self.model._meta,
+			"title": "Operations & Resources — pilot visibility",
+			"selector": selector,
+			"school": school,
+			"year": year,
+			"year_label": f"{year}/{year + 1}",
+			"grouped": grouped,
+			"visible_count": len(visible_ids),
+			"total_count": len(metrics),
+		}
+		return render(
+			request, "admin/review/operationsmetricvisibility/grid.html", context
+		)
+
+
+@admin.register(OperationsEntry)
+class OperationsEntryAdmin(admin.ModelAdmin):
+	list_display = ("school", "period", "metric", "value", "band_choice", "rag", "source", "recorded_at")
+	list_filter = ("rag", "source", "school", "period", "metric__domain", "metric")
+	search_fields = ("commentary", "manual_red_reason", "metric__name")
+	list_select_related = ("school", "period", "metric")
+	# Derived from the metric's rule and bands on every save.
+	readonly_fields = ("rag", "recorded_at")
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(school__in=_request_schools(request))
+
+
+@admin.register(ComplaintTheme)
+class ComplaintThemeAdmin(admin.ModelAdmin):
+	list_display = ("order", "name", "is_active")
+	list_editable = ("is_active",)
+	list_display_links = ("name",)
+	ordering = ("order", "name")
+
+
+@admin.register(StatutoryComplianceItem)
+class StatutoryComplianceItemAdmin(admin.ModelAdmin):
+	list_display = ("school", "label", "next_due_date", "action_plan_in_place", "updated_at")
+	list_filter = ("school", "item", "action_plan_in_place")
+	ordering = ("school__name", "item")
+	list_select_related = ("school",)
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(school__in=_request_schools(request))
+
+
+@admin.register(GrantPublication)
+class GrantPublicationAdmin(admin.ModelAdmin):
+	list_display = ("school", "year", "label", "status", "updated_at")
+	list_filter = ("school", "year", "grant", "status")
+	ordering = ("school__name", "-year", "grant")
+	list_select_related = ("school",)
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(school__in=_request_schools(request))
+
+
+@admin.register(OperationsNote)
+class OperationsNoteAdmin(admin.ModelAdmin):
+	list_display = ("school", "period", "updated_at", "updated_by")
+	list_filter = ("school", "period")
+	search_fields = ("text",)
+	list_select_related = ("school", "period", "updated_by")
+	readonly_fields = ("updated_at", "updated_by")
+
+	def get_queryset(self, request):
+		qs = super().get_queryset(request)
+		return qs.filter(school__in=_request_schools(request))
 
 
 class SchoolProfileInline(admin.StackedInline):

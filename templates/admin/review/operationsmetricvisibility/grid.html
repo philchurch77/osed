@@ -1,0 +1,80 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Operations &amp; Resources — pilot visibility | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <style>
+    .vis-intro { max-width: 60em; margin-bottom: 1.25em; }
+    .vis-selector { margin-bottom: 1.5em; padding: 1em; background: #f8f8f8; border: 1px solid #ddd; }
+    .vis-selector label { margin-right: 0.5em; font-weight: 600; }
+    .vis-selector select { margin-right: 1.5em; }
+    .vis-domain { margin-bottom: 1.5em; }
+    .vis-domain h2 { font-size: 1em; margin: 0 0 0.5em; padding: 0.4em 0.6em; background: #eef3f6; border-left: 4px solid #304354; }
+    .vis-metric { padding: 0.35em 0.6em; display: flex; align-items: center; gap: 0.6em; }
+    .vis-metric:nth-child(even) { background: #fafafa; }
+    .vis-metric label { flex: 1; cursor: pointer; }
+    .vis-metric .vis-note { color: #777; font-size: 0.85em; }
+    .vis-count { margin: 1em 0; font-weight: 600; }
+    .vis-actions { margin-top: 1.5em; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="vis-intro">
+    <p>
+      Operations &amp; Resources runs as a pilot: every metric is switched off until it is
+      turned on here, for one school and one academic year at a time. A metric that is off
+      is <strong>absent</strong> from that school's page — no tile, no placeholder — and is
+      excluded from the Trust Dashboard roll-up, so a school piloting part of the framework
+      never looks healthier than one running all of it.
+    </p>
+    <p>Changes take effect immediately. No deploy or restart is needed.</p>
+  </div>
+
+  <form method="get" class="vis-selector">
+    <label for="id_school">{% trans "School" %}</label>{{ selector.school }}
+    <label for="id_year">{% trans "Academic year" %}</label>{{ selector.year }}
+    <button type="submit" class="default">{% trans "Show" %}</button>
+  </form>
+
+  {% if school %}
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="save" />
+      <input type="hidden" name="school" value="{{ school.id }}" />
+      <input type="hidden" name="year" value="{{ year }}" />
+
+      <p class="vis-count">
+        {{ school.name }} &middot; {{ year_label }} &mdash;
+        {{ visible_count }} of {{ total_count }} metrics currently visible.
+      </p>
+
+      {% for group in grouped %}
+        <div class="vis-domain">
+          <h2>{{ group.domain.name }}</h2>
+          {% for row in group.metrics %}
+            <div class="vis-metric">
+              <input type="checkbox" name="visible" value="{{ row.metric.id }}"
+                     id="metric-{{ row.metric.id }}" {% if row.is_visible %}checked{% endif %} />
+              <label for="metric-{{ row.metric.id }}">
+                {{ row.metric.name }}
+                <span class="vis-note">
+                  &middot; {{ row.metric.get_evidence_display }}
+                  &middot; {{ row.metric.get_cycle_display }}
+                </span>
+              </label>
+            </div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+
+      <div class="vis-actions submit-row">
+        <input type="submit" value="{% trans 'Save visibility' %}" class="default" />
+      </div>
+    </form>
+  {% else %}
+    <p>{% trans "No schools are available to you." %}</p>
+  {% endif %}
+{% endblock %}

@@ -6,7 +6,7 @@
   <header class="page-header">
     <div class="board-header-titles">
       <h1 class="page-title">Trust Dashboard</h1>
-      <p class="board-period-subtitle">{{ year }}/{{ year|add:1 }} &middot; Round {{ selected_round }}</p>
+      <p class="board-period-subtitle">{{ year }}/{{ year|add:1 }} &middot; {{ current_period.term_label|default:"Autumn" }} term</p>
     </div>
 
     <form method="get" class="school-select">
@@ -61,7 +61,7 @@
         {% if not has_any_data %}
           <tr>
             <td colspan="{{ categories|length|add:1 }}" class="overview-empty">
-              No evaluation data has been entered for {{ year }}/{{ year|add:1 }} Round {{ selected_round }}.
+              No evaluation data has been entered for {{ year }}/{{ year|add:1 }}, {{ current_period.term_label|default:"Autumn" }} term.
               Go to <a href="/review/dashboard/">School Dashboard</a> to add ratings.
             </td>
           </tr>
@@ -69,4 +69,92 @@
       </tbody>
     </table>
   </div>
+
+  {% comment %}
+    Operations & Resources roll-up. Hidden metrics are excluded from the
+    denominator, and each school's scope is shown, so a Board member never
+    compares two schools that measured different things without knowing it.
+  {% endcomment %}
+  {% if operations_rows %}
+    <section class="ops-card ops-board">
+      <h2 class="ops-domain-title">Operations &amp; Resources</h2>
+      <div class="ops-summary-grid">
+        <div class="ops-summary-tiles">
+          {% for row in operations_rows %}
+            <div class="ops-school-row">
+              <span class="ops-school-name">{{ row.school.name }}</span>
+              <span class="ops-school-scope">{{ row.scope.label }}</span>
+              <span class="ops-count-chips">
+                {% if row.summary.red %}<span class="ops-chip ops-chip--sm ops-chip--red">{{ row.summary.red }} Red</span>{% endif %}
+                {% if row.summary.amber %}<span class="ops-chip ops-chip--sm ops-chip--amber">{{ row.summary.amber }} Amber</span>{% endif %}
+                {% if row.summary.green %}<span class="ops-chip ops-chip--sm ops-chip--green">{{ row.summary.green }} Green</span>{% endif %}
+                {% if row.summary.blue %}<span class="ops-chip ops-chip--sm ops-chip--blue">{{ row.summary.blue }} Not yet benchmarked</span>{% endif %}
+              </span>
+              {% if row.reds %}<p class="ops-meta">Red: {{ row.reds|join:", " }}</p>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <aside class="ops-exec-summary">
+          <h3>Executive summary</h3>
+          <ul>
+            {% for line in operations_summary %}<li>{{ line }}</li>{% endfor %}
+          </ul>
+        </aside>
+      </div>
+      <p class="ops-small-print">{{ operations_small_print }}</p>
+    </section>
+  {% endif %}
+
+  {% comment %}
+    Risk exception report. Red only under the agreed starting rule — this block
+    goes into a board pack as a screenshot, so everything is on the page: no
+    hover, no click-through, and every colour paired with a text label.
+  {% endcomment %}
+  <section class="risk-card risk-board">
+    <h2 class="risk-card-title">Risk — exception report</h2>
+    <p class="risk-card-sub">
+      Open risks escalating to the Finance, Audit and Risk Committee for
+      {{ year }}/{{ year|add:1 }}, {{ current_period.term_label|default:"Autumn" }} term.
+      The full register for each school stays on that school's Risk tab.
+    </p>
+
+    {% if escalated_risks %}
+      <div class="risk-table-wrap">
+        <table class="risk-table risk-table--board">
+          <thead>
+            <tr>
+              <th scope="col">School</th>
+              <th scope="col">Risk</th>
+              <th scope="col">Category</th>
+              <th scope="col">Impact</th>
+              <th scope="col">Likelihood</th>
+              <th scope="col">RAG</th>
+              <th scope="col">Owner</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in escalated_risks %}
+              <tr class="risk-row">
+                <td>{{ row.risk.school.name }}</td>
+                <td class="risk-cell-title">{{ row.risk.title }}</td>
+                <td>
+                  <span class="risk-cat">{{ row.category.name }}</span>
+                  <span class="risk-route risk-route--{{ row.route|lower }}">{{ row.route }}</span>
+                </td>
+                <td>{{ row.current.impact }}</td>
+                <td>{{ row.current.likelihood }}</td>
+                <td>
+                  <span class="risk-chip risk-chip--{{ row.rag_css }}">{{ row.rag }}</span>
+                  {% if row.trend %}<span class="risk-trend risk-trend--{{ row.trend }}">{{ row.trend_label }}</span>{% endif %}
+                </td>
+                <td>{{ row.risk.owner|default:"—" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="risk-empty">No risks are escalating this term.</p>
+    {% endif %}
+  </section>
 {% endblock %}

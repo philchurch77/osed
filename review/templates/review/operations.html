@@ -1,0 +1,311 @@
+{% extends "review/base.html" %}
+
+{% block title %}Operations &amp; Resources{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Operations &amp; Resources</h1>
+    <p class="page-subtitle">
+      {{ selected_year_value }} &middot; {{ period.term_label }} Term &middot; {{ school.name }}
+    </p>
+
+    <form method="get" class="school-select">
+      {% if user.is_superuser or schools %}
+        {% include "review/includes/filter_school_field.html" %}
+      {% endif %}
+      {% include "review/includes/filter_year_field.html" %}
+      {% include "review/includes/filter_round_field.html" %}
+      {% include "review/includes/filter_actions.html" %}
+    </form>
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if not can_edit %}
+    <p><strong>Read-only:</strong> you can view this page, but you can’t make changes.</p>
+  {% endif %}
+
+  <div class="ops-legend-row">
+    <ul class="ops-legend">
+      {% for colour, text in ops_legend %}
+        <li class="ops-legend-item">
+          <span class="ops-legend-swatch ops-legend-swatch--{{ colour }}" aria-hidden="true"></span>{{ text }}
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+  <p class="ops-standing-line">{{ legend_standing_text }}</p>
+
+  {% if domains %}
+    <p class="ops-scope">Showing {{ scope.label }}{% if scope.in_pilot %} for this school{% endif %}.</p>
+
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="school_id" value="{{ school.id }}" />
+      <input type="hidden" name="year" value="{{ selected_year_value }}" />
+      <input type="hidden" name="round" value="{{ selected_round }}" />
+
+      {% for d in domains %}
+        <section class="ops-card">
+          <h2 class="ops-domain-title">
+            <span class="ops-domain-dot ops-domain-dot--{{ d.summary.worst|default:'blue' }}" aria-hidden="true"></span>
+            {{ d.domain.name }}
+            <span class="ops-domain-count">{{ d.count }} metric{{ d.count|pluralize }}</span>
+          </h2>
+
+          {% for t in d.tiles %}
+            <div class="ops-row">
+              <div class="ops-row-head">
+                <span class="ops-metric-name">{{ t.metric.name }}</span>
+                <span class="ops-tag ops-tag--{{ t.metric.evidence }}">{{ t.evidence_label }}</span>
+                {% if t.is_annual %}<span class="ops-tag ops-tag--annual">Annual</span>{% endif %}
+                <span class="ops-chip ops-chip--{{ t.rag }}">{{ t.rag_label }}</span>
+              </div>
+
+              {% if t.is_blue %}
+                <p class="ops-blue-note">
+                  {% if t.no_band_for_phase %}
+                    Not yet benchmarked — no threshold exists for
+                    {{ school.get_phase_display|default:"this phase" }} on this metric.
+                    This is the expected state, not a missing entry, and it must not be read as green.
+                  {% else %}
+                    Not yet benchmarked — there isn’t enough data to place this yet.
+                    It is not green.
+                  {% endif %}
+                </p>
+              {% endif %}
+
+              {% if t.band %}
+                {% comment %}
+                  Where the bands are the picker they are rendered as the buttons
+                  below instead, so the descriptors are never shown twice.
+                {% endcomment %}
+                {% if not t.band_options %}
+                  <ul class="ops-bands">
+                    <li class="ops-band ops-band--green{% if t.rag == 'green' %} is-current{% endif %}">
+                      <span class="ops-band-key">Green</span>
+                      <span class="ops-band-desc">{{ t.band.green_descriptor }}</span>
+                    </li>
+                    <li class="ops-band ops-band--amber{% if t.rag == 'amber' %} is-current{% endif %}">
+                      <span class="ops-band-key">Amber</span>
+                      <span class="ops-band-desc">{{ t.band.amber_descriptor }}</span>
+                    </li>
+                    <li class="ops-band ops-band--red{% if t.rag == 'red' %} is-current{% endif %}">
+                      <span class="ops-band-key">Red</span>
+                      <span class="ops-band-desc">{{ t.band.red_descriptor }}</span>
+                    </li>
+                    {% comment %}
+                      Four states, not three: Blue is a band in its own right, so it
+                      appears on the derived tiles too rather than being the silent
+                      absence of the other three.
+                    {% endcomment %}
+                    <li class="ops-band ops-band--none{% if t.is_blue %} is-current{% endif %}">
+                      <span class="ops-band-key">Not yet rated</span>
+                      <span class="ops-band-desc">Not enough recorded yet to place this &mdash; it is not green.</span>
+                    </li>
+                  </ul>
+                {% endif %}
+                {% if t.band.comparator_value is not None %}
+                  <p class="ops-comparator">
+                    Compared against {{ t.band.comparator_value }}
+                    {% if t.band.comparator_year %}({{ t.band.comparator_year }}){% endif %}
+                    {% if t.band.comparator_source %} &middot; {{ t.band.comparator_source }}{% endif %}
+                  </p>
+                {% endif %}
+              {% endif %}
+
+              {% if t.metric.help_text %}
+                <p class="ops-help">{{ t.metric.help_text }}</p>
+              {% endif %}
+
+              {# ---- Statutory compliance: show which item is overdue ---- #}
+              {% if t.statutory_items %}
+                <ul class="ops-subitems">
+                  {% for i in t.statutory_items %}
+                    <li class="{% if i.overdue %}ops-subitem--overdue{% endif %}">
+                      {{ i.label }} —
+                      {% if i.next_due_date %}
+                        due {{ i.next_due_date|date:"j M Y" }}
+                        {% if i.overdue %}<strong>overdue by {{ i.days_overdue }} day{{ i.days_overdue|pluralize }}</strong>{% endif %}
+                        {% if i.overdue and i.action_plan_in_place %}(action plan in place){% endif %}
+                        {% if i.overdue and not i.action_plan_in_place %}(no action plan){% endif %}
+                      {% else %}
+                        no date recorded
+                      {% endif %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+
+              {# ---- Grants: the applicable set, derived from phase and type ---- #}
+              {% if t.grants %}
+                <ul class="ops-subitems">
+                  {% for g in t.grants %}
+                    <li class="{% if not g.recorded %}ops-subitem--overdue{% endif %}">{{ g.label }} — {{ g.status }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+
+              {# ---- Entry ---- #}
+              {% if not t.metric.is_computed or t.metric.rule == "complaints_trend" %}
+                <div class="ops-entry">
+                  {% if t.metric.is_numeric or t.metric.rule == "complaints_trend" %}
+                    <label class="ops-field">
+                      <span>{{ t.metric.value_label|default:"Value" }}</span>
+                      <input type="number" step="0.01" name="metric-{{ t.metric.id }}-value"
+                             value="{{ t.value|default_if_none:'' }}" {% if not can_edit %}disabled{% endif %} />
+                    </label>
+                  {% else %}
+                    <fieldset class="ops-bandpick">
+                      <legend class="ops-bandpick-legend">Which band applies?</legend>
+                      <div class="ops-bandpick-options">
+                        {% for opt in t.band_options %}
+                          <input class="ops-bandpick-input" type="radio"
+                                 id="metric-{{ t.metric.id }}-band-{{ opt.value }}"
+                                 name="metric-{{ t.metric.id }}-band_choice"
+                                 value="{{ opt.value }}"
+                                 {% if opt.selected %}checked{% endif %}
+                                 {% if not can_edit %}disabled{% endif %} />
+                          <label class="ops-bandpick-option ops-bandpick-option--{{ opt.value }}"
+                                 for="metric-{{ t.metric.id }}-band-{{ opt.value }}">
+                            <span class="ops-bandpick-key">{{ opt.label }}</span>
+                            {% if opt.descriptor %}
+                              <span class="ops-bandpick-desc">{{ opt.descriptor }}</span>
+                            {% endif %}
+                          </label>
+                        {% endfor %}
+                        {% comment %}
+                          Nothing chosen is a real state -- the tile stays Blue, which is
+                          never Green -- so it stays selectable rather than being a value
+                          you can set once and never clear.
+                        {% endcomment %}
+                        <input class="ops-bandpick-input" type="radio"
+                               id="metric-{{ t.metric.id }}-band-none"
+                               name="metric-{{ t.metric.id }}-band_choice"
+                               value=""
+                               {% if t.band_unset %}checked{% endif %}
+                               {% if not can_edit %}disabled{% endif %} />
+                        <label class="ops-bandpick-option ops-bandpick-option--none"
+                               for="metric-{{ t.metric.id }}-band-none">
+                          <span class="ops-bandpick-key">Not yet rated</span>
+                        </label>
+                      </div>
+                    </fieldset>
+                  {% endif %}
+
+                  {% if t.metric.rule == "complaints_trend" %}
+                    <label class="ops-field">
+                      <span>Predominant theme</span>
+                      <select name="metric-{{ t.metric.id }}-theme" {% if not can_edit %}disabled{% endif %}>
+                        <option value="">—</option>
+                        {% for theme in themes %}
+                          <option value="{{ theme.id }}" {% if t.theme and t.theme.id == theme.id %}selected{% endif %}>{{ theme.name }}</option>
+                        {% endfor %}
+                      </select>
+                    </label>
+                  {% endif %}
+
+                  <label class="ops-field ops-field--wide">
+                    <span>Commentary</span>
+                    <textarea rows="2" name="metric-{{ t.metric.id }}-commentary"
+                              {% if not can_edit %}disabled{% endif %}>{{ t.commentary }}</textarea>
+                  </label>
+
+                  <label class="ops-field ops-field--wide">
+                    <span>Flag as red — reason (leave blank unless a red trigger applies that the figure can’t show)</span>
+                    <input type="text" name="metric-{{ t.metric.id }}-red_reason"
+                           value="{{ t.entry.manual_red_reason|default:'' }}" {% if not can_edit %}disabled{% endif %} />
+                  </label>
+                </div>
+              {% endif %}
+
+              {# Predominant theme: a small italic note beneath the complaints tile. #}
+              {% if t.theme %}
+                <p class="ops-theme-note">Trend note — predominantly {{ t.theme.name }}-related</p>
+              {% endif %}
+
+              {% if t.commentary and not can_edit %}
+                <p class="ops-commentary">{{ t.commentary }}</p>
+              {% endif %}
+
+              <p class="ops-meta">
+                {% if t.baseline %}
+                  Baseline (Autumn): <span class="ops-chip ops-chip--sm ops-chip--{{ t.baseline.rag|default:'blue' }}">{{ t.baseline.get_rag_display|default:"—" }}</span>
+                {% else %}
+                  Baseline (Autumn): not recorded
+                {% endif %}
+                {% if t.carried_from %} &middot; carried from {{ t.carried_from.term_label }} term{% endif %}
+                {% if t.metric.benchmark_source %} &middot; Source: {{ t.metric.benchmark_source }}{% endif %}
+              </p>
+            </div>
+          {% endfor %}
+        </section>
+      {% endfor %}
+
+      {# ---- Anything else to raise: deliberately outside the RAG structure ---- #}
+      <section class="ops-card ops-card--plain">
+        <h2 class="ops-domain-title">Anything else to raise</h2>
+        <p class="ops-help">
+          For something to flag to a Central Team lead that isn’t a risk and doesn’t fit any
+          metric. Not rated, and not rolled up to the Trust Dashboard.
+        </p>
+        <textarea rows="4" name="anything_else" class="ops-anything-else"
+                  {% if not can_edit %}disabled{% endif %}>{{ note.text|default:"" }}</textarea>
+        {% if note and note.updated_at %}
+          <p class="ops-meta">Last updated {{ note.updated_at|date:"j M Y" }}{% if note.updated_by %} by {{ note.updated_by }}{% endif %}.</p>
+        {% endif %}
+
+        {% if earlier_notes %}
+          <div class="ops-note-history">
+            <h3 class="ops-note-history-title">Earlier terms</h3>
+            {% for n in earlier_notes %}
+              <div class="ops-note-history-item">
+                <span class="ops-note-history-term">{{ n.period.year }}/{{ n.period.year|add:1 }} &middot; {{ n.period.term_label }}</span>
+                <p>{{ n.text }}</p>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </section>
+
+      {% if can_edit %}
+        <div class="form-actions">
+          <button type="submit">Save</button>
+        </div>
+      {% endif %}
+    </form>
+  {% else %}
+    <section class="ops-card">
+      <p class="ops-empty">
+        No Operations &amp; Resources metrics are switched on for {{ school.name }} in
+        {{ selected_year_value }}. This tab is running as a pilot — metrics are turned on
+        per school in the Admin area.
+      </p>
+    </section>
+  {% endif %}
+
+  {# ---- Risk summary: reads the Risk register, never keeps its own copy ---- #}
+  <section class="ops-card">
+    <h2 class="ops-domain-title">Risk (from Risk Management Framework)</h2>
+    {% if top_risks %}
+      {% for r in top_risks %}
+        <div class="ops-risk-row">
+          <span class="risk-chip risk-chip--{{ r.rag_css }}">{{ r.rag }}</span>
+          <span class="ops-risk-title">{{ r.risk.title }}</span>
+          <span class="ops-risk-detail">Impact: {{ r.current.impact }} &middot; Likelihood: {{ r.current.likelihood }}</span>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="ops-empty">No open risks rated for this term.</p>
+    {% endif %}
+    <p class="ops-meta"><a href="/review/risk/?year={{ selected_year_value }}&amp;round={{ selected_round }}">View the full risk register</a></p>
+  </section>
+
+  <p class="ops-small-print">{{ small_print }}</p>
+{% endblock %}

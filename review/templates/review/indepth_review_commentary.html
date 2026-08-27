@@ -188,9 +188,9 @@
 {% endblock %}
 
 {% block scripts %}
-  {% load static %}
+  {% load static asset_tags %}
   {% if can_edit %}
     {# word_limit.js is loaded globally in base.html — don't re-include it here or counters render twice. #}
-    <script defer src="{% static 'review/unsaved_changes.js' %}?v=20260527-1"></script>
+    <script defer src="{% static_v 'review/unsaved_changes.js' %}"></script>
   {% endif %}
 {% endblock %}

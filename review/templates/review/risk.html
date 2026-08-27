@@ -1,0 +1,332 @@
+{% extends "review/base.html" %}
+{% load static asset_tags %}
+
+{% block title %}Risk{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Risk</h1>
+    <p class="page-subtitle">
+      {{ selected_year_value }} &middot; {{ period.term_label }} Term &middot; {{ school.name }}
+    </p>
+
+    <form method="get" class="school-select">
+      {% if user.is_superuser or schools %}
+        {% include "review/includes/filter_school_field.html" %}
+      {% endif %}
+      {% include "review/includes/filter_year_field.html" %}
+      {% include "review/includes/filter_round_field.html" %}
+      <div class="form-field">
+        <label for="rag">Show</label>
+        <select id="rag" name="rag">
+          {% for opt in rag_filter_options %}
+            <option value="{{ opt.value }}" {% if opt.value == rag_filter %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% include "review/includes/filter_actions.html" %}
+    </form>
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if not can_edit %}
+    <p><strong>Read-only:</strong> you can view the register, but you can’t make changes.</p>
+  {% endif %}
+
+  {# ── Scoring matrix ─────────────────────────────────────────────────────── #}
+  <section class="risk-card">
+    <h2 class="risk-card-title">Risk scoring matrix</h2>
+    <p class="risk-card-sub">From the Trust’s Risk Management Framework — Impact × Likelihood</p>
+
+    <div class="risk-matrix-wrap">
+      <table class="risk-matrix">
+        <colgroup>
+          <col class="risk-matrix-col--label">
+          <col class="risk-matrix-col--band">
+          <col class="risk-matrix-col--band">
+          <col class="risk-matrix-col--band">
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col"><span class="visually-hidden">Impact</span></th>
+            <th scope="col">Unlikely</th>
+            <th scope="col">Possible</th>
+            <th scope="col">Highly probable</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in matrix_rows %}
+            <tr>
+              <th scope="row">{{ row.label }}</th>
+              {% for cell in row.cells %}
+                <td class="risk-matrix-cell risk-matrix-cell--{{ cell.rag_css }}">{{ cell.band_label }}</td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <ul class="risk-legend">
+      {% for colour, text in rag_legend %}
+        <li class="risk-legend-item">
+          <span class="risk-legend-swatch risk-legend-swatch--{{ colour|lower }}" aria-hidden="true"></span>{{ text }}
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  {# ── Open risks: review each one ────────────────────────────────────────── #}
+  <section class="risk-card">
+    <h2 class="risk-card-title">School risk register</h2>
+    <p class="risk-card-sub">
+      Logged by the Principal, QA’d by the CFO &middot; category routes to TFORS or SIV &middot;
+      Red items escalate to the Finance, Audit and Risk Committee.
+      {% if can_qa and awaiting_qa_count %}
+        <strong>{{ awaiting_qa_count }} awaiting QA.</strong>
+      {% endif %}
+    </p>
+
+    {% if open_rows %}
+      <p class="risk-review-intro">
+        These risks are already open. Review each one for {{ period.term_label }} term — confirm or
+        change its rating, or close it with a reason — then add anything new below.
+      </p>
+
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save_ratings" />
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="round" value="{{ selected_round }}" />
+        {{ rating_formset.management_form }}
+
+        <div class="risk-table-wrap">
+          <table class="risk-table">
+            <thead>
+              <tr>
+                <th scope="col">Risk</th>
+                <th scope="col">Category</th>
+                <th scope="col">Impact</th>
+                <th scope="col">Likelihood</th>
+                <th scope="col">RAG</th>
+                <th scope="col">Mitigation</th>
+                <th scope="col">Review</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in open_rows %}
+                <tr class="risk-row">
+                  <td class="risk-cell-title">
+                    {{ row.risk.title }}
+                    {{ row.rating_form.risk_id }}
+                  </td>
+                  <td>
+                    <span class="risk-cat">{{ row.category.name }}</span>
+                    <span class="risk-route risk-route--{{ row.route|lower }}">{{ row.route }}</span>
+                  </td>
+                  <td>{{ row.rating_form.impact }}</td>
+                  <td>{{ row.rating_form.likelihood }}</td>
+                  <td>
+                    {% if row.rag %}
+                      <span class="risk-chip risk-chip--{{ row.rag_css }}">{{ row.rag }}</span>
+                      {% if row.escalated %}<span class="risk-chip risk-chip--escalated">Escalated</span>{% endif %}
+                      {% if row.trend %}<span class="risk-trend risk-trend--{{ row.trend }}">{{ row.trend_label }}</span>{% endif %}
+                      {% if row.awaiting_qa %}<span class="risk-qa-flag">Awaiting QA</span>{% else %}<span class="risk-qa-flag risk-qa-flag--done">QA’d</span>{% endif %}
+                    {% else %}
+                      <span class="risk-chip risk-chip--none">Not yet rated this term</span>
+                    {% endif %}
+                  </td>
+                  <td class="risk-cell-mitigation">{{ row.risk.mitigation|default:"—" }}</td>
+                  <td class="risk-cell-review">
+                    {% if row.risk.owner %}Owner: {{ row.risk.owner }}<br />{% endif %}
+                    {% if row.risk.review_point %}Review: {{ row.risk.review_point }}<br />{% endif %}
+                    {% if row.previous %}
+                      <span class="risk-prev">Last term: {{ row.previous.rag }}</span>
+                    {% else %}
+                      <span class="risk-prev">No prior rating</span>
+                    {% endif %}
+                  </td>
+                </tr>
+                <tr class="risk-row-note">
+                  <td colspan="7"><label>Note for this term {{ row.rating_form.note }}</label></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {% if can_edit %}
+          <div class="form-actions">
+            <button type="submit">Save ratings</button>
+          </div>
+        {% endif %}
+      </form>
+
+      {% if can_qa %}
+        <div class="risk-qa-block">
+          <h3 class="risk-qa-heading">Sign off this term's entries</h3>
+          {% for row in open_rows %}
+            {% if row.awaiting_qa %}
+              <form method="post" class="risk-qa-form">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="qa_rating" />
+                <input type="hidden" name="school_id" value="{{ school.id }}" />
+                <input type="hidden" name="year" value="{{ selected_year_value }}" />
+                <input type="hidden" name="round" value="{{ selected_round }}" />
+                <input type="hidden" name="target_id" value="{{ row.current.id }}" />
+                <span class="risk-qa-form-label">{{ row.risk.title }}</span>
+                <span class="risk-chip risk-chip--{{ row.rag_css }}">{{ row.rag }}</span>
+                <button type="submit">Sign off</button>
+              </form>
+            {% endif %}
+          {% empty %}
+            <p class="risk-empty">Nothing awaiting sign-off.</p>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      {% if can_edit %}
+        <details class="risk-close-block">
+          <summary>Close a risk</summary>
+          <p class="risk-card-sub">
+            A closed risk stays on the register with its reason and date, and needs CFO sign-off.
+          </p>
+          {% for row in open_rows %}
+            <form method="post" class="risk-close-form">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="close_risk" />
+              <input type="hidden" name="school_id" value="{{ school.id }}" />
+              <input type="hidden" name="year" value="{{ selected_year_value }}" />
+              <input type="hidden" name="round" value="{{ selected_round }}" />
+              <input type="hidden" name="risk_id" value="{{ row.risk.id }}" />
+              <label class="risk-close-label">{{ row.risk.title }}</label>
+              {{ row.close_form.close_reason }}
+              {% if row.close_form.close_reason.errors %}
+                <p class="risk-error">{{ row.close_form.close_reason.errors.0 }}</p>
+              {% endif %}
+              <button type="submit">Close this risk</button>
+            </form>
+          {% endfor %}
+        </details>
+      {% endif %}
+    {% else %}
+      <p class="risk-empty">No open risks match the current filter.</p>
+    {% endif %}
+  </section>
+
+  {# ── Closed risks: greyed out, never removed ────────────────────────────── #}
+  {% if closed_rows %}
+    <section class="risk-card">
+      <h2 class="risk-card-title">Closed risks</h2>
+      <div class="risk-table-wrap">
+        <table class="risk-table risk-table--closed">
+          <thead>
+            <tr>
+              <th scope="col">Risk</th>
+              <th scope="col">Category</th>
+              <th scope="col">Last rating</th>
+              <th scope="col">Closed</th>
+              <th scope="col">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in closed_rows %}
+              <tr class="risk-row risk-row--closed">
+                <td class="risk-cell-title">{{ row.risk.title }}</td>
+                <td>
+                  <span class="risk-cat">{{ row.category.name }}</span>
+                  <span class="risk-route risk-route--{{ row.route|lower }}">{{ row.route }}</span>
+                </td>
+                <td>
+                  {% if row.latest %}
+                    <span class="risk-chip risk-chip--{{ row.latest.rag|lower }}">{{ row.latest.rag }}</span>
+                  {% else %}—{% endif %}
+                </td>
+                <td>
+                  {{ row.risk.closed_at|date:"j M Y" }}
+                  {% if row.close_awaiting_qa %}
+                    <span class="risk-qa-flag">Awaiting QA</span>
+                  {% else %}
+                    <span class="risk-qa-flag risk-qa-flag--done">QA’d</span>
+                  {% endif %}
+                </td>
+                <td>{{ row.risk.close_reason|default:"—" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+
+  {# ── Add a new risk ─────────────────────────────────────────────────────── #}
+  {% if can_edit %}
+    <section class="risk-card">
+      <h2 class="risk-card-title">Add a risk</h2>
+      <form method="post" class="risk-add-form" data-matrix="{{ matrix_lookup_json }}">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="add_risk" />
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="round" value="{{ selected_round }}" />
+
+        {% if entry_form.errors %}
+          <ul class="messages">
+            {% for field in entry_form %}
+              {% for error in field.errors %}<li class="error">{{ field.label }}: {{ error }}</li>{% endfor %}
+            {% endfor %}
+          </ul>
+        {% endif %}
+
+        <div class="form-field form-field--wide">
+          <label for="{{ entry_form.title.id_for_label }}">Risk</label>
+          {{ entry_form.title }}
+        </div>
+        <div class="form-field">
+          <label for="{{ entry_form.category.id_for_label }}">Category</label>
+          {{ entry_form.category }}
+          <p class="form-hint">Routing to TFORS or SIV follows from the category.</p>
+        </div>
+        <div class="form-field">
+          <label for="{{ entry_form.impact.id_for_label }}">Impact</label>
+          {{ entry_form.impact }}
+        </div>
+        <div class="form-field">
+          <label for="{{ entry_form.likelihood.id_for_label }}">Likelihood</label>
+          {{ entry_form.likelihood }}
+        </div>
+        <div class="form-field">
+          <span class="form-label">Scores as</span>
+          <output class="risk-preview" id="risk-band-preview">—</output>
+        </div>
+        <div class="form-field form-field--wide">
+          <label for="{{ entry_form.mitigation.id_for_label }}">Mitigation</label>
+          {{ entry_form.mitigation }}
+        </div>
+        <div class="form-field">
+          <label for="{{ entry_form.owner.id_for_label }}">Owner</label>
+          {{ entry_form.owner }}
+        </div>
+        <div class="form-field">
+          <label for="{{ entry_form.review_point.id_for_label }}">Review point</label>
+          {{ entry_form.review_point }}
+        </div>
+        <div class="form-actions">
+          <button type="submit">Add to register</button>
+        </div>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  <script defer src="{% static_v 'review/risk_matrix.js' %}"></script>
+{% endblock %}

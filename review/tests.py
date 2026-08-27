@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from django.contrib.auth.models import Permission, User
+from datetime import timedelta
+from decimal import Decimal
+from pathlib import Path
+
+from django.contrib.auth.models import Group, Permission, User
+from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
+from django.utils.html import escape
+from django.utils import timezone
 
 from .models import (
 	Category,
@@ -13,11 +20,48 @@ from .models import (
 	InDepthReview,
 	InDepthStandard,
 	InDepthSubSection,
+	ComplaintTheme,
+	GrantPublication,
+	OperationsEntry,
+	OperationsMetric,
+	OperationsMetricBand,
+	OperationsMetricVisibility,
+	OperationsNote,
 	ReviewPeriod,
+	Risk,
+	RiskRating,
+	RiskSettings,
 	School,
 	SchoolProfile,
+	StatutoryComplianceItem,
+	TrustCategory,
 )
-from .views import conclude_indepth_grade
+from .operations import (
+	GRANT_DRAFTED,
+	GRANT_INCLUSIVE_MAINSTREAM,
+	GRANT_MISSED,
+	GRANT_PE_SPORT,
+	GRANT_PUBLISHED,
+	GRANT_PUPIL_PREMIUM,
+	LEGEND_STANDING_TEXT,
+	RULE_BAND_CHOICE,
+	SMALL_PRINT,
+	STATUTORY_ITEMS,
+	applicable_grants,
+	complaints_rag,
+	grant_rag,
+	statutory_rag,
+)
+from .permissions import user_can_qa_risk
+from .risk import rag_for, trend_for
+from .views import (
+	_build_risk_rows,
+	_escalated_risk_rows,
+	_operations_summary_rows,
+	_school_risk_queryset,
+	_visible_metric_ids,
+	conclude_indepth_grade,
+)
 
 
 class ViewerAccessTests(TestCase):
@@ -668,3 +712,1447 @@ class ImportWorkbooksTests(TestCase):
 			)
 		}
 		self.assertEqual(first_counts, second_counts)
+
+
+class RiskMatrixTests(TestCase):
+	"""The matrix is the specification. The mockup's own rows disagree with it
+	in four of six cases, so these assert every cell directly."""
+
+	def test_all_nine_cells(self):
+		expected = {
+			("High", "Unlikely"): "Yellow",
+			("High", "Possible"): "Amber",
+			("High", "Highly probable"): "Red",
+			("Medium", "Unlikely"): "Green",
+			("Medium", "Possible"): "Yellow",
+			("Medium", "Highly probable"): "Amber",
+			("Low", "Unlikely"): "Green",
+			("Low", "Possible"): "Green",
+			("Low", "Highly probable"): "Yellow",
+		}
+		for key, colour in expected.items():
+			self.assertEqual(rag_for(*key), colour, msg=str(key))
+
+	def test_band_is_recomputed_on_save_and_never_trusted_from_input(self):
+		env = _risk_env()
+		rating = RiskRating(
+			risk=env["risk"], period=env["autumn"], impact="Low", likelihood="Unlikely"
+		)
+		# Even a hand-set band is overwritten from the matrix.
+		rating.band = "critical"
+		rating.save()
+		rating.refresh_from_db()
+		self.assertEqual(rating.band, "low_risk")
+		self.assertEqual(rating.rag, "Green")
+
+	def test_trend_needs_history_and_persisting_is_amber_or_worse(self):
+		self.assertIsNone(trend_for("critical", None))
+		self.assertEqual(trend_for("critical", "high_priority"), "worsening")
+		self.assertEqual(trend_for("low_risk", "high_priority"), "improving")
+		self.assertEqual(trend_for("high_priority", "high_priority"), "persisting")
+		# An unchanged Green is not a concern, so it is not "persisting".
+		self.assertIsNone(trend_for("low_risk", "low_risk"))
+
+
+def _risk_env(*, phase="SECONDARY"):
+	"""A school, a category, a risk and three terms of periods."""
+	school = School.objects.create(name="Test High School", phase=phase)
+	area = InDepthArea.objects.create(name="Safeguarding", order=10)
+	category = TrustCategory.objects.create(
+		group=TrustCategory.Group.EVALUATION_AREA,
+		indepth_area=area,
+		routes_to=TrustCategory.Route.SIV,
+		order=10,
+	)
+	# Migration 0008 already creates the current year's Round 1 period, so these
+	# must be get_or_create rather than create.
+	autumn, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+	spring, _ = ReviewPeriod.objects.get_or_create(year=2026, round=2)
+	summer, _ = ReviewPeriod.objects.get_or_create(year=2026, round=3)
+	risk = Risk.objects.create(
+		school=school,
+		category=category,
+		title="Perimeter fencing damaged",
+		owner="Site Manager",
+		opened_period=autumn,
+	)
+	return {
+		"school": school,
+		"area": area,
+		"category": category,
+		"risk": risk,
+		"autumn": autumn,
+		"spring": spring,
+		"summer": summer,
+	}
+
+
+def _make_user(username, *, school, group_name=None, superuser=False):
+	if superuser:
+		user = User.objects.create_superuser(username, f"{username}@x.test", "pw123456")
+	else:
+		user = User.objects.create_user(username, f"{username}@x.test", "pw123456")
+	profile = SchoolProfile.objects.create(user=user, school=school)
+	profile.schools.add(school)
+	if group_name:
+		user.groups.add(Group.objects.get(name=group_name))
+	return user
+
+
+class RiskEscalationTests(TestCase):
+	"""Red only, and the threshold is a setting rather than a code change."""
+
+	def setUp(self):
+		self.env = _risk_env()
+		self.settings_obj = RiskSettings.load()
+
+	def _rate(self, period, impact, likelihood):
+		return RiskRating.objects.create(
+			risk=self.env["risk"], period=period, impact=impact, likelihood=likelihood
+		)
+
+	def test_red_escalates(self):
+		self._rate(self.env["autumn"], "High", "Highly probable")
+		rows = _escalated_risk_rows([self.env["school"]], year=2026, round_number=1)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["rag"], "Red")
+
+	def test_amber_does_not_escalate_on_its_first_term(self):
+		self._rate(self.env["autumn"], "High", "Possible")
+		rows = _escalated_risk_rows([self.env["school"]], year=2026, round_number=1)
+		self.assertEqual(rows, [])
+
+	def test_amber_does_not_escalate_after_three_terms(self):
+		for period in ("autumn", "spring", "summer"):
+			self._rate(self.env[period], "High", "Possible")
+		rows = _escalated_risk_rows([self.env["school"]], year=2026, round_number=3)
+		self.assertEqual(rows, [], "Persisting Amber must not escalate under the default rule")
+
+	def test_flipping_the_setting_escalates_persisting_amber_with_no_code_change(self):
+		for period in ("autumn", "spring", "summer"):
+			self._rate(self.env[period], "High", "Possible")
+
+		self.settings_obj.escalate_persisting_amber = True
+		self.settings_obj.save()
+
+		rows = _escalated_risk_rows([self.env["school"]], year=2026, round_number=3)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["trend"], "persisting")
+
+	def test_closed_risks_are_never_on_the_exception_report(self):
+		self._rate(self.env["autumn"], "High", "Highly probable")
+		self.env["risk"].status = Risk.Status.CLOSED
+		self.env["risk"].save()
+		rows = _escalated_risk_rows([self.env["school"]], year=2026, round_number=1)
+		self.assertEqual(rows, [])
+
+
+class RiskCarryForwardTests(TestCase):
+	def setUp(self):
+		self.env = _risk_env()
+
+	def test_risk_carries_into_the_next_term_and_reports_worsening(self):
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="Medium",
+			likelihood="Possible",
+		)
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["spring"],
+			impact="High",
+			likelihood="Possible",
+		)
+
+		rows = _build_risk_rows(
+			_school_risk_queryset(self.env["school"]),
+			year=2026,
+			round_number=2,
+			settings=RiskSettings.load(),
+		)
+		self.assertEqual(len(rows), 1)
+		row = rows[0]
+		self.assertEqual(row["rag"], "Amber")
+		self.assertEqual(row["previous"].rag, "Yellow")
+		self.assertEqual(row["trend"], "worsening")
+
+	def test_a_term_with_no_entry_still_compares_against_the_last_rating(self):
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="Medium",
+			likelihood="Possible",
+		)
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["summer"],
+			impact="High",
+			likelihood="Possible",
+		)
+		rows = _build_risk_rows(
+			_school_risk_queryset(self.env["school"]),
+			year=2026,
+			round_number=3,
+			settings=RiskSettings.load(),
+		)
+		self.assertEqual(rows[0]["trend"], "worsening")
+
+	def test_route_is_derived_from_category_never_stored_on_the_risk(self):
+		self.assertEqual(self.env["risk"].route, "SIV")
+		self.assertFalse(
+			any(f.name == "route" for f in Risk._meta.get_fields()),
+			"Route must be derived from the category, not a field",
+		)
+
+		estates = TrustCategory.objects.create(
+			group=TrustCategory.Group.OPERATIONS_DOMAIN,
+			domain_key="estates-operations",
+			domain_name="Estates & Operations",
+			routes_to=TrustCategory.Route.TFORS,
+			order=120,
+		)
+		tfors_risk = Risk.objects.create(
+			school=self.env["school"], category=estates, title="Fire risk assessment due"
+		)
+		self.assertEqual(tfors_risk.route, "TFORS")
+
+		# Both routes live in the same register.
+		titles = {
+			row["risk"].title
+			for row in _build_risk_rows(
+				_school_risk_queryset(self.env["school"]),
+				year=2026,
+				round_number=1,
+				settings=RiskSettings.load(),
+			)
+		}
+		self.assertIn("Perimeter fencing damaged", titles)
+		self.assertIn("Fire risk assessment due", titles)
+
+
+class RiskRegisterViewTests(TestCase):
+	def setUp(self):
+		call_command("ensure_osed_staff_group")
+		call_command("ensure_risk_qa_group")
+		self.env = _risk_env()
+		self.principal = _make_user(
+			"principal", school=self.env["school"], group_name="OSED Staff"
+		)
+		self.viewer = _make_user("lab.member", school=self.env["school"])
+		self.cfo = _make_user("cfo", school=self.env["school"], group_name="Risk QA")
+
+	def _url(self, **params):
+		query = "&".join(f"{k}={v}" for k, v in params.items())
+		return f"/review/risk/{'?' + query if query else ''}"
+
+	def test_term_view_lists_open_risks_rather_than_an_empty_form(self):
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="High",
+			likelihood="Possible",
+		)
+		self.client.force_login(self.principal)
+		response = self.client.get(self._url(year="2026-2027", round=1))
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(len(response.context["open_rows"]), 1)
+		self.assertContains(response, "Perimeter fencing damaged")
+		self.assertContains(response, "These risks are already open")
+
+	def test_adding_a_risk_records_the_first_rating(self):
+		self.client.force_login(self.principal)
+		response = self.client.post(
+			self._url(),
+			{
+				"action": "add_risk",
+				"year": "2026-2027",
+				"round": "1",
+				"title": "Two unfilled teaching vacancies",
+				"category": self.env["category"].id,
+				"impact": "Medium",
+				"likelihood": "Highly probable",
+				"mitigation": "Advertising via three routes",
+				"owner": "Principal",
+				"review_point": "Spring 1",
+			},
+		)
+		self.assertEqual(response.status_code, 302)
+		risk = Risk.objects.get(title="Two unfilled teaching vacancies")
+		self.assertEqual(risk.ratings.count(), 1)
+		self.assertEqual(risk.ratings.first().rag, "Amber")
+
+	def test_closing_a_risk_needs_a_reason_and_keeps_it_on_the_register(self):
+		self.client.force_login(self.principal)
+
+		response = self.client.post(
+			self._url(),
+			{
+				"action": "close_risk",
+				"year": "2026-2027",
+				"round": "1",
+				"risk_id": self.env["risk"].id,
+				"close_reason": "",
+			},
+		)
+		self.env["risk"].refresh_from_db()
+		self.assertEqual(self.env["risk"].status, Risk.Status.OPEN, "Blank reason must not close")
+
+		self.client.post(
+			self._url(),
+			{
+				"action": "close_risk",
+				"year": "2026-2027",
+				"round": "1",
+				"risk_id": self.env["risk"].id,
+				"close_reason": "Fencing replaced and signed off by the contractor.",
+			},
+		)
+		self.env["risk"].refresh_from_db()
+		self.assertEqual(self.env["risk"].status, Risk.Status.CLOSED)
+		self.assertIsNotNone(self.env["risk"].closed_at)
+		self.assertTrue(self.env["risk"].close_awaiting_qa)
+
+		response = self.client.get(self._url(year="2026-2027", round=1))
+		self.assertEqual(len(response.context["closed_rows"]), 1)
+		self.assertContains(response, "Fencing replaced")
+
+	def test_a_principal_cannot_see_or_edit_another_schools_register(self):
+		other = School.objects.create(name="Other School", phase="PRIMARY")
+		other_risk = Risk.objects.create(
+			school=other, category=self.env["category"], title="Not yours"
+		)
+		self.client.force_login(self.principal)
+
+		response = self.client.get(self._url(school=other.id, year="2026-2027", round=1))
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.context["school"], self.env["school"])
+		self.assertNotContains(response, "Not yours")
+
+		self.client.post(
+			self._url(),
+			{
+				"action": "close_risk",
+				"year": "2026-2027",
+				"round": "1",
+				"school_id": other.id,
+				"risk_id": other_risk.id,
+				"close_reason": "Trying to close someone else's risk.",
+			},
+		)
+		other_risk.refresh_from_db()
+		self.assertEqual(other_risk.status, Risk.Status.OPEN)
+
+	def test_read_only_viewer_sees_the_register_but_cannot_post(self):
+		self.client.force_login(self.viewer)
+		response = self.client.get(self._url(year="2026-2027", round=1))
+		self.assertEqual(response.status_code, 200)
+		self.assertFalse(response.context["can_edit"])
+		self.assertContains(response, "Perimeter fencing damaged")
+
+		self.client.post(
+			self._url(),
+			{
+				"action": "close_risk",
+				"year": "2026-2027",
+				"round": "1",
+				"risk_id": self.env["risk"].id,
+				"close_reason": "Should not be allowed.",
+			},
+		)
+		self.env["risk"].refresh_from_db()
+		self.assertEqual(self.env["risk"].status, Risk.Status.OPEN)
+
+	def test_read_only_get_does_not_create_review_periods(self):
+		ReviewPeriod.objects.all().delete()
+		self.client.force_login(self.viewer)
+		self.client.get(self._url(year="2026-2027", round=2))
+		self.assertFalse(ReviewPeriod.objects.filter(year=2026, round=2).exists())
+
+	def test_rag_threshold_filter_cuts_the_register(self):
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="Low",
+			likelihood="Unlikely",
+		)
+		self.client.force_login(self.principal)
+		response = self.client.get(self._url(year="2026-2027", round=1, rag="red"))
+		self.assertEqual(response.context["open_rows"], [])
+		response = self.client.get(self._url(year="2026-2027", round=1, rag="all"))
+		self.assertEqual(len(response.context["open_rows"]), 1)
+
+
+class RiskQaPermissionTests(TestCase):
+	def setUp(self):
+		call_command("ensure_osed_staff_group")
+		call_command("ensure_risk_qa_group")
+		self.env = _risk_env()
+		self.principal = _make_user(
+			"principal", school=self.env["school"], group_name="OSED Staff"
+		)
+		self.cfo = _make_user("cfo", school=self.env["school"], group_name="Risk QA")
+		self.rating = RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="High",
+			likelihood="Possible",
+		)
+
+	def test_editor_is_not_a_qa_and_is_refused_the_queue(self):
+		self.assertFalse(user_can_qa_risk(self.principal))
+		self.client.force_login(self.principal)
+		response = self.client.get("/review/risk/qa/")
+		self.assertEqual(response.status_code, 403)
+
+	def test_qa_member_sees_the_queue_and_can_sign_off(self):
+		self.assertTrue(user_can_qa_risk(self.cfo))
+		self.client.force_login(self.cfo)
+
+		response = self.client.get("/review/risk/qa/?year=2026-2027&round=1")
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(len(response.context["rating_rows"]), 1)
+
+		self.client.post(
+			"/review/risk/qa/",
+			{
+				"action": "qa_rating",
+				"year": "2026-2027",
+				"round": "1",
+				"target_id": self.rating.id,
+			},
+		)
+		self.rating.refresh_from_db()
+		self.assertEqual(self.rating.qa_by, self.cfo)
+		self.assertIsNotNone(self.rating.qa_at)
+
+	def test_qa_member_can_sign_off_from_the_school_register_too(self):
+		self.client.force_login(self.cfo)
+		response = self.client.get("/review/risk/?year=2026-2027&round=1")
+		self.assertContains(response, "Sign off this term")
+
+		self.client.post(
+			"/review/risk/",
+			{
+				"action": "qa_rating",
+				"year": "2026-2027",
+				"round": "1",
+				"target_id": self.rating.id,
+			},
+		)
+		self.rating.refresh_from_db()
+		self.assertEqual(self.rating.qa_by, self.cfo)
+
+	def test_register_sign_off_cannot_reach_another_school(self):
+		other = School.objects.create(name="Unscoped School", phase="PRIMARY")
+		other_risk = Risk.objects.create(
+			school=other, category=self.env["category"], title="Out of scope"
+		)
+		other_rating = RiskRating.objects.create(
+			risk=other_risk,
+			period=self.env["autumn"],
+			impact="High",
+			likelihood="Possible",
+		)
+		self.client.force_login(self.cfo)
+		self.client.post(
+			"/review/risk/",
+			{
+				"action": "qa_rating",
+				"year": "2026-2027",
+				"round": "1",
+				"target_id": other_rating.id,
+			},
+		)
+		other_rating.refresh_from_db()
+		self.assertIsNone(other_rating.qa_at)
+
+	def test_qa_queue_still_respects_school_scoping(self):
+		other = School.objects.create(name="Unscoped School", phase="PRIMARY")
+		other_risk = Risk.objects.create(
+			school=other, category=self.env["category"], title="Out of scope"
+		)
+		other_rating = RiskRating.objects.create(
+			risk=other_risk,
+			period=self.env["autumn"],
+			impact="High",
+			likelihood="Highly probable",
+		)
+		self.client.force_login(self.cfo)
+
+		response = self.client.get("/review/risk/qa/?year=2026-2027&round=1")
+		self.assertNotContains(response, "Out of scope")
+
+		self.client.post(
+			"/review/risk/qa/",
+			{
+				"action": "qa_rating",
+				"year": "2026-2027",
+				"round": "1",
+				"target_id": other_rating.id,
+			},
+		)
+		other_rating.refresh_from_db()
+		self.assertIsNone(other_rating.qa_at)
+
+	def test_changing_a_rating_clears_its_sign_off(self):
+		self.rating.qa_by = self.cfo
+		self.rating.qa_at = timezone.now()
+		self.rating.save()
+
+		self.client.force_login(self.principal)
+		self.client.post(
+			"/review/risk/",
+			{
+				"action": "save_ratings",
+				"year": "2026-2027",
+				"round": "1",
+				"ratings-TOTAL_FORMS": "1",
+				"ratings-INITIAL_FORMS": "1",
+				"ratings-MIN_NUM_FORMS": "0",
+				"ratings-MAX_NUM_FORMS": "1000",
+				"ratings-0-risk_id": self.env["risk"].id,
+				"ratings-0-impact": "High",
+				"ratings-0-likelihood": "Highly probable",
+				"ratings-0-note": "",
+			},
+		)
+		self.rating.refresh_from_db()
+		self.assertEqual(self.rating.rag, "Red")
+		self.assertIsNone(self.rating.qa_at, "A changed rating must be signed off again")
+
+
+class TrustCategorySeedTests(TestCase):
+	def test_seed_is_idempotent_and_keys_the_nine_areas_off_indeptharea(self):
+		call_command("load_indepth_criteria")
+		call_command("seed_trust_categories")
+		call_command("seed_trust_categories")
+
+		self.assertEqual(TrustCategory.objects.count(), 14)
+		self.assertEqual(
+			TrustCategory.objects.filter(
+				group=TrustCategory.Group.EVALUATION_AREA
+			).count(),
+			9,
+		)
+		self.assertEqual(
+			TrustCategory.objects.filter(routes_to=TrustCategory.Route.TFORS).count(), 5
+		)
+		self.assertFalse(
+			TrustCategory.objects.filter(
+				group=TrustCategory.Group.EVALUATION_AREA, indepth_area__isnull=True
+			).exists(),
+			"Evaluation-area categories must reference InDepthArea, not copy its name",
+		)
+
+		# A rename in InDepthArea flows through rather than forking the list.
+		area = InDepthArea.objects.get(name="Post-16")
+		area.name = "Post-16 Provision"
+		area.save()
+		category = TrustCategory.objects.get(indepth_area=area)
+		self.assertEqual(category.name, "Post-16 Provision")
+
+
+class TrustDashboardRiskTests(TestCase):
+	def setUp(self):
+		call_command("ensure_osed_staff_group")
+		self.env = _risk_env()
+		self.user = _make_user(
+			"principal", school=self.env["school"], group_name="OSED Staff"
+		)
+
+	def test_red_appears_on_the_board_and_amber_does_not(self):
+		amber = Risk.objects.create(
+			school=self.env["school"],
+			category=self.env["category"],
+			title="Amber risk",
+		)
+		RiskRating.objects.create(
+			risk=amber, period=self.env["autumn"], impact="High", likelihood="Possible"
+		)
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="High",
+			likelihood="Highly probable",
+		)
+
+		self.client.force_login(self.user)
+		response = self.client.get("/review/board/?year=2026-2027&round=1")
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, "Perimeter fencing damaged")
+		self.assertNotContains(response, "Amber risk")
+
+	def test_board_labels_every_chip_so_it_survives_greyscale(self):
+		RiskRating.objects.create(
+			risk=self.env["risk"],
+			period=self.env["autumn"],
+			impact="High",
+			likelihood="Highly probable",
+		)
+		self.client.force_login(self.user)
+		response = self.client.get("/review/board/?year=2026-2027&round=1")
+		self.assertContains(response, 'risk-chip risk-chip--red">Red<')
+
+	def test_risk_colours_do_not_reuse_the_evaluation_grade_classes(self):
+		base = Path(__file__).resolve().parent
+		for name in ("risk.html", "risk_qa.html"):
+			markup = (base / "templates" / "review" / name).read_text(encoding="utf-8")
+			self.assertNotIn("rag-pill", markup)
+			self.assertNotIn("rag-current", markup)
+			self.assertNotIn("score--", markup)
+
+
+class TermLabelTests(TestCase):
+	def test_rounds_are_labelled_as_terms(self):
+		period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		self.assertEqual(period.term_label, "Autumn")
+		self.assertEqual(str(period), "2026/2027 - Autumn term")
+		self.assertEqual(ReviewPeriod(year=2026, round=3).term_label, "Summer")
+
+
+# ---------------------------------------------------------------------------
+# Operations & Resources (phase two)
+# ---------------------------------------------------------------------------
+
+OPS_AREA_NAMES = [
+	"Safeguarding", "Inclusion", "Curriculum and Teaching", "Achievement",
+	"Attendance and Behaviour", "Personal Development and Wellbeing",
+	"Early Years", "Post-16", "Leadership and Governance",
+]
+
+
+def _ops_env(*, phase="SECONDARY", is_mainstream=True):
+	# The areas are created directly rather than via load_indepth_criteria: these
+	# tests only need the names TrustCategory keys off, and parsing nine
+	# workbooks per test makes the suite crawl.
+	for order, name in enumerate(OPS_AREA_NAMES, start=1):
+		InDepthArea.objects.get_or_create(name=name, defaults={"order": order * 10})
+	call_command("seed_trust_categories", verbosity=0)
+	call_command("seed_operations_metrics", verbosity=0)
+	call_command("ensure_osed_staff_group", verbosity=0)
+
+	school = School.objects.create(
+		name="Ops Test School", phase=phase, is_mainstream=is_mainstream
+	)
+	autumn, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+	spring, _ = ReviewPeriod.objects.get_or_create(year=2026, round=2)
+	summer, _ = ReviewPeriod.objects.get_or_create(year=2026, round=3)
+	return {"school": school, "autumn": autumn, "spring": spring, "summer": summer}
+
+
+def _show(school, *keys, year=2026):
+	for key in keys:
+		OperationsMetricVisibility.objects.update_or_create(
+			school=school,
+			year=year,
+			metric=OperationsMetric.objects.get(key=key),
+			defaults={"is_visible": True},
+		)
+
+
+def _ops_user(name, school, group="OSED Staff"):
+	user = User.objects.create_user(name, f"{name}@x.test", "pw12345678")
+	profile = SchoolProfile.objects.create(user=user, school=school)
+	profile.schools.add(school)
+	if group:
+		user.groups.add(Group.objects.get(name=group))
+	return user
+
+
+class OperationsSeedTests(TestCase):
+	def setUp(self):
+		self.env = _ops_env()
+
+	def test_twelve_rated_metrics_across_five_domains(self):
+		self.assertEqual(OperationsMetric.objects.count(), 12)
+		domains = set(
+			OperationsMetric.objects.values_list("domain__domain_name", flat=True)
+		)
+		self.assertEqual(len(domains), 5)
+
+	def test_revenue_reserves_is_seeded_but_switched_off(self):
+		metric = OperationsMetric.objects.get(key="revenue-reserves-pct-gag")
+		self.assertTrue(metric.bands.exists())
+		# Off means: no visibility row at all, and not visible anywhere.
+		self.assertFalse(
+			OperationsMetricVisibility.objects.filter(
+				metric=metric, is_visible=True
+			).exists()
+		)
+		self.assertNotIn(metric.id, _visible_metric_ids(self.env["school"], 2026))
+
+	def test_every_metric_defaults_to_hidden(self):
+		self.assertEqual(_visible_metric_ids(self.env["school"], 2026), set())
+
+	def test_seed_is_idempotent(self):
+		call_command("seed_operations_metrics", verbosity=0)
+		call_command("seed_operations_metrics", verbosity=0)
+		self.assertEqual(OperationsMetric.objects.count(), 12)
+
+	def test_complaint_themes_are_seeded_and_admin_editable(self):
+		names = set(ComplaintTheme.objects.values_list("name", flat=True))
+		self.assertEqual(names, {"SEND", "Behaviour", "Communication", "Admissions"})
+
+	def test_no_ownership_field_anywhere(self):
+		"""Principal-owned / Trust-owned was dropped by the client."""
+		for model in (OperationsMetric, OperationsEntry, OperationsMetricBand):
+			names = {f.name for f in model._meta.get_fields()}
+			for banned in ("owner_type", "principal_owned", "trust_owned", "ownership"):
+				self.assertNotIn(banned, names, f"{model.__name__}.{banned}")
+
+		base = Path(__file__).resolve().parent
+		markup = (base / "templates" / "review" / "operations.html").read_text(encoding="utf-8")
+		for banned in (">TRUST<", ">SCHOOL<", "owner_type", "principal_owned", "trust_owned"):
+			self.assertNotIn(banned, markup)
+
+
+class OperationsVisibilityTests(TestCase):
+	def setUp(self):
+		self.env = _ops_env()
+		self.user = _ops_user("head", self.env["school"])
+		self.client.force_login(self.user)
+
+	def _get(self):
+		return self.client.get("/review/operations/?year=2026-2027&round=1")
+
+	def test_hidden_domain_renders_no_card_at_all(self):
+		response = self._get()
+		self.assertEqual(response.context["domains"], [])
+		self.assertNotContains(response, "Cyber Essentials")
+
+	def test_one_hidden_one_visible_renders_a_card_with_one_row(self):
+		_show(self.env["school"], "cyber-essentials")
+		response = self._get()
+		domains = response.context["domains"]
+		self.assertEqual(len(domains), 1)
+		self.assertEqual(domains[0]["count"], 1)
+		self.assertContains(response, "Cyber Essentials")
+		self.assertNotContains(response, "Digital and Technology Standards")
+
+	def test_hiding_everything_in_a_domain_removes_the_card(self):
+		_show(self.env["school"], "cyber-essentials", "digital-technology-standards")
+		self.assertEqual(len(self._get().context["domains"]), 1)
+
+		OperationsMetricVisibility.objects.filter(school=self.env["school"]).update(
+			is_visible=False
+		)
+		response = self._get()
+		self.assertEqual(response.context["domains"], [])
+		self.assertNotContains(response, "Cyber Essentials")
+
+	def test_visibility_is_per_year(self):
+		_show(self.env["school"], "cyber-essentials", year=2026)
+		self.assertEqual(len(self._get().context["domains"]), 1)
+		later = self.client.get("/review/operations/?year=2027-2028&round=1")
+		self.assertEqual(later.context["domains"], [])
+
+	def test_a_hidden_metric_cannot_be_written_to(self):
+		hidden = OperationsMetric.objects.get(key="cyber-essentials")
+		self.client.post(
+			"/review/operations/",
+			{
+				"year": "2026-2027",
+				"round": "1",
+				f"metric-{hidden.id}-band_choice": "green",
+			},
+		)
+		self.assertFalse(OperationsEntry.objects.filter(metric=hidden).exists())
+
+	def test_toggling_visibility_changes_the_page_with_no_restart(self):
+		self.assertNotContains(self._get(), "Cyber Essentials")
+		_show(self.env["school"], "cyber-essentials")
+		self.assertContains(self._get(), "Cyber Essentials")
+
+
+class OperationsRagTests(TestCase):
+	"""The acceptance checks that pin the evaluation logic."""
+
+	def setUp(self):
+		self.env = _ops_env()
+		self.user = _ops_user("head", self.env["school"])
+
+	def _entry(self, key, *, school=None, period=None, **kwargs):
+		return OperationsEntry.objects.create(
+			school=school or self.env["school"],
+			period=period or self.env["autumn"],
+			metric=OperationsMetric.objects.get(key=key),
+			**kwargs,
+		)
+
+	def test_secondary_staff_costs_bands(self):
+		self.assertEqual(self._entry("staff-costs-pct-income", value=Decimal("74")).rag, "green")
+		OperationsEntry.objects.all().delete()
+		self.assertEqual(self._entry("staff-costs-pct-income", value=Decimal("79")).rag, "amber")
+		OperationsEntry.objects.all().delete()
+		self.assertEqual(self._entry("staff-costs-pct-income", value=Decimal("81")).rag, "red")
+
+	def test_primary_staff_costs_is_blue_whatever_the_value(self):
+		primary = School.objects.create(name="Primary Test", phase="PRIMARY")
+		for value in ("74", "79", "81", "0"):
+			OperationsEntry.objects.all().delete()
+			entry = self._entry("staff-costs-pct-income", school=primary, value=Decimal(value))
+			self.assertEqual(entry.rag, "blue", f"value {value} should be Blue for a primary")
+
+	def test_a_blue_tile_explains_itself(self):
+		primary = School.objects.create(name="Primary Test", phase="PRIMARY")
+		_show(primary, "staff-costs-pct-income")
+		self._entry("staff-costs-pct-income", school=primary, value=Decimal("74"))
+		SchoolProfile.objects.get(user=self.user).schools.add(primary)
+
+		self.client.force_login(self.user)
+		response = self.client.get(f"/review/operations/?school={primary.id}&year=2026-2027&round=1")
+		self.assertContains(response, "Not yet benchmarked")
+		self.assertContains(response, "must not be read as green")
+
+	def test_revenue_reserves_bands(self):
+		cases = {"5": "green", "2": "amber", "12": "amber", "-1": "red", "20": "red"}
+		for value, expected in cases.items():
+			OperationsEntry.objects.all().delete()
+			entry = self._entry("revenue-reserves-pct-gag", value=Decimal(value))
+			self.assertEqual(entry.rag, expected, f"{value}% should be {expected}")
+
+	def test_statutory_compliance_is_computed_from_the_dates(self):
+		school = self.env["school"]
+		today = timezone.now().date()
+
+		def set_items(offsets, action_plan=True):
+			school.statutory_items.all().delete()
+			for (item, _label), offset in zip(STATUTORY_ITEMS, offsets):
+				StatutoryComplianceItem.objects.create(
+					school=school,
+					item=item,
+					next_due_date=today + timedelta(days=offset),
+					action_plan_in_place=action_plan,
+				)
+
+		set_items([30, 60, 90, 120, 150])
+		self.assertEqual(statutory_rag(list(school.statutory_items.all())), "green")
+
+		set_items([-21, 60, 90, 120, 150])
+		self.assertEqual(statutory_rag(list(school.statutory_items.all())), "amber",
+						 "one item 3 weeks overdue with a plan is Amber")
+
+		set_items([-42, 60, 90, 120, 150])
+		self.assertEqual(statutory_rag(list(school.statutory_items.all())), "red",
+						 "one item 6 weeks overdue is Red")
+
+		set_items([-21, 60, 90, 120, 150], action_plan=False)
+		self.assertEqual(statutory_rag(list(school.statutory_items.all())), "red",
+						 "overdue with no action plan is Red")
+
+	def test_statutory_compliance_is_blue_until_all_five_dates_are_known(self):
+		school = self.env["school"]
+		StatutoryComplianceItem.objects.create(
+			school=school, item="asbestos", next_due_date=timezone.now().date()
+		)
+		self.assertEqual(statutory_rag(list(school.statutory_items.all())), "blue")
+
+	def test_statutory_tile_names_the_overdue_item(self):
+		school = self.env["school"]
+		today = timezone.now().date()
+		for (item, _), offset in zip(STATUTORY_ITEMS, [-21, 60, 90, 120, 150]):
+			StatutoryComplianceItem.objects.create(
+				school=school, item=item, next_due_date=today + timedelta(days=offset),
+				action_plan_in_place=True,
+			)
+		_show(school, "statutory-compliance")
+		self.client.force_login(self.user)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(response, "Fire risk assessment")
+		self.assertContains(response, "overdue by 21 days")
+
+	def test_complaints_with_no_prior_term_is_blue_not_green(self):
+		entry = self._entry("complaints-stage-2", value=Decimal("0"))
+		_show(self.env["school"], "complaints-stage-2")
+		self.client.force_login(self.user)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		tile = response.context["domains"][0]["tiles"][0]
+		self.assertEqual(tile["rag"], "blue")
+		self.assertNotEqual(tile["rag"], "green")
+
+	def test_complaints_trend(self):
+		# Flat or falling is Green.
+		self.assertEqual(complaints_rag(2, [4]), "green")
+		self.assertEqual(complaints_rag(0, [0]), "green")
+		# A first rise is Amber.
+		self.assertEqual(complaints_rag(2, [1]), "amber")
+		# Two consecutive rises is Red.
+		self.assertEqual(complaints_rag(3, [1, 2]), "red")
+		# A marked step-change in a single term is Red.
+		self.assertEqual(complaints_rag(5, [1]), "red")
+		# No history at all is Blue.
+		self.assertEqual(complaints_rag(1, []), "blue")
+
+	def test_complaints_trend_uses_the_schools_own_history(self):
+		_show(self.env["school"], "complaints-stage-2")
+		self._entry("complaints-stage-2", period=self.env["autumn"], value=Decimal("1"))
+		self._entry("complaints-stage-2", period=self.env["spring"], value=Decimal("2"))
+		self.client.force_login(self.user)
+
+		spring = self.client.get("/review/operations/?year=2026-2027&round=2")
+		self.assertEqual(spring.context["domains"][0]["tiles"][0]["rag"], "amber")
+
+		self._entry("complaints-stage-2", period=self.env["summer"], value=Decimal("3"))
+		summer = self.client.get("/review/operations/?year=2026-2027&round=3")
+		self.assertEqual(summer.context["domains"][0]["tiles"][0]["rag"], "red")
+
+	def test_predominant_theme_is_a_note_not_a_metric(self):
+		self.assertEqual(OperationsMetric.objects.filter(name__icontains="theme").count(), 0)
+		theme = ComplaintTheme.objects.get(name="SEND")
+		self._entry("complaints-stage-2", value=Decimal("1"), theme=theme)
+		_show(self.env["school"], "complaints-stage-2")
+		self.client.force_login(self.user)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(response, "predominantly SEND-related")
+
+	def test_digital_standards_thresholds(self):
+		for count, expected in (("6", "green"), ("5", "amber"), ("4", "amber"), ("3", "red")):
+			OperationsEntry.objects.all().delete()
+			entry = self._entry("digital-technology-standards", value=Decimal(count))
+			self.assertEqual(entry.rag, expected, f"{count} standards -> {expected}")
+
+	def test_sickness_absence_uses_the_national_comparator_and_shows_its_year(self):
+		self.assertEqual(self._entry("staff-sickness-absence", value=Decimal("8")).rag, "green")
+		OperationsEntry.objects.all().delete()
+		self.assertEqual(self._entry("staff-sickness-absence", value=Decimal("9")).rag, "amber")
+		OperationsEntry.objects.all().delete()
+		self.assertEqual(self._entry("staff-sickness-absence", value=Decimal("11")).rag, "red")
+
+		_show(self.env["school"], "staff-sickness-absence")
+		self.client.force_login(self.user)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(response, "2024/25", msg_prefix="the comparator year must be on the tile")
+
+	def test_a_manual_red_reason_forces_red(self):
+		entry = self._entry(
+			"staff-turnover-vacancy",
+			value=Decimal("1"),
+			manual_red_reason="Maths vacancy unfilled a full term.",
+		)
+		self.assertEqual(entry.rag, "red")
+
+	def test_rag_is_recomputed_on_save_never_trusted_from_input(self):
+		entry = self._entry("revenue-reserves-pct-gag", value=Decimal("5"))
+		entry.rag = "red"
+		entry.save()
+		entry.refresh_from_db()
+		self.assertEqual(entry.rag, "green")
+
+
+class OperationsGrantTests(TestCase):
+	def test_applicable_set_follows_phase_and_type(self):
+		primary = School.objects.create(name="P", phase="PRIMARY", is_mainstream=True)
+		secondary = School.objects.create(name="S", phase="SECONDARY", is_mainstream=True)
+		special = School.objects.create(name="Sp", phase="SECONDARY", is_mainstream=False)
+
+		self.assertIn(GRANT_PE_SPORT, applicable_grants(primary))
+		self.assertNotIn(GRANT_PE_SPORT, applicable_grants(secondary))
+		self.assertIn(GRANT_INCLUSIVE_MAINSTREAM, applicable_grants(secondary))
+		self.assertNotIn(GRANT_INCLUSIVE_MAINSTREAM, applicable_grants(special))
+		for school in (primary, secondary, special):
+			self.assertIn(GRANT_PUPIL_PREMIUM, applicable_grants(school))
+
+	def test_grant_rag(self):
+		env = _ops_env(phase="PRIMARY")
+		school = env["school"]
+		self.assertEqual(grant_rag(school, []), "blue")
+
+		for grant in applicable_grants(school):
+			GrantPublication.objects.create(
+				school=school, year=2026, grant=grant, status=GRANT_PUBLISHED
+			)
+		self.assertEqual(grant_rag(school, list(school.grant_publications.all())), "green")
+
+		school.grant_publications.filter(grant=GRANT_PE_SPORT).update(status=GRANT_DRAFTED)
+		self.assertEqual(grant_rag(school, list(school.grant_publications.all())), "amber")
+
+		school.grant_publications.filter(grant=GRANT_PE_SPORT).update(status=GRANT_MISSED)
+		self.assertEqual(grant_rag(school, list(school.grant_publications.all())), "red")
+
+	def test_primary_checklist_includes_pe_sport_and_a_secondarys_does_not(self):
+		env = _ops_env(phase="PRIMARY")
+		primary = env["school"]
+		secondary = School.objects.create(name="Secondary Test", phase="SECONDARY")
+		_show(primary, "grant-publication")
+		_show(secondary, "grant-publication")
+
+		user = _ops_user("head", primary)
+		SchoolProfile.objects.get(user=user).schools.add(secondary)
+		self.client.force_login(user)
+
+		def checklist(response):
+			tile = response.context["domains"][0]["tiles"][0]
+			return [g["label"] for g in tile["grants"]]
+
+		p = self.client.get(f"/review/operations/?school={primary.id}&year=2026-2027&round=1")
+		self.assertIn("PE and Sport Premium", checklist(p))
+		self.assertContains(p, "<li class=\"ops-subitem--overdue\">PE and Sport Premium", html=False)
+
+		s = self.client.get(f"/review/operations/?school={secondary.id}&year=2026-2027&round=1")
+		self.assertNotIn("PE and Sport Premium", checklist(s))
+		self.assertEqual(checklist(s), ["Pupil Premium", "Inclusive Mainstream Fund"])
+
+
+class OperationsRollUpTests(TestCase):
+	"""Hidden metrics must be out of the denominator, and scope must be shown."""
+
+	def setUp(self):
+		self.env = _ops_env()
+		call_command("ensure_osed_staff_group", verbosity=0)
+		self.partial = self.env["school"]
+		self.full = School.objects.create(name="Full Framework School", phase="SECONDARY")
+		self.user = _ops_user("head", self.partial)
+		SchoolProfile.objects.get(user=self.user).schools.add(self.full)
+
+	def _green_everything(self, school, keys):
+		_show(school, *keys)
+		for key in keys:
+			OperationsEntry.objects.create(
+				school=school,
+				period=self.env["autumn"],
+				metric=OperationsMetric.objects.get(key=key),
+				band_choice="green",
+			)
+
+	def test_a_partial_school_does_not_look_healthier_than_a_full_one(self):
+		band_keys = ["in-year-budget-position", "curriculum-bonus-deficit"]
+		self._green_everything(self.partial, band_keys[:1])
+		self._green_everything(self.full, band_keys)
+		# Give the full school one amber as well.
+		_show(self.full, "cyber-essentials")
+		OperationsEntry.objects.create(
+			school=self.full,
+			period=self.env["autumn"],
+			metric=OperationsMetric.objects.get(key="cyber-essentials"),
+			band_choice="amber",
+		)
+
+		rows = _operations_summary_rows(
+			[self.partial, self.full], year=2026, round_number=1
+		)
+		by_school = {r["school"].name: r for r in rows}
+
+		partial = by_school["Ops Test School"]
+		full = by_school["Full Framework School"]
+
+		# The denominators differ, and both say so.
+		self.assertEqual(partial["summary"]["total"], 1)
+		self.assertEqual(full["summary"]["total"], 3)
+		self.assertEqual(partial["scope"]["label"], "1 of 12 metrics — pilot")
+		self.assertEqual(full["scope"]["label"], "3 of 12 metrics — pilot")
+
+		# The hidden metrics are absent, not counted as green.
+		self.assertEqual(partial["summary"]["green"], 1)
+		self.assertNotEqual(
+			partial["summary"]["green"], OperationsMetric.objects.count()
+		)
+
+	def test_hidden_metrics_are_excluded_from_the_denominator(self):
+		_show(self.partial, "cyber-essentials")
+		OperationsEntry.objects.create(
+			school=self.partial,
+			period=self.env["autumn"],
+			metric=OperationsMetric.objects.get(key="cyber-essentials"),
+			band_choice="green",
+		)
+		rows = _operations_summary_rows([self.partial], year=2026, round_number=1)
+		self.assertEqual(rows[0]["summary"]["total"], 1)
+		self.assertEqual(sum(rows[0]["summary"]["counts"].values()), 1)
+
+	def test_blue_is_never_counted_as_green(self):
+		primary = School.objects.create(name="Primary Roll-up", phase="PRIMARY")
+		_show(primary, "staff-costs-pct-income")
+		OperationsEntry.objects.create(
+			school=primary,
+			period=self.env["autumn"],
+			metric=OperationsMetric.objects.get(key="staff-costs-pct-income"),
+			value=Decimal("74"),
+		)
+		rows = _operations_summary_rows([primary], year=2026, round_number=1)
+		self.assertEqual(rows[0]["summary"]["blue"], 1)
+		self.assertEqual(rows[0]["summary"]["green"], 0)
+
+	def test_trust_dashboard_shows_scope_and_an_executive_summary(self):
+		_show(self.partial, "cyber-essentials")
+		OperationsEntry.objects.create(
+			school=self.partial,
+			period=self.env["autumn"],
+			metric=OperationsMetric.objects.get(key="cyber-essentials"),
+			band_choice="red",
+		)
+		self.client.force_login(self.user)
+		response = self.client.get("/review/board/?year=2026-2027&round=1")
+		self.assertContains(response, "1 of 12 metrics — pilot")
+		self.assertContains(response, "Executive summary")
+		self.assertContains(response, "Cyber Essentials")
+		# The summary sits alongside the tiles, it does not replace them.
+		self.assertContains(response, "ops-summary-tiles")
+
+
+class OperationsPageTests(TestCase):
+	def setUp(self):
+		self.env = _ops_env()
+		self.user = _ops_user("head", self.env["school"])
+		self.viewer = _ops_user("lab", self.env["school"], group=None)
+		_show(self.env["school"], "cyber-essentials")
+		self.client.force_login(self.user)
+
+	def test_standing_texts_appear_word_for_word(self):
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		# Escaped, because "Finance & ICFP" renders as "Finance &amp; ICFP".
+		self.assertContains(response, escape(LEGEND_STANDING_TEXT))
+		self.assertContains(response, escape(SMALL_PRINT))
+
+	def test_the_legend_names_blue_as_not_yet_benchmarked(self):
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(response, "Blue — not yet benchmarked")
+
+	def test_free_text_saves_persists_per_term_and_is_never_rolled_up(self):
+		self.client.post(
+			"/review/operations/",
+			{"year": "2026-2027", "round": "1", "anything_else": "Boiler quote chased twice."},
+		)
+		note = OperationsNote.objects.get(school=self.env["school"], period=self.env["autumn"])
+		self.assertEqual(note.text, "Boiler quote chased twice.")
+
+		autumn = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(autumn, "Boiler quote chased twice.")
+
+		# Per term: Spring's own box starts empty, but Autumn's note stays visible
+		# in the next term's history rather than vanishing.
+		spring = self.client.get("/review/operations/?year=2026-2027&round=2")
+		self.assertEqual(spring.context["note"], None)
+		self.assertContains(spring, "Earlier terms")
+		self.assertContains(spring, "Boiler quote chased twice.")
+		self.assertTrue(
+			OperationsNote.objects.filter(period=self.env["autumn"], text__contains="Boiler").exists()
+		)
+
+		# Never aggregated to the Trust Dashboard.
+		board = self.client.get("/review/board/?year=2026-2027&round=1")
+		self.assertNotContains(board, "Boiler quote chased twice.")
+
+	def test_free_text_is_not_rag_rated(self):
+		names = {f.name for f in OperationsNote._meta.get_fields()}
+		self.assertNotIn("rag", names)
+
+	def test_an_entry_records_who_wrote_it_and_how(self):
+		metric = OperationsMetric.objects.get(key="cyber-essentials")
+		self.client.post(
+			"/review/operations/",
+			{
+				"year": "2026-2027", "round": "1",
+				f"metric-{metric.id}-band_choice": "amber",
+				f"metric-{metric.id}-commentary": "Renewal booked for January.",
+			},
+		)
+		entry = OperationsEntry.objects.get(metric=metric)
+		self.assertEqual(entry.rag, "amber")
+		self.assertEqual(entry.source, OperationsEntry.Source.MANUAL)
+		self.assertEqual(entry.recorded_by, self.user)
+
+	def test_the_band_statements_are_the_picker_and_are_not_repeated(self):
+		"""On a judgement-based metric the three statements are the buttons.
+
+		The descriptor must appear once, as the thing being chosen -- not once
+		as reference text and again as a colour word in a dropdown.
+		"""
+		metric = OperationsMetric.objects.get(key="cyber-essentials")
+		band = metric.band_for_phase(self.env["school"].phase)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		html = response.content.decode()
+
+		for colour in ("green", "amber", "red"):
+			self.assertRegex(
+				html,
+				rf'type="radio"[^>]*name="metric-{metric.id}-band_choice"'
+				rf'\s*value="{colour}"',
+			)
+			descriptor = getattr(band, f"{colour}_descriptor")
+			self.assertEqual(html.count(escape(descriptor)), 1)
+
+		self.assertNotIn(f'<select name="metric-{metric.id}-band_choice"', html)
+
+	def test_nothing_chosen_stays_selectable_so_a_band_can_be_cleared(self):
+		metric = OperationsMetric.objects.get(key="cyber-essentials")
+		html = self.client.get("/review/operations/?year=2026-2027&round=1").content.decode()
+		self.assertIn("Not yet rated", html)
+
+		self.client.post(
+			"/review/operations/",
+			{"year": "2026-2027", "round": "1", f"metric-{metric.id}-band_choice": "amber"},
+		)
+		self.assertEqual(OperationsEntry.objects.get(metric=metric).band_choice, "amber")
+
+		# Posting the empty option puts the tile back to Blue rather than
+		# leaving a band that can be set once and never cleared.
+		self.client.post(
+			"/review/operations/",
+			{"year": "2026-2027", "round": "1", f"metric-{metric.id}-band_choice": ""},
+		)
+		entry = OperationsEntry.objects.get(metric=metric)
+		self.assertEqual(entry.band_choice, "")
+		self.assertEqual(entry.rag, "blue")
+
+	def test_every_tile_offers_a_not_yet_rated_state(self):
+		"""Blue is a band, not the silent absence of the other three.
+
+		Where the Principal chooses, it is the fourth button; where the colour is
+		derived from a figure it is a fourth read-only card. The one tile with no
+		band at all -- Primary ICFP, which the Trust holds no data for -- says so
+		in its own note instead.
+		"""
+		keys = list(OperationsMetric.objects.values_list("key", flat=True))
+		_show(self.env["school"], *keys)
+		html = self.client.get("/review/operations/?year=2026-2027&round=1").content.decode()
+		tiles = html.split('<div class="ops-row">')[1:]
+		self.assertEqual(len(tiles), len(keys))
+
+		for metric in OperationsMetric.objects.all():
+			tile = next(t for t in tiles if f">{metric.name}<" in t)
+			if metric.rule == RULE_BAND_CHOICE:
+				self.assertIn(f'id="metric-{metric.id}-band-none"', tile, metric.key)
+				self.assertIn("Not yet rated", tile, metric.key)
+			elif "ops-bands" in tile:
+				self.assertIn("ops-band--none", tile, metric.key)
+				self.assertIn("Not yet rated", tile, metric.key)
+			else:
+				# No band for this phase: the blue note carries the explanation.
+				self.assertIn("ops-blue-note", tile, metric.key)
+
+	def test_the_derived_band_in_force_is_the_one_marked_current(self):
+		metric = OperationsMetric.objects.get(key="staff-sickness-absence")
+		_show(self.env["school"], metric.key)
+
+		# Nothing entered: the tile is Blue, so Not yet rated is the current band.
+		html = self.client.get("/review/operations/?year=2026-2027&round=1").content.decode()
+		tile = next(t for t in html.split('<div class="ops-row">')[1:] if f">{metric.name}<" in t)
+		self.assertIn("ops-band ops-band--none is-current", tile)
+
+		# A figure lands in a band, and the marker moves off Not yet rated.
+		OperationsEntry.objects.create(
+			school=self.env["school"], period=self.env["autumn"], metric=metric, value=4.1
+		)
+		html = self.client.get("/review/operations/?year=2026-2027&round=1").content.decode()
+		tile = next(t for t in html.split('<div class="ops-row">')[1:] if f">{metric.name}<" in t)
+		self.assertNotIn("ops-band ops-band--none is-current", tile)
+		self.assertEqual(tile.count("is-current"), 1)
+
+	def test_a_read_only_user_cannot_save(self):
+		self.client.force_login(self.viewer)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertEqual(response.status_code, 200)
+		self.assertFalse(response.context["can_edit"])
+
+		self.client.post(
+			"/review/operations/",
+			{"year": "2026-2027", "round": "1", "anything_else": "Should be refused."},
+		)
+		self.assertFalse(OperationsNote.objects.filter(text="Should be refused.").exists())
+
+	def test_a_principal_cannot_reach_another_schools_operations_page(self):
+		other = School.objects.create(name="Other Ops School", phase="PRIMARY")
+		_show(other, "cyber-essentials")
+		OperationsEntry.objects.create(
+			school=other,
+			period=self.env["autumn"],
+			metric=OperationsMetric.objects.get(key="cyber-essentials"),
+			band_choice="red",
+			commentary="OTHER SCHOOL ONLY",
+		)
+		response = self.client.get(f"/review/operations/?school={other.id}&year=2026-2027&round=1")
+		self.assertEqual(response.context["school"], self.env["school"])
+		self.assertNotContains(response, "OTHER SCHOOL ONLY")
+
+	def test_the_risk_summary_reads_the_register_and_keeps_no_copy(self):
+		area = InDepthArea.objects.get(name="Safeguarding")
+		category = TrustCategory.objects.get(indepth_area=area)
+		risk = Risk.objects.create(
+			school=self.env["school"], category=category, title="Perimeter fencing damaged"
+		)
+		RiskRating.objects.create(
+			risk=risk, period=self.env["autumn"], impact="High", likelihood="Highly probable"
+		)
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(response, "Perimeter fencing damaged")
+		self.assertContains(response, "Impact: High")
+		self.assertContains(response, "View the full risk register")
+
+		# No operations model stores risk text.
+		for model in (OperationsEntry, OperationsNote, OperationsMetric):
+			names = {f.name for f in model._meta.get_fields()}
+			self.assertNotIn("risk", names)
+
+	def test_an_annual_metric_is_not_chased_every_term(self):
+		_show(self.env["school"], "estates-condition-grade")
+		metric = OperationsMetric.objects.get(key="estates-condition-grade")
+		self.assertEqual(metric.cycle, OperationsMetric.Cycle.ANNUAL)
+		OperationsEntry.objects.create(
+			school=self.env["school"], period=self.env["autumn"], metric=metric,
+			band_choice="green",
+		)
+		spring = self.client.get("/review/operations/?year=2026-2027&round=2")
+		tiles = [t for d in spring.context["domains"] for t in d["tiles"] if t["metric"] == metric]
+		self.assertEqual(tiles[0]["rag"], "green", "an annual entry carries across terms")
+		self.assertIsNotNone(tiles[0]["carried_from"])
+
+	def test_the_baseline_is_shown_alongside_the_current_position(self):
+		metric = OperationsMetric.objects.get(key="cyber-essentials")
+		OperationsEntry.objects.create(
+			school=self.env["school"], period=self.env["autumn"], metric=metric, band_choice="red"
+		)
+		OperationsEntry.objects.create(
+			school=self.env["school"], period=self.env["spring"], metric=metric, band_choice="green"
+		)
+		spring = self.client.get("/review/operations/?year=2026-2027&round=2")
+		tile = spring.context["domains"][0]["tiles"][0]
+		self.assertEqual(tile["rag"], "green")
+		self.assertIsNotNone(tile["baseline"])
+		self.assertEqual(tile["baseline"].rag, "red")
+		self.assertContains(spring, "Baseline (Autumn)")
+
+	def test_metrics_are_labelled_benchmarked_or_judgement(self):
+		_show(self.env["school"], "digital-technology-standards", "staff-sickness-absence")
+		response = self.client.get("/review/operations/?year=2026-2027&round=1")
+		self.assertContains(response, "Judgement-based")
+		self.assertContains(response, "Hard-benchmarked")
+
+
+class OperationsAdminGridTests(TestCase):
+	def setUp(self):
+		self.env = _ops_env()
+		self.admin = User.objects.create_superuser("root", "root@x.test", "pw12345678")
+		SchoolProfile.objects.create(user=self.admin, school=self.env["school"])
+		self.client.force_login(self.admin)
+		self.url = "/admin/review/operationsmetricvisibility/grid/"
+
+	def test_the_grid_lists_every_metric_grouped_by_domain(self):
+		response = self.client.get(self.url)
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, "Cyber Essentials")
+		self.assertContains(response, "Finance &amp; ICFP")
+		self.assertContains(response, "0 of 12 metrics currently visible")
+
+	def test_saving_the_grid_switches_metrics_on_without_a_deploy(self):
+		metric = OperationsMetric.objects.get(key="cyber-essentials")
+		response = self.client.post(
+			self.url,
+			{
+				"action": "save",
+				"school": self.env["school"].id,
+				"year": "2026",
+				"visible": [str(metric.id)],
+			},
+		)
+		self.assertEqual(response.status_code, 302)
+		self.assertTrue(
+			OperationsMetricVisibility.objects.get(
+				school=self.env["school"], year=2026, metric=metric
+			).is_visible
+		)
+		# Everything else stays off.
+		self.assertEqual(
+			OperationsMetricVisibility.objects.filter(
+				school=self.env["school"], year=2026, is_visible=True
+			).count(),
+			1,
+		)
+
+	def test_unticking_switches_a_metric_back_off(self):
+		_show(self.env["school"], "cyber-essentials")
+		self.client.post(
+			self.url,
+			{"action": "save", "school": self.env["school"].id, "year": "2026", "visible": []},
+		)
+		self.assertEqual(_visible_metric_ids(self.env["school"], 2026), set())
+
+
+class OperationsColourTests(TestCase):
+	def test_operations_colours_do_not_reuse_the_evaluation_or_risk_classes(self):
+		base = Path(__file__).resolve().parent
+		markup = (base / "templates" / "review" / "operations.html").read_text(encoding="utf-8")
+		for cls in ("rag-pill", "rag-current", "score--", "overview-score", "sidebar-rating"):
+			self.assertNotIn(cls, markup, f"operations.html must not reuse {cls}")
+
+		css = (base / "static" / "review" / "styles.css").read_text(encoding="utf-8")
+		ops_block = css[css.index("/* -- Operations & Resources"):]
+		self.assertNotIn("var(--rag-", ops_block)
+		for token in ("--ops-green", "--ops-amber", "--ops-red", "--ops-blue"):
+			self.assertIn(f"{token}:", css)
+
+		# Blue must not borrow the evaluation scale's blue, which is grade 1.
+		rag_blue = css.split("--rag-blue:")[1].split(";")[0].strip()
+		ops_blue = css.split("--ops-blue:")[1].split(";")[0].strip()
+		self.assertNotEqual(rag_blue, ops_blue)
+
+
+class TemplateCommentTests(TestCase):
+	"""`{# ... #}` is single-line only.
+
+	Django does not close a `{#` comment on a later line: the whole thing is
+	emitted as page text instead. It has leaked twice, once onto the Trust
+	Dashboard, which goes into board packs as a screenshot. Multi-line notes
+	must use `{% comment %}`.
+	"""
+
+	def test_no_template_opens_a_hash_comment_it_does_not_close(self):
+		root = Path(__file__).resolve().parent.parent
+		offenders = []
+		for path in sorted(root.glob("**/templates/**/*.html")):
+			if "staticfiles" in path.parts or ".venv" in path.parts:
+				continue
+			for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+				if line.count("{#") != line.count("#}"):
+					offenders.append(f"{path.relative_to(root)}:{number}")
+		self.assertEqual(
+			offenders,
+			[],
+			"a {# comment #} must open and close on one line — use "
+			"{% comment %} for anything longer: " + ", ".join(offenders),
+		)
+
+
+class AdminIndexGroupingTests(TestCase):
+	"""The admin index splits the single `review` app into named sections."""
+
+	def setUp(self):
+		self.admin = User.objects.create_superuser("root", "root@x.test", "pw12345678")
+		self.client.force_login(self.admin)
+
+	def test_risk_and_operations_have_their_own_headings(self):
+		response = self.client.get("/admin/")
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, "Risk register")
+		self.assertContains(response, "Operations &amp; Resources (pilot)")
+		self.assertContains(response, "In-depth review")
+
+	def test_every_registered_review_model_appears_exactly_once(self):
+		from django.contrib import admin as django_admin
+		from django.test import RequestFactory
+
+		request = RequestFactory().get("/admin/")
+		request.user = self.admin
+
+		registered = {
+			model._meta.object_name
+			for model, _ in django_admin.site._registry.items()
+			if model._meta.app_label == "review"
+		}
+		listed = []
+		for app in django_admin.site.get_app_list(request):
+			if app.get("app_label") != "review":
+				continue
+			listed.extend(entry["object_name"] for entry in app["models"])
+
+		self.assertEqual(
+			sorted(listed),
+			sorted(registered),
+			"grouping the admin index must not drop or duplicate a model",
+		)
+
+	def test_the_single_app_page_still_lists_everything(self):
+		response = self.client.get("/admin/review/")
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, "Risks")
+		self.assertContains(response, "Schools")

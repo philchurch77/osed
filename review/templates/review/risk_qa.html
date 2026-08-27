@@ -1,0 +1,129 @@
+{% extends "review/base.html" %}
+
+{% block title %}Risk QA{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Risk QA</h1>
+    <p class="page-subtitle">
+      Awaiting sign-off across schools &middot; {{ selected_year_value }}
+    </p>
+
+    <form method="get" class="school-select">
+      {% include "review/includes/filter_year_field.html" %}
+      {% include "review/includes/filter_round_field.html" %}
+      {% include "review/includes/filter_actions.html" %}
+    </form>
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  <section class="risk-card">
+    <h2 class="risk-card-title">Ratings awaiting QA</h2>
+    <p class="risk-card-sub">
+      Entries logged for this term that have not yet been signed off. Risk has one Trust-wide
+      owner, so this list spans every school you hold access to.
+    </p>
+
+    {% if rating_rows %}
+      <div class="risk-table-wrap">
+        <table class="risk-table">
+          <thead>
+            <tr>
+              <th scope="col">School</th>
+              <th scope="col">Risk</th>
+              <th scope="col">Category</th>
+              <th scope="col">Rating</th>
+              <th scope="col">Logged by</th>
+              <th scope="col">Sign off</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rating_rows %}
+              <tr class="risk-row">
+                <td>{{ row.risk.school.name }}</td>
+                <td class="risk-cell-title">{{ row.risk.title }}</td>
+                <td>
+                  <span class="risk-cat">{{ row.category.name }}</span>
+                  <span class="risk-route risk-route--{{ row.route|lower }}">{{ row.route }}</span>
+                </td>
+                <td>
+                  <span class="risk-chip risk-chip--{{ row.rag_css }}">{{ row.rag }}</span>
+                  {% if row.escalated %}<span class="risk-chip risk-chip--escalated">Escalated</span>{% endif %}
+                  <span class="risk-prev">{{ row.current.impact }} × {{ row.current.likelihood }}</span>
+                </td>
+                <td>{{ row.current.recorded_by|default:"—" }}</td>
+                <td>
+                  <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="qa_rating" />
+                    <input type="hidden" name="year" value="{{ selected_year_value }}" />
+                    <input type="hidden" name="round" value="{{ selected_round }}" />
+                    <input type="hidden" name="target_id" value="{{ row.current.id }}" />
+                    <button type="submit">Sign off</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="risk-empty">Nothing awaiting rating QA for this term.</p>
+    {% endif %}
+  </section>
+
+  <section class="risk-card">
+    <h2 class="risk-card-title">Closures awaiting QA</h2>
+    <p class="risk-card-sub">
+      Closing a risk goes through the same sign-off as opening one.
+    </p>
+
+    {% if closure_rows %}
+      <div class="risk-table-wrap">
+        <table class="risk-table">
+          <thead>
+            <tr>
+              <th scope="col">School</th>
+              <th scope="col">Risk</th>
+              <th scope="col">Closed</th>
+              <th scope="col">Reason</th>
+              <th scope="col">Sign off</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in closure_rows %}
+              <tr class="risk-row">
+                <td>{{ row.risk.school.name }}</td>
+                <td class="risk-cell-title">{{ row.risk.title }}</td>
+                <td>
+                  {{ row.risk.closed_at|date:"j M Y" }}<br />
+                  <span class="risk-prev">by {{ row.risk.closed_by|default:"—" }}</span>
+                </td>
+                <td>{{ row.risk.close_reason }}</td>
+                <td>
+                  <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="qa_close" />
+                    <input type="hidden" name="year" value="{{ selected_year_value }}" />
+                    <input type="hidden" name="round" value="{{ selected_round }}" />
+                    <input type="hidden" name="target_id" value="{{ row.risk.id }}" />
+                    <button type="submit">Sign off</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="risk-empty">Nothing awaiting closure QA.</p>
+    {% endif %}
+  </section>
+{% endblock %}

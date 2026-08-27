@@ -26,12 +26,43 @@
   --rag-blue: #2f6bb2;
   --rag-grey: #9ca3af;
 
+  /* Risk register colours. Deliberately NOT the --rag-* set above: those
+     are the 1-5 evaluation scale (--rag-blue is grade 1, Exceptional). A
+     risk amber must never be mistaken for a quality judgement, so risk
+     gets its own tokens and its own chip shape. Four bands, not three --
+     yellow sits between green and amber. */
+  --risk-red: #b3282d;
+  --risk-amber: #c98a12;
+  --risk-yellow: #e3c04a;
+  --risk-green: #2f7d51;
+  --risk-neutral: #6b7280;
+
+  /* Operations & Resources. Blue here means "not yet benchmarked" and
+     must NOT reuse --rag-blue, which is grade 1 (Exceptional) on the
+     evaluation scale. A different blue, deliberately. */
+  --ops-green: #2f7d51;
+  --ops-amber: #c98a12;
+  --ops-red: #b3282d;
+  --ops-blue: #1f6f8b;
+  --ops-blue-wash: #e8f2f6;
+  --ops-green-wash: #e9f3ed;
+  --ops-amber-wash: #fdf2e0;
+  --ops-red-wash: #fbeced;
+
   --font-main: "Inter", "Segoe UI", Arial, sans-serif;
   --font-heading: "Inter", "Segoe UI", Arial, sans-serif;
 
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
+
+  /* Form control sizing. Kept as tokens so every text box, select and
+     textarea moves together rather than drifting field by field. */
+  --radius-control: 8px;
+  --control-height: 42px;
+  --control-pad-y: 10px;
+  --control-pad-x: 14px;
+  --colour-border-hover: #b6c4d0;
   --shadow-card: 0 2px 8px rgba(48, 67, 84, 0.09);
   --shadow-lift: 0 4px 16px rgba(48, 67, 84, 0.13);
 
@@ -190,12 +221,13 @@ main {
 }
 
 .school-select select, .school-select input {
-  padding: 8px 10px;
+  min-height: var(--control-height);
+  padding: var(--control-pad-y) var(--control-pad-x);
   border: 1px solid var(--colour-border);
-  border-radius: 8px;
-  background: var(--colour-surface);
+  border-radius: var(--radius-control);
+  background-color: var(--colour-surface);
   font-family: var(--font-main);
-  font-size: 14px;
+  font-size: 15px;
   color: var(--colour-text);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -209,6 +241,9 @@ main {
 .school-select select {
   width: 100%;
   min-width: 0;
+  /* The shorthand padding above resets the base select rule's right gutter;
+     put it back so the label never runs under the chevron. */
+  padding-right: 38px;
 }
 
 .school-select button {
@@ -301,28 +336,85 @@ a.button, button {
 
 button:hover, a.button:hover { background: var(--colour-primary-light); }
 
-/* Form inputs */
+/* Form inputs
+
+   One base rule for every text-like control and for <select>. Selects and
+   number fields previously had no base rule, so the browser drew its own
+   hard black border beside the soft grey of the text fields -- that
+   mismatch is what read as jarring, not the text fields themselves. */
 
 input[type="text"],
 input[type="email"],
-input[type="password"] {
-  width: 100%;
-  padding: 9px 12px;
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input[type="tel"],
+input[type="url"],
+input[type="date"],
+select {
+  min-height: var(--control-height);
+  padding: var(--control-pad-y) var(--control-pad-x);
   border: 1px solid var(--colour-border);
-  border-radius: var(--radius-sm);
-  background: var(--colour-surface);
+  border-radius: var(--radius-control);
+  background-color: var(--colour-surface);
   font-family: var(--font-main);
-  font-size: 14px;
+  font-size: 15px;
+  line-height: 1.4;
   color: var(--colour-text);
   outline: none;
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
+input[type="text"],
+input[type="email"],
+input[type="password"] {
+  width: 100%;
+}
+
+/* The native select chrome is the black-bordered part. Replace it with our
+   own chevron so a select sits at exactly the same height as a text field. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 38px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%236b7280' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--control-pad-x) center;
+  background-size: 12px 8px;
+  cursor: pointer;
+}
+
+input[type="text"]:hover,
+input[type="email"]:hover,
+input[type="password"]:hover,
+input[type="number"]:hover,
+input[type="search"]:hover,
+input[type="tel"]:hover,
+input[type="url"]:hover,
+input[type="date"]:hover,
+select:hover {
+  border-color: var(--colour-border-hover);
+}
+
 input[type="text"]:focus,
 input[type="email"]:focus,
-input[type="password"]:focus {
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="tel"]:focus,
+input[type="url"]:focus,
+input[type="date"]:focus,
+select:focus {
   border-color: var(--colour-primary);
   box-shadow: 0 0 0 3px rgba(48, 67, 84, 0.1);
+}
+
+input:disabled,
+select:disabled {
+  background-color: var(--colour-bg);
+  color: var(--colour-muted);
+  cursor: not-allowed;
 }
 
 /* Respond page actions */
@@ -889,12 +981,16 @@ textarea {
   font-size: 14px;
   line-height: 1.5;
   color: var(--colour-text);
-  padding: 10px 12px;
+  padding: var(--control-pad-y) var(--control-pad-x);
   border: 1px solid var(--colour-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   background: var(--colour-surface);
   resize: vertical;
-  transition: border-color 120ms ease;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+textarea:hover {
+  border-color: var(--colour-border-hover);
 }
 
 textarea:focus {
@@ -1947,7 +2043,6 @@ details[open] .indepth-criteria-summary::before {
 
 a:focus-visible,
 button:focus-visible,
-select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--colour-primary);
   outline-offset: 2px;
@@ -2122,3 +2217,778 @@ summary:focus-visible {
   border: 1px solid var(--colour-border);
   border-radius: var(--radius-md);
 }
+
+
+/* -- Risk register ----------------------------------------------------------
+   Risk uses square-cornered, uppercase chips so it reads as a different scale
+   from the rounded evaluation .rag-pill at a glance. Every chip carries its
+   band as text: the Trust Dashboard block goes into a board pack as a
+   screenshot, and may be printed in greyscale.
+   ------------------------------------------------------------------------ */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.risk-card {
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+
+.risk-card-title {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+  color: var(--colour-heading);
+}
+
+.risk-card-sub,
+.risk-review-intro {
+  margin: 0 0 14px;
+  font-size: 0.86rem;
+  color: var(--colour-muted);
+}
+
+.risk-review-intro { color: var(--colour-text); }
+
+.risk-empty {
+  margin: 0;
+  color: var(--colour-muted);
+  font-size: 0.9rem;
+}
+
+.risk-matrix-wrap,
+.risk-table-wrap {
+  overflow-x: auto;
+}
+
+.risk-matrix {
+  width: 100%;
+  min-width: 520px;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 4px;
+}
+
+/* The three likelihood columns share the space left by the row-label column,
+   so every cell in the grid is the same size. */
+.risk-matrix col.risk-matrix-col--label { width: 150px; }
+.risk-matrix col.risk-matrix-col--band { width: auto; }
+
+.risk-matrix th,
+.risk-matrix td {
+  border-top: 0;
+  border-bottom: 0;
+  vertical-align: middle;
+}
+
+.risk-matrix th {
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--colour-muted);
+  padding: 4px 8px;
+}
+
+.risk-matrix thead th {
+  padding-top: 4px;
+  padding-bottom: 6px;
+}
+
+.risk-matrix th[scope="row"] {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--colour-text);
+}
+
+.risk-matrix-cell {
+  height: 44px;
+  text-align: center;
+  padding: 10px 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--colour-white);
+  border-radius: var(--radius-sm);
+}
+
+.risk-matrix-cell--red { background: var(--risk-red); }
+.risk-matrix-cell--amber { background: var(--risk-amber); }
+.risk-matrix-cell--yellow { background: var(--risk-yellow); color: var(--colour-black); }
+.risk-matrix-cell--green { background: var(--risk-green); }
+
+.risk-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  font-size: 0.82rem;
+  color: var(--colour-text);
+}
+
+.risk-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.risk-legend-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.risk-legend-swatch--red { background: var(--risk-red); }
+.risk-legend-swatch--amber { background: var(--risk-amber); }
+.risk-legend-swatch--yellow { background: var(--risk-yellow); }
+.risk-legend-swatch--green { background: var(--risk-green); }
+
+.risk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.risk-table th {
+  text-align: left;
+  padding: 9px 10px;
+  background: var(--colour-primary);
+  color: var(--colour-white);
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.risk-table th:first-child { border-top-left-radius: var(--radius-sm); }
+.risk-table th:last-child { border-top-right-radius: var(--radius-sm); }
+
+.risk-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--colour-border);
+  vertical-align: top;
+}
+
+.risk-cell-title { font-weight: 600; min-width: 190px; }
+.risk-cell-mitigation { max-width: 260px; }
+.risk-cell-review { white-space: nowrap; font-size: 0.8rem; color: var(--colour-muted); }
+
+.risk-row--closed { opacity: 0.55; }
+.risk-row-note td { border-bottom: 1px solid var(--colour-border); padding-top: 0; }
+.risk-row-note label { font-size: 0.78rem; color: var(--colour-muted); }
+.risk-row-note input { width: 100%; margin-top: 4px; }
+
+.risk-table select { width: 100%; min-width: 118px; }
+
+.risk-chip {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--colour-white);
+  background: var(--risk-neutral);
+}
+
+.risk-chip--red { background: var(--risk-red); }
+.risk-chip--amber { background: var(--risk-amber); }
+.risk-chip--yellow { background: var(--risk-yellow); color: var(--colour-black); }
+.risk-chip--green { background: var(--risk-green); }
+
+.risk-chip--escalated {
+  background: transparent;
+  color: var(--risk-red);
+  border: 1px solid var(--risk-red);
+}
+
+.risk-chip--none {
+  background: transparent;
+  color: var(--colour-muted);
+  border: 1px dashed var(--colour-border);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+.risk-cat,
+.risk-route {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+
+.risk-cat {
+  background: var(--colour-primary-light);
+  color: var(--colour-primary-dark);
+}
+
+.risk-route {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--colour-border);
+  color: var(--colour-primary-dark);
+  background: var(--colour-white);
+}
+
+.risk-trend,
+.risk-qa-flag,
+.risk-prev {
+  display: inline-block;
+  font-size: 0.72rem;
+  color: var(--colour-muted);
+  margin-right: 5px;
+}
+
+.risk-trend--worsening { color: var(--risk-red); font-weight: 600; }
+.risk-trend--persisting { color: var(--risk-amber); font-weight: 600; }
+.risk-trend--improving { color: var(--risk-green); font-weight: 600; }
+.risk-qa-flag--done { color: var(--risk-green); }
+
+.risk-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.risk-add-form .form-field { flex: 1 1 200px; }
+.risk-add-form .form-field--wide { flex: 1 1 100%; }
+.risk-add-form input[type="text"],
+.risk-add-form select,
+.risk-add-form textarea { width: 100%; }
+.risk-add-form .form-actions { flex: 1 1 100%; }
+
+.form-hint {
+  margin: 4px 0 0;
+  font-size: 0.76rem;
+  color: var(--colour-muted);
+}
+
+.form-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.risk-preview {
+  display: inline-block;
+  padding: 7px 12px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 0.8rem;
+  background: var(--colour-primary-light);
+  color: var(--colour-primary-dark);
+}
+
+.risk-preview--red { background: var(--risk-red); color: var(--colour-white); }
+.risk-preview--amber { background: var(--risk-amber); color: var(--colour-white); }
+.risk-preview--yellow { background: var(--risk-yellow); color: var(--colour-black); }
+.risk-preview--green { background: var(--risk-green); color: var(--colour-white); }
+
+.risk-close-block { margin-top: 16px; }
+
+.risk-close-block > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.risk-close-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--colour-border);
+}
+
+.risk-close-label { flex: 1 1 200px; font-size: 0.86rem; font-weight: 600; }
+.risk-close-form textarea { flex: 2 1 320px; }
+.risk-error { color: var(--risk-red); font-size: 0.8rem; margin: 4px 0 0; flex: 1 1 100%; }
+
+.risk-board { margin-top: 22px; }
+.risk-table--board td { white-space: normal; }
+.risk-table--board .risk-cell-title { min-width: 220px; }
+
+.risk-qa-block { margin-top: 16px; }
+
+.risk-qa-heading {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: var(--colour-heading);
+}
+
+.risk-qa-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--colour-border);
+}
+
+.risk-qa-form-label { flex: 1 1 240px; font-size: 0.86rem; font-weight: 600; }
+
+
+/* -- Operations & Resources -------------------------------------------------
+   Its own token set again. Blue here means "not yet benchmarked" -- it must not
+   borrow --rag-blue, which is grade 1 (Exceptional) on the evaluation scale.
+   Rounded pills, so ops reads differently from risk's square chips too.
+   ------------------------------------------------------------------------ */
+
+.ops-legend-row {
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  margin-bottom: 8px;
+}
+
+.ops-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.83rem;
+}
+
+.ops-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ops-legend-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.ops-legend-swatch--green { background: var(--ops-green); }
+.ops-legend-swatch--amber { background: var(--ops-amber); }
+.ops-legend-swatch--red { background: var(--ops-red); }
+.ops-legend-swatch--blue { background: var(--ops-blue); }
+
+.ops-standing-line {
+  margin: 0 0 16px;
+  font-style: italic;
+  font-size: 0.85rem;
+  color: var(--colour-muted);
+}
+
+.ops-scope {
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  color: var(--colour-text);
+  font-weight: 600;
+}
+
+.ops-card {
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.ops-domain-title {
+  margin: 0 0 10px;
+  font-size: 1rem;
+  color: var(--colour-heading);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ops-domain-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--ops-blue);
+}
+
+.ops-domain-dot--green { background: var(--ops-green); }
+.ops-domain-dot--amber { background: var(--ops-amber); }
+.ops-domain-dot--red { background: var(--ops-red); }
+
+.ops-domain-count {
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: var(--colour-muted);
+}
+
+.ops-row {
+  padding: 12px 0;
+  border-top: 1px solid var(--colour-border);
+}
+
+.ops-row:first-of-type { border-top: none; }
+
+.ops-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ops-metric-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+  flex: 1 1 240px;
+}
+
+.ops-chip {
+  display: inline-block;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--colour-white);
+  background: var(--ops-blue);
+}
+
+.ops-chip--green { background: var(--ops-green); }
+.ops-chip--amber { background: var(--ops-amber); }
+.ops-chip--red { background: var(--ops-red); }
+.ops-chip--blue { background: var(--ops-blue); }
+.ops-chip--sm { padding: 1px 8px; font-size: 0.68rem; }
+
+.ops-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border: 1px solid var(--colour-border);
+  color: var(--colour-muted);
+  background: var(--colour-white);
+}
+
+.ops-tag--benchmarked { color: var(--colour-primary-dark); background: var(--colour-primary-light); }
+.ops-tag--judgement { font-style: italic; }
+
+/* A Blue tile must look deliberate, not like a rendering failure. */
+.ops-blue-note {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--ops-blue);
+  background: var(--ops-blue-wash);
+  font-size: 0.82rem;
+  color: var(--colour-text);
+}
+
+/* The three band statements, read-only. Shown on metrics whose colour comes
+   from a figure rather than a choice; the band the figure landed in is marked
+   so the tile explains its own chip. */
+.ops-bands {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.76rem;
+}
+
+.ops-band {
+  flex: 1 1 190px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--colour-border);
+  border-left: 4px solid var(--band);
+  background: var(--colour-bg);
+  color: var(--colour-text);
+}
+
+.ops-band-key {
+  display: block;
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--band);
+}
+
+.ops-band-desc { display: block; margin-top: 1px; }
+
+.ops-band.is-current {
+  background: var(--band-wash);
+  border-color: var(--band);
+}
+
+.ops-band--green { --band: var(--ops-green); --band-wash: var(--ops-green-wash); }
+.ops-band--amber { --band: var(--ops-amber); --band-wash: var(--ops-amber-wash); }
+.ops-band--red { --band: var(--ops-red); --band-wash: var(--ops-red-wash); }
+
+/* The same quiet fourth state as the picker's option, so a derived tile and a
+   chosen one show the same four bands. Muted until it is the one in force. */
+.ops-band--none {
+  --band: var(--ops-blue);
+  --band-wash: var(--ops-blue-wash);
+  color: var(--colour-muted);
+}
+
+.ops-band--none.is-current { color: var(--colour-text); }
+
+/* ...and the same three statements as the picker, where the Principal chooses
+   the band rather than a figure deciding it. The statement is the button: no
+   colour-word-to-paragraph matching, and the chosen band is readable at a
+   glance in a greyscale board-pack screenshot because it carries its label. */
+.ops-bandpick {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.ops-bandpick-legend {
+  padding: 0;
+  margin-bottom: 5px;
+  font-size: 0.78rem;
+  color: var(--colour-muted);
+}
+
+.ops-bandpick-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Kept in the accessibility tree and focusable -- hidden, not removed. */
+.ops-bandpick-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ops-bandpick-option {
+  flex: 1 1 190px;
+  display: block;
+  padding: 8px 11px;
+  border: 1px solid var(--colour-border);
+  border-left: 4px solid var(--band);
+  border-radius: var(--radius-sm);
+  background: var(--colour-bg);
+  font-size: 0.76rem;
+  color: var(--colour-text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.ops-bandpick-key {
+  display: block;
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--band);
+}
+
+.ops-bandpick-key::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid var(--band);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.ops-bandpick-desc { display: block; margin-top: 2px; }
+
+.ops-bandpick-option:hover { border-color: var(--band); }
+
+.ops-bandpick-input:checked + .ops-bandpick-option {
+  background: var(--band-wash);
+  border-color: var(--band);
+  box-shadow: inset 0 0 0 1px var(--band);
+}
+
+.ops-bandpick-input:checked + .ops-bandpick-option .ops-bandpick-key::before {
+  background: var(--band);
+  box-shadow: inset 0 0 0 2px var(--colour-surface);
+}
+
+.ops-bandpick-input:focus-visible + .ops-bandpick-option {
+  outline: 2px solid var(--colour-primary);
+  outline-offset: 2px;
+}
+
+.ops-bandpick-input:disabled + .ops-bandpick-option { cursor: default; }
+
+/* Read-only users see the same buttons, so the chosen band still reads as a
+   band. Only the unchosen ones fade back. */
+.ops-bandpick-input:disabled:not(:checked) + .ops-bandpick-option { opacity: 0.55; }
+
+.ops-bandpick-option--green { --band: var(--ops-green); --band-wash: var(--ops-green-wash); }
+.ops-bandpick-option--amber { --band: var(--ops-amber); --band-wash: var(--ops-amber-wash); }
+.ops-bandpick-option--red { --band: var(--ops-red); --band-wash: var(--ops-red-wash); }
+
+/* Not yet rated: the tile is Blue, and Blue is never Green. It takes the
+   Operations blue and no growing width, so it reads as the quiet option
+   rather than a fourth band. */
+.ops-bandpick-option--none {
+  flex: 0 1 auto;
+  --band: var(--ops-blue);
+  --band-wash: var(--ops-blue-wash);
+  color: var(--colour-muted);
+}
+
+.ops-comparator,
+.ops-help,
+.ops-meta {
+  margin: 6px 0 0;
+  font-size: 0.76rem;
+  color: var(--colour-muted);
+}
+
+.ops-theme-note {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--colour-muted);
+}
+
+.ops-commentary {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+}
+
+.ops-subitems {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 0.8rem;
+  color: var(--colour-text);
+}
+
+.ops-subitem--overdue { color: var(--ops-red); font-weight: 600; }
+
+.ops-entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.ops-field { flex: 1 1 180px; font-size: 0.78rem; }
+.ops-field--wide { flex: 1 1 100%; }
+.ops-field > span { display: block; margin-bottom: 3px; color: var(--colour-muted); }
+.ops-field input,
+.ops-field select,
+.ops-field textarea { width: 100%; }
+
+.ops-anything-else { width: 100%; }
+
+.ops-card--plain { background: var(--colour-primary-light); }
+
+.ops-empty {
+  margin: 0;
+  color: var(--colour-muted);
+  font-size: 0.88rem;
+}
+
+.ops-risk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-top: 1px solid var(--colour-border);
+}
+
+.ops-risk-row:first-of-type { border-top: none; }
+.ops-risk-title { flex: 1 1 260px; font-size: 0.88rem; }
+.ops-risk-detail { font-size: 0.76rem; color: var(--colour-muted); }
+
+.ops-small-print {
+  margin: 18px 0 0;
+  font-size: 0.76rem;
+  color: var(--colour-muted);
+  line-height: 1.55;
+}
+
+/* Trust Dashboard roll-up */
+.ops-board { margin-top: 22px; }
+
+.ops-summary-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.ops-summary-tiles { flex: 2 1 460px; }
+.ops-exec-summary {
+  flex: 1 1 260px;
+  background: var(--colour-primary-light);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+
+.ops-exec-summary h3 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: var(--colour-primary-dark);
+}
+
+.ops-exec-summary ul { margin: 0; padding-left: 18px; font-size: 0.8rem; }
+.ops-exec-summary li { margin-bottom: 4px; }
+
+.ops-school-row {
+  padding: 10px 0;
+  border-top: 1px solid var(--colour-border);
+}
+
+.ops-school-row:first-of-type { border-top: none; }
+
+.ops-school-name { font-weight: 600; font-size: 0.9rem; }
+
+.ops-school-scope {
+  font-size: 0.74rem;
+  color: var(--colour-muted);
+  margin-left: 8px;
+}
+
+.ops-count-chips { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: 8px; }
+
+.ops-note-history { margin-top: 14px; border-top: 1px solid var(--colour-border); padding-top: 10px; }
+
+.ops-note-history-title {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: var(--colour-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ops-note-history-item { margin-bottom: 8px; font-size: 0.83rem; }
+.ops-note-history-item p { margin: 2px 0 0; }
+
+.ops-note-history-term { font-weight: 600; font-size: 0.76rem; color: var(--colour-muted); }

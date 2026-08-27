@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+from decimal import Decimal, InvalidOperation
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.forms import formset_factory
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, HttpResponseForbidden
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -17,6 +20,9 @@ from .forms import (
 	InDepthJudgementAreaForm,
 	RATING_CHOICES_DEFAULT,
 	RATING_CHOICES_SAFEGUARDING,
+	RiskCloseForm,
+	RiskEntryForm,
+	RiskRatingForm,
 )
 from .models import (
 	Category,
@@ -26,12 +32,57 @@ from .models import (
 	InDepthResponse,
 	InDepthReview,
 	InDepthStandard,
+	ComplaintTheme,
+	OperationsEntry,
+	OperationsMetric,
+	OperationsMetricVisibility,
+	OperationsNote,
 	ReviewPeriod,
+	Risk,
+	RiskRating,
+	RiskSettings,
 	School,
 	SchoolProfile,
+	TERM_LABELS,
+	TrustCategory,
 	current_academic_year_start,
 )
-from .permissions import user_can_edit
+from .operations import (
+	BLUE as OPS_BLUE,
+	AMBER as OPS_AMBER,
+	RED as OPS_RED,
+	GRANT_LABELS,
+	LEGEND_STANDING_TEXT as OPS_LEGEND_STANDING_TEXT,
+	RAG_CHOICES as OPS_RAG_CHOICES,
+	RAG_LABELS as OPS_RAG_LABELS,
+	RAG_LEGEND as OPS_RAG_LEGEND,
+	RULE_COMPLAINTS_TREND,
+	RULE_GRANT_PUBLICATION,
+	RULE_STATUTORY_DATES,
+	SMALL_PRINT as OPS_SMALL_PRINT,
+	applicable_grants,
+	complaints_rag,
+	grant_rag,
+	rag_for_entry,
+	statutory_rag,
+	summarise as ops_summarise,
+)
+
+# The three band statements a Principal can pick between; Blue is a computed
+# state, never a choice.
+OPS_BAND_CHOICES = [c for c in OPS_RAG_CHOICES if c[0] != OPS_BLUE]
+from .permissions import user_can_edit, user_can_qa_risk
+from .risk import (
+	BAND_LABELS,
+	RAG_CSS,
+	RAG_LEGEND,
+	SEVERITY,
+	TREND_LABELS,
+	is_escalated,
+	matrix_lookup,
+	matrix_rows,
+	trend_for,
+)
 
 
 MIN_ACADEMIC_YEAR_START = 2026
@@ -355,12 +406,12 @@ def board_view(request: HttpRequest) -> HttpResponse:
 	if selected_round not in (1, 2, 3):
 		selected_round = 1
 
-	round_options = [{"value": r, "label": f"Round {r}"} for r in (1, 2, 3)]
+	round_options = [{"value": r, "label": f"{TERM_LABELS[r]} term"} for r in (1, 2, 3)]
 
 	current_period = ReviewPeriod.objects.filter(year=year, round=selected_round).first()
 
 	# Determine the previous period for trend comparison.
-	# Round 1's predecessor is Round 3 of the prior academic year.
+	# Autumn's predecessor is Summer of the prior academic year.
 	if selected_round == 1:
 		prev_period = ReviewPeriod.objects.filter(year=year - 1, round=3).first()
 	else:
@@ -425,11 +476,27 @@ def board_view(request: HttpRequest) -> HttpResponse:
 
 	has_any_data = any(cell["band"] is not None for row in rows for cell in row["cells"])
 
+	# Risk exception report — Red only under the agreed starting rule. Sits on
+	# this page rather than a separate one, and is built to screenshot cleanly:
+	# the Committee and Trust Board see it as an image in a board pack.
+	escalated_risks = _escalated_risk_rows(
+		schools, year=year, round_number=selected_round
+	)
+
+	# Operations & Resources roll-up, with each school's pilot scope shown.
+	operations_rows = _operations_summary_rows(
+		schools, year=year, round_number=selected_round
+	)
+
 	return render(
 		request,
 		"review/board.html",
 		{
 			"schools": schools,
+			"escalated_risks": escalated_risks,
+			"operations_rows": operations_rows,
+			"operations_summary": _operations_executive_summary(operations_rows),
+			"operations_small_print": OPS_SMALL_PRINT,
 			"categories": categories,
 			"rows": rows,
 			"year": year,
@@ -1288,3 +1355,880 @@ def reflection(request: HttpRequest) -> HttpResponse:
 			"can_edit": can_edit,
 		},
 	)
+
+# -- Risk register -------------------------------------------------------------
+
+TERM_OPTIONS = [{"value": r, "label": f"{TERM_LABELS[r]} term"} for r in (1, 2, 3)]
+
+# "Show me everything at least this severe" — how the Central Team cuts the
+# register into each audience's slice without reformatting a report by hand.
+RAG_FILTER_OPTIONS = [
+	{"value": "all", "label": "All risks", "min_severity": -1},
+	{"value": "yellow", "label": "Yellow and above", "min_severity": SEVERITY["Yellow"]},
+	{"value": "amber", "label": "Amber and above", "min_severity": SEVERITY["Amber"]},
+	{"value": "red", "label": "Red only", "min_severity": SEVERITY["Red"]},
+]
+
+
+def _period_sort_key(period) -> tuple[int, int]:
+	return (period.year, period.round)
+
+
+def _resolve_term(request: HttpRequest, *, include_post: bool = True) -> int:
+	raw = request.GET.get("round")
+	if include_post:
+		raw = raw or request.POST.get("round")
+	try:
+		selected = int(raw or 1)
+	except (TypeError, ValueError):
+		selected = 1
+	return selected if selected in (1, 2, 3) else 1
+
+
+def _resolve_rag_filter(request: HttpRequest) -> tuple[str, int]:
+	raw = (request.GET.get("rag") or "all").strip().lower()
+	for option in RAG_FILTER_OPTIONS:
+		if option["value"] == raw:
+			return option["value"], option["min_severity"]
+	return "all", -1
+
+
+def _build_risk_rows(risks, *, year: int, round_number: int, settings) -> list[dict]:
+	"""Turn risks into display rows: this term's rating, last term's, and trend.
+
+	"Last term's" is the most recent rating strictly before the selected period,
+	not merely the adjacent one, so a term with no entry does not break the
+	comparison.
+	"""
+	current_key = (year, round_number)
+	rows = []
+	for risk in risks:
+		ratings = sorted(risk.ratings.all(), key=lambda r: _period_sort_key(r.period))
+		current = next(
+			(r for r in ratings if _period_sort_key(r.period) == current_key), None
+		)
+		previous = None
+		for rating in ratings:
+			if _period_sort_key(rating.period) < current_key:
+				previous = rating
+
+		current_band = current.band if current else None
+		trend = trend_for(current_band, previous.band if previous else None)
+		escalated = is_escalated(current_band, trend, settings)
+
+		rows.append({
+			"risk": risk,
+			"category": risk.category,
+			"route": risk.route,
+			"current": current,
+			"previous": previous,
+			"latest": current or previous,
+			"band": current_band,
+			"rag": current.rag if current else "",
+			"rag_css": RAG_CSS.get(current.rag, "") if current else "",
+			"band_label": BAND_LABELS.get(current_band, "") if current_band else "",
+			"trend": trend,
+			"trend_label": TREND_LABELS.get(trend, ""),
+			"escalated": escalated,
+			"severity": SEVERITY.get(current.rag, -1) if current else -1,
+			"awaiting_qa": bool(current and current.awaiting_qa),
+			"close_awaiting_qa": risk.close_awaiting_qa,
+		})
+	return rows
+
+
+def _school_risk_queryset(school):
+	return (
+		Risk.objects.filter(school=school)
+		.select_related("category", "category__indepth_area", "closed_by", "close_qa_by")
+		.prefetch_related("ratings__period", "ratings__qa_by")
+	)
+
+
+def _escalated_risk_rows(schools, *, year: int, round_number: int) -> list[dict]:
+	"""Rows for the Trust Dashboard exception report — escalating risks only.
+
+	Red only under the agreed starting rule; RiskSettings can widen it without a
+	code change.
+	"""
+	settings = RiskSettings.load()
+	risks = (
+		Risk.objects.filter(school__in=schools, status=Risk.Status.OPEN)
+		.select_related("school", "category", "category__indepth_area")
+		.prefetch_related("ratings__period")
+	)
+	rows = _build_risk_rows(risks, year=year, round_number=round_number, settings=settings)
+	escalating = [row for row in rows if row["escalated"]]
+	escalating.sort(key=lambda row: (-row["severity"], row["risk"].school.name))
+	return escalating
+
+
+@login_required
+def risk_register(request: HttpRequest) -> HttpResponse:
+	"""A school's risk register: review what is already open, then add what is new."""
+	can_edit = user_can_edit(request.user)
+	can_qa = user_can_qa_risk(request.user)
+
+	if request.method == "POST" and not (can_edit or can_qa):
+		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		return _readonly_redirect(
+			request,
+			"review:risk_register",
+			[
+				("year", request.POST.get("year") or ""),
+				("round", request.POST.get("round") or ""),
+				("school", school_id or ""),
+			],
+		)
+
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
+
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
+	selected_round = _resolve_term(request)
+
+	if can_edit or can_qa:
+		period_db, _ = ReviewPeriod.objects.get_or_create(
+			year=selected_year, round=selected_round
+		)
+		period = period_db
+	else:
+		period_db = ReviewPeriod.objects.filter(
+			year=selected_year, round=selected_round
+		).first()
+		period = period_db or ReviewPeriod(year=selected_year, round=selected_round)
+
+	categories = TrustCategory.objects.select_related("indepth_area").all()
+
+	redirect_params = [
+		("year", selected_year_value),
+		("round", str(selected_round)),
+		("rag", request.POST.get("rag") or request.GET.get("rag") or ""),
+	]
+	if request.user.is_superuser:
+		redirect_params.insert(0, ("school", str(school.id)))
+
+	def _back():
+		query = "&".join(f"{k}={v}" for k, v in redirect_params if v)
+		return redirect(f"{reverse('review:risk_register')}{'?' + query if query else ''}")
+
+	entry_form = RiskEntryForm(categories=categories)
+	close_forms: dict[int, RiskCloseForm] = {}
+	action = request.POST.get("action") if request.method == "POST" else None
+
+	if action == "add_risk" and can_edit and period_db is not None:
+		entry_form = RiskEntryForm(request.POST, categories=categories)
+		if entry_form.is_valid():
+			data = entry_form.cleaned_data
+			with transaction.atomic():
+				risk = Risk.objects.create(
+					school=school,
+					category=data["category"],
+					title=data["title"],
+					mitigation=data["mitigation"],
+					owner=data["owner"],
+					review_point=data["review_point"],
+					opened_period=period_db,
+					created_by=request.user,
+				)
+				RiskRating.objects.create(
+					risk=risk,
+					period=period_db,
+					impact=data["impact"],
+					likelihood=data["likelihood"],
+					recorded_by=request.user,
+				)
+			messages.success(request, "Risk added to the register.")
+			return _back()
+
+	elif action == "save_ratings" and can_edit and period_db is not None:
+		RatingFormSet = formset_factory(RiskRatingForm, extra=0)
+		posted = RatingFormSet(request.POST, prefix="ratings")
+		allowed_ids = set(
+			Risk.objects.filter(school=school, status=Risk.Status.OPEN).values_list(
+				"id", flat=True
+			)
+		)
+		if posted.is_valid():
+			with transaction.atomic():
+				for form in posted:
+					risk_id = form.cleaned_data.get("risk_id")
+					if risk_id not in allowed_ids:
+						continue
+					impact = form.cleaned_data.get("impact")
+					likelihood = form.cleaned_data.get("likelihood")
+					if not impact or not likelihood:
+						continue
+					rating, created = RiskRating.objects.get_or_create(
+						risk_id=risk_id,
+						period=period_db,
+						defaults={
+							"impact": impact,
+							"likelihood": likelihood,
+							"recorded_by": request.user,
+						},
+					)
+					changed = (
+						created
+						or rating.impact != impact
+						or rating.likelihood != likelihood
+					)
+					rating.impact = impact
+					rating.likelihood = likelihood
+					rating.note = form.cleaned_data.get("note") or ""
+					rating.recorded_by = request.user
+					if changed:
+						# A changed rating has to be signed off again.
+						rating.qa_by = None
+						rating.qa_at = None
+					rating.save()
+			messages.success(request, "Risk ratings saved.")
+			return _back()
+		messages.error(request, "Set both impact and likelihood, or neither.")
+
+	elif action == "close_risk" and can_edit:
+		close_form = RiskCloseForm(request.POST)
+		if close_form.is_valid():
+			risk = Risk.objects.filter(
+				id=close_form.cleaned_data["risk_id"], school=school
+			).first()
+			if risk is not None:
+				risk.status = Risk.Status.CLOSED
+				risk.closed_at = timezone.now()
+				risk.closed_by = request.user
+				risk.close_reason = close_form.cleaned_data["close_reason"]
+				risk.close_qa_by = None
+				risk.close_qa_at = None
+				risk.save()
+				messages.success(
+					request,
+					"Risk closed. It stays on the register and now awaits CFO sign-off.",
+				)
+			return _back()
+		try:
+			close_forms[int(close_form.data.get("risk_id"))] = close_form
+		except (TypeError, ValueError):
+			pass
+		messages.error(request, "Give a reason before closing this risk.")
+
+	elif action in ("qa_rating", "qa_close") and can_qa:
+		_apply_risk_qa(request, action, allowed_schools=School.objects.filter(id=school.id))
+		return _back()
+
+	settings = RiskSettings.load()
+	rows = _build_risk_rows(
+		_school_risk_queryset(school),
+		year=selected_year,
+		round_number=selected_round,
+		settings=settings,
+	)
+
+	rag_filter, min_severity = _resolve_rag_filter(request)
+	if min_severity >= 0:
+		rows = [row for row in rows if row["severity"] >= min_severity]
+
+	# Closed risks stay visible, greyed out — never deleted, never filtered away
+	# by default.
+	open_rows = [row for row in rows if not row["risk"].is_closed]
+	closed_rows = [row for row in rows if row["risk"].is_closed]
+	open_rows.sort(key=lambda row: (-row["severity"], row["risk"].title))
+	closed_rows.sort(key=lambda row: row["risk"].closed_at or timezone.now(), reverse=True)
+
+	RatingFormSet = formset_factory(RiskRatingForm, extra=0)
+	rating_formset = RatingFormSet(
+		prefix="ratings",
+		initial=[
+			{
+				"risk_id": row["risk"].id,
+				"impact": row["current"].impact if row["current"] else "",
+				"likelihood": row["current"].likelihood if row["current"] else "",
+				"note": row["current"].note if row["current"] else "",
+			}
+			for row in open_rows
+		],
+	)
+	for row, form in zip(open_rows, rating_formset.forms):
+		if not can_edit:
+			for field in form.fields.values():
+				field.disabled = True
+		row["rating_form"] = form
+		row["close_form"] = close_forms.get(row["risk"].id) or RiskCloseForm(
+			initial={"risk_id": row["risk"].id}
+		)
+
+	awaiting_qa_count = sum(
+		1 for row in open_rows + closed_rows if row["awaiting_qa"] or row["close_awaiting_qa"]
+	)
+
+	return render(
+		request,
+		"review/risk.html",
+		{
+			"school": school,
+			"schools": schools,
+			"period": period,
+			"selected_year_value": selected_year_value,
+			"selected_round": selected_round,
+			"round_options": TERM_OPTIONS,
+			"academic_year_options": academic_year_options,
+			"matrix_rows": matrix_rows(),
+			"rag_legend": RAG_LEGEND,
+			"matrix_lookup_json": json.dumps(matrix_lookup()),
+			"open_rows": open_rows,
+			"closed_rows": closed_rows,
+			"rating_formset": rating_formset,
+			"entry_form": entry_form,
+			"rag_filter": rag_filter,
+			"rag_filter_options": RAG_FILTER_OPTIONS,
+			"can_edit": can_edit,
+			"can_qa": can_qa,
+			"awaiting_qa_count": awaiting_qa_count,
+		},
+	)
+
+
+def _apply_risk_qa(request: HttpRequest, action: str, *, allowed_schools) -> None:
+	"""Record a CFO sign-off on a rating or on a closure, within school scope."""
+	try:
+		target_id = int(request.POST.get("target_id") or 0)
+	except (TypeError, ValueError):
+		target_id = 0
+
+	if action == "qa_rating":
+		rating = RiskRating.objects.filter(
+			id=target_id, risk__school__in=allowed_schools
+		).first()
+		if rating is None:
+			messages.error(request, "Could not find that rating.")
+			return
+		rating.qa_by = request.user
+		rating.qa_at = timezone.now()
+		rating.save()
+		messages.success(request, "Rating signed off.")
+		return
+
+	risk = Risk.objects.filter(
+		id=target_id, school__in=allowed_schools, status=Risk.Status.CLOSED
+	).first()
+	if risk is None:
+		messages.error(request, "Could not find that closed risk.")
+		return
+	risk.close_qa_by = request.user
+	risk.close_qa_at = timezone.now()
+	risk.save()
+	messages.success(request, "Closure signed off.")
+
+
+@login_required
+def risk_qa(request: HttpRequest) -> HttpResponse:
+	"""Cross-school "awaiting QA" queue.
+
+	Risk has one Trust-wide owner rather than each function lead seeing only
+	their own slice, so this view spans schools — but only the schools the
+	account is provisioned for. It does not bypass school scoping.
+	"""
+	if not user_can_qa_risk(request.user):
+		return HttpResponseForbidden(
+			"You do not have permission to QA risk register entries."
+		)
+
+	if request.user.is_superuser:
+		schools = list(School.objects.order_by("name").all())
+	else:
+		_, schools, error = _get_allowed_schools(request)
+		if error is not None:
+			return error
+
+	if not schools:
+		messages.error(request, "No schools are available.")
+		return redirect("home")
+
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
+	selected_round = _resolve_term(request)
+
+	if request.method == "POST":
+		action = request.POST.get("action")
+		if action in ("qa_rating", "qa_close"):
+			_apply_risk_qa(
+				request,
+				action,
+				allowed_schools=School.objects.filter(id__in=[s.id for s in schools]),
+			)
+		return redirect(
+			f"{reverse('review:risk_qa')}?year={selected_year_value}&round={selected_round}"
+		)
+
+	settings = RiskSettings.load()
+	risks = (
+		Risk.objects.filter(school__in=schools)
+		.select_related("school", "category", "category__indepth_area")
+		.prefetch_related("ratings__period", "ratings__recorded_by")
+	)
+	rows = _build_risk_rows(
+		risks, year=selected_year, round_number=selected_round, settings=settings
+	)
+
+	rating_rows = [
+		row for row in rows if row["awaiting_qa"] and not row["risk"].is_closed
+	]
+	closure_rows = [row for row in rows if row["close_awaiting_qa"]]
+	rating_rows.sort(key=lambda row: (-row["severity"], row["risk"].school.name))
+	closure_rows.sort(key=lambda row: row["risk"].closed_at or timezone.now())
+
+	return render(
+		request,
+		"review/risk_qa.html",
+		{
+			"schools": schools,
+			"selected_year_value": selected_year_value,
+			"selected_round": selected_round,
+			"round_options": TERM_OPTIONS,
+			"academic_year_options": academic_year_options,
+			"rating_rows": rating_rows,
+			"closure_rows": closure_rows,
+		},
+	)
+
+
+# -- Operations & Resources ----------------------------------------------------
+
+def _visible_metric_ids(school, year: int) -> set[int]:
+	"""Metric ids switched on for this school and year.
+
+	Default is OFF: a metric with no visibility row is hidden. Hidden means
+	absent from the page entirely, and out of every roll-up denominator.
+	"""
+	return set(
+		OperationsMetricVisibility.objects.filter(
+			school=school, year=year, is_visible=True
+		).values_list("metric_id", flat=True)
+	)
+
+
+def _period_key(period) -> tuple[int, int]:
+	return (period.year, period.round)
+
+
+def _complaints_history(entries, current_key) -> list[int]:
+	"""Counts for earlier terms, oldest first, for the complaints trend."""
+	prior = [
+		e for e in entries
+		if _period_key(e.period) < current_key and e.value is not None
+	]
+	prior.sort(key=lambda e: _period_key(e.period))
+	return [int(e.value) for e in prior]
+
+
+def _computed_rag(metric, school, year, entry, entries_for_metric, current_key):
+	"""RAG for the metrics that are derived rather than entered."""
+	if metric.rule == RULE_STATUTORY_DATES:
+		return statutory_rag(list(school.statutory_items.all()))
+	if metric.rule == RULE_GRANT_PUBLICATION:
+		return grant_rag(school, list(school.grant_publications.filter(year=year)))
+	if metric.rule == RULE_COMPLAINTS_TREND:
+		band = metric.band_for_phase(school.phase)
+		step = band.step_change if band else 3
+		current = int(entry.value) if (entry and entry.value is not None) else None
+		return complaints_rag(
+			current, _complaints_history(entries_for_metric, current_key), step_change=step
+		)
+	return OPS_BLUE
+
+
+def _operations_domains(school, *, year: int, period, can_edit: bool):
+	"""Domain cards for the page.
+
+	A domain with no visible metric produces no card at all — not an empty one.
+	An empty "IT" card would read as a failure rather than as "not in the pilot".
+	"""
+	visible_ids = _visible_metric_ids(school, year)
+	if not visible_ids:
+		return [], []
+
+	metrics = list(
+		OperationsMetric.objects.filter(id__in=visible_ids)
+		.select_related("domain", "domain__indepth_area")
+		.prefetch_related("bands")
+	)
+
+	entries = list(
+		OperationsEntry.objects.filter(school=school, metric_id__in=visible_ids)
+		.select_related("period", "metric", "theme")
+	)
+	by_metric: dict[int, list] = {}
+	for entry in entries:
+		by_metric.setdefault(entry.metric_id, []).append(entry)
+
+	current_key = (period.year, period.round)
+	tiles_by_domain: dict[int, list] = {}
+	all_rags = []
+
+	for metric in metrics:
+		mine = by_metric.get(metric.id, [])
+		entry = next((e for e in mine if _period_key(e.period) == current_key), None)
+
+		# An annual-cycle metric is not chased for an entry every term: fall
+		# back to the most recent entry in the same academic year.
+		carried_from = None
+		if entry is None and metric.cycle == OperationsMetric.Cycle.ANNUAL:
+			in_year = [e for e in mine if e.period.year == period.year]
+			if in_year:
+				entry = max(in_year, key=lambda e: _period_key(e.period))
+				carried_from = entry.period
+
+		band = metric.band_for_phase(school.phase)
+
+		if metric.is_computed:
+			rag = _computed_rag(metric, school, year, entry, mine, current_key)
+		else:
+			rag = rag_for_entry(metric, entry, band) if entry else OPS_BLUE
+
+		# Start-of-year baseline: this year's Autumn entry, so the governor
+		# question "has this improved since September?" can be answered.
+		baseline = next(
+			(e for e in mine if e.period.year == period.year and e.period.round == 1), None
+		)
+
+		tile = {
+			"metric": metric,
+			"entry": entry,
+			"band": band,
+			"rag": rag,
+			"rag_label": OPS_RAG_LABELS.get(rag, ""),
+			"is_blue": rag == OPS_BLUE,
+			"baseline": baseline if baseline and baseline is not entry else None,
+			"carried_from": carried_from,
+			"value": entry.value if entry else None,
+			"commentary": entry.commentary if entry else "",
+			"theme": entry.theme if entry else None,
+			"evidence_label": metric.get_evidence_display(),
+			"is_annual": metric.cycle == OperationsMetric.Cycle.ANNUAL,
+			"no_band_for_phase": band is None,
+		}
+
+		# On a judgement-based metric the three band statements *are* the
+		# picker: a Principal reads the statement they are choosing rather than
+		# matching a colour in a dropdown to a paragraph further up the tile.
+		if not metric.is_computed and not metric.is_numeric:
+			chosen = entry.band_choice if entry else ""
+			tile["band_options"] = [
+				{
+					"value": value,
+					"label": label,
+					"descriptor": getattr(band, f"{value}_descriptor", "") if band else "",
+					"selected": chosen == value,
+				}
+				for value, label in OPS_BAND_CHOICES
+			]
+			tile["band_unset"] = not chosen
+
+		# Statutory compliance expands to show which item is overdue — the
+		# whole point of storing the five dates separately.
+		if metric.rule == RULE_STATUTORY_DATES:
+			today = timezone.now().date()
+			items = list(school.statutory_items.all())
+			tile["statutory_items"] = [
+				{
+					"label": i.label,
+					"next_due_date": i.next_due_date,
+					"action_plan_in_place": i.action_plan_in_place,
+					"overdue": bool(i.next_due_date and i.next_due_date < today),
+					"days_overdue": (today - i.next_due_date).days if (i.next_due_date and i.next_due_date < today) else 0,
+				}
+				for i in items
+			]
+
+		# The grant checklist is derived from phase and type, not fixed.
+		if metric.rule == RULE_GRANT_PUBLICATION:
+			records = {g.grant: g for g in school.grant_publications.filter(year=year)}
+			tile["grants"] = [
+				{
+					"label": GRANT_LABELS[g],
+					"status": records[g].get_status_display() if g in records else "Not recorded",
+					"recorded": g in records,
+				}
+				for g in applicable_grants(school)
+			]
+
+		tiles_by_domain.setdefault(metric.domain_id, []).append(tile)
+		all_rags.append(rag)
+
+	domains = []
+	seen = {}
+	for metric in metrics:
+		seen[metric.domain_id] = metric.domain
+	for domain_id, domain in sorted(seen.items(), key=lambda kv: kv[1].order):
+		tiles = tiles_by_domain.get(domain_id, [])
+		if not tiles:
+			# Cannot happen today, but keeps the "no empty cards" rule local.
+			continue
+		domains.append({
+			"domain": domain,
+			"tiles": tiles,
+			"count": len(tiles),
+			"summary": ops_summarise(t["rag"] for t in tiles),
+		})
+
+	return domains, all_rags
+
+
+def _operations_scope(school, year: int) -> dict:
+	"""What a school's Operations position is based on, for the roll-up.
+
+	Hidden metrics are excluded from the denominator, and the visible count is
+	shown, so a Board member never compares two schools that measured different
+	things without knowing it.
+	"""
+	visible = len(_visible_metric_ids(school, year))
+	total = OperationsMetric.objects.count()
+	return {
+		"visible": visible,
+		"total": total,
+		"in_pilot": 0 < visible < total,
+		"label": f"{visible} of {total} metrics" + (" — pilot" if 0 < visible < total else ""),
+	}
+
+
+def _operations_summary_rows(schools, *, year: int, round_number: int) -> list[dict]:
+	"""Trust Dashboard roll-up: one row per school, with its pilot scope."""
+	period = ReviewPeriod.objects.filter(year=year, round=round_number).first()
+	if period is None:
+		period = ReviewPeriod(year=year, round=round_number)
+
+	rows = []
+	for school in schools:
+		domains, rags = _operations_domains(school, year=year, period=period, can_edit=False)
+		if not rags:
+			continue
+		summary = ops_summarise(rags)
+		reds = [
+			t["metric"].name
+			for d in domains for t in d["tiles"] if t["rag"] == OPS_RED
+		]
+		ambers = [
+			t["metric"].name
+			for d in domains for t in d["tiles"] if t["rag"] == OPS_AMBER
+		]
+		rows.append({
+			"school": school,
+			"summary": summary,
+			"scope": _operations_scope(school, year),
+			"reds": reds,
+			"ambers": ambers,
+			"domains": domains,
+		})
+	return rows
+
+
+def _operations_executive_summary(rows) -> list[str]:
+	"""A short written summary to sit alongside the RAG grid, not replace it.
+
+	Generated from the same data as the tiles so it cannot drift out of step
+	with them.
+	"""
+	if not rows:
+		return []
+
+	lines = []
+	schools_with_red = [r for r in rows if r["summary"]["red"]]
+	schools_with_amber = [r for r in rows if r["summary"]["amber"] and not r["summary"]["red"]]
+	blue_total = sum(r["summary"]["blue"] for r in rows)
+	piloting = [r for r in rows if r["scope"]["in_pilot"]]
+
+	lines.append(
+		f"{len(rows)} school{'s' if len(rows) != 1 else ''} reporting Operations & Resources "
+		f"this term; {len(piloting)} of them on a partial set of metrics."
+	)
+	if schools_with_red:
+		for row in schools_with_red:
+			lines.append(
+				f"{row['school'].name}: red on {', '.join(row['reds'])} "
+				f"({row['scope']['label']})."
+			)
+	else:
+		lines.append("No school is showing red on any visible metric.")
+	if schools_with_amber:
+		lines.append(
+			"Amber to monitor: "
+			+ "; ".join(f"{r['school'].name} — {', '.join(r['ambers'])}" for r in schools_with_amber)
+			+ "."
+		)
+	if blue_total:
+		lines.append(
+			f"{blue_total} tile{'s' if blue_total != 1 else ''} not yet benchmarked (blue); "
+			"these are not green and should not be read as such."
+		)
+	return lines
+
+
+@login_required
+def operations(request: HttpRequest) -> HttpResponse:
+	"""A school's Operations & Resources position for one term."""
+	can_edit = user_can_edit(request.user)
+
+	if request.method == "POST" and not can_edit:
+		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		return _readonly_redirect(
+			request,
+			"review:operations",
+			[
+				("year", request.POST.get("year") or ""),
+				("round", request.POST.get("round") or ""),
+				("school", school_id or ""),
+			],
+		)
+
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
+
+	selected_year, selected_year_value, academic_year_options = _academic_year_context(request)
+	selected_round = _resolve_term(request)
+
+	if can_edit:
+		period_db, _ = ReviewPeriod.objects.get_or_create(
+			year=selected_year, round=selected_round
+		)
+		period = period_db
+	else:
+		period_db = ReviewPeriod.objects.filter(
+			year=selected_year, round=selected_round
+		).first()
+		period = period_db or ReviewPeriod(year=selected_year, round=selected_round)
+
+	if request.method == "POST" and can_edit and period_db is not None:
+		_save_operations(request, school=school, period=period_db, year=selected_year)
+		params = [("year", selected_year_value), ("round", str(selected_round))]
+		if request.user.is_superuser:
+			params.insert(0, ("school", str(school.id)))
+		query = "&".join(f"{k}={v}" for k, v in params if v)
+		return redirect(f"{reverse('review:operations')}?{query}")
+
+	domains, all_rags = _operations_domains(
+		school, year=selected_year, period=period, can_edit=can_edit
+	)
+	scope = _operations_scope(school, selected_year)
+
+	note = None
+	if period_db is not None:
+		note = OperationsNote.objects.filter(school=school, period=period_db).first()
+
+	# Earlier terms' notes stay visible, so the free text forms a record rather
+	# than something that vanishes at the end of the term.
+	current_key = (selected_year, selected_round)
+	earlier_notes = [
+		n
+		for n in OperationsNote.objects.filter(school=school)
+		.exclude(text="")
+		.select_related("period", "updated_by")
+		if (n.period.year, n.period.round) < current_key
+	]
+	earlier_notes.sort(key=lambda n: (n.period.year, n.period.round), reverse=True)
+	earlier_notes = earlier_notes[:4]
+
+	# Read-only summary of the two highest-scoring open risks. This reads the
+	# Phase 1 register directly and never keeps its own copy.
+	risk_rows = _build_risk_rows(
+		Risk.objects.filter(school=school, status=Risk.Status.OPEN)
+		.select_related("category", "category__indepth_area")
+		.prefetch_related("ratings__period"),
+		year=selected_year,
+		round_number=selected_round,
+		settings=RiskSettings.load(),
+	)
+	risk_rows = [r for r in risk_rows if r["current"]]
+	risk_rows.sort(key=lambda r: -r["severity"])
+	top_risks = risk_rows[:2]
+
+	themes = ComplaintTheme.objects.filter(is_active=True)
+
+	return render(
+		request,
+		"review/operations.html",
+		{
+			"school": school,
+			"schools": schools,
+			"period": period,
+			"selected_year_value": selected_year_value,
+			"selected_round": selected_round,
+			"round_options": TERM_OPTIONS,
+			"academic_year_options": academic_year_options,
+			"domains": domains,
+			"scope": scope,
+			"summary": ops_summarise(all_rags),
+			"note": note,
+			"earlier_notes": earlier_notes,
+			"top_risks": top_risks,
+			"themes": themes,
+			"ops_legend": OPS_RAG_LEGEND,
+			"legend_standing_text": OPS_LEGEND_STANDING_TEXT,
+			"small_print": OPS_SMALL_PRINT,
+			"can_edit": can_edit,
+		},
+	)
+
+
+def _save_operations(request: HttpRequest, *, school, period, year: int) -> None:
+	"""Save the term's entries and the free-text note.
+
+	Only metrics visible for this school and year are writable: a hidden metric
+	cannot be written to even if its field is forged into the POST.
+	"""
+	visible_ids = _visible_metric_ids(school, year)
+	metrics = {
+		m.id: m
+		for m in OperationsMetric.objects.filter(id__in=visible_ids).prefetch_related("bands")
+	}
+
+	saved = 0
+	with transaction.atomic():
+		for metric_id, metric in metrics.items():
+			prefix = f"metric-{metric_id}-"
+			if not any(k.startswith(prefix) for k in request.POST):
+				continue
+
+			raw_value = (request.POST.get(prefix + "value") or "").strip()
+			band_choice = (request.POST.get(prefix + "band_choice") or "").strip()
+			commentary = (request.POST.get(prefix + "commentary") or "").strip()
+			red_reason = (request.POST.get(prefix + "red_reason") or "").strip()
+			theme_id = (request.POST.get(prefix + "theme") or "").strip()
+
+			value = None
+			if raw_value:
+				try:
+					value = Decimal(raw_value)
+				except (InvalidOperation, ValueError):
+					messages.error(
+						request, f"{metric.name}: “{raw_value}” is not a number."
+					)
+					continue
+
+			if band_choice and band_choice not in dict(OPS_BAND_CHOICES):
+				band_choice = ""
+
+			theme = None
+			if theme_id:
+				theme = ComplaintTheme.objects.filter(id=theme_id, is_active=True).first()
+
+			entry, _ = OperationsEntry.objects.get_or_create(
+				school=school, period=period, metric=metric
+			)
+			entry.value = value
+			entry.band_choice = band_choice
+			entry.commentary = commentary
+			entry.manual_red_reason = red_reason
+			entry.theme = theme
+			entry.source = OperationsEntry.Source.MANUAL
+			entry.recorded_by = request.user
+			entry.save()
+			saved += 1
+
+		if "anything_else" in request.POST:
+			text = (request.POST.get("anything_else") or "").strip()
+			note, _ = OperationsNote.objects.get_or_create(school=school, period=period)
+			note.text = text
+			note.updated_by = request.user
+			note.save()
+
+	messages.success(request, "Operations & Resources saved.")

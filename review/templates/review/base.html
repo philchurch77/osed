@@ -12,9 +12,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    {% load static %}
+    {% load static asset_tags %}
     <link rel="icon" type="image/svg+xml" href="{% static 'review/favicon.svg' %}" />
-    <link rel="stylesheet" href="{% static 'review/styles.css' %}?v=20260611-1" />
+    <link rel="stylesheet" href="{% static_v 'review/styles.css' %}" />
     {% block head %}{% endblock %}
   </head>
   <body>
@@ -47,6 +47,13 @@
           <a href="/review/reflection/" {% if '/review/reflection/' in request.path %}aria-current="page"{% endif %}>Reflection</a>
           <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>School Progress</a>
           <a href="/review/board/" {% if '/review/board/' in request.path %}aria-current="page"{% endif %}>Trust Dashboard</a>
+          {% if show_operations_tab %}
+            <a href="/review/operations/" {% if '/review/operations/' in request.path %}aria-current="page"{% endif %}>Operations &amp; Resources</a>
+          {% endif %}
+          <a href="/review/risk/" {% if request.path == '/review/risk/' %}aria-current="page"{% endif %}>Risk</a>
+          {% if can_qa_risk %}
+            <a href="/review/risk/qa/" {% if '/review/risk/qa/' in request.path %}aria-current="page"{% endif %}>Risk QA</a>
+          {% endif %}
         </nav>
 
         <div class="sidebar-ratings">
@@ -77,8 +84,8 @@
       </div>
     </div>
 
-    <script defer src="{% static 'review/word_limit.js' %}?v=20260528-1"></script>
-    <script defer src="{% static 'review/mobile_nav.js' %}?v=20260611-1"></script>
+    <script defer src="{% static_v 'review/word_limit.js' %}"></script>
+    <script defer src="{% static_v 'review/mobile_nav.js' %}"></script>
     <script>
       document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('.school-select select').forEach(function (sel) {

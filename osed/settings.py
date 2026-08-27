@@ -102,7 +102,9 @@ CSRF_TRUSTED_ORIGINS = list({
 
 INSTALLED_APPS = [
     'django.contrib.sites',
-    'django.contrib.admin',
+    # Replaces 'django.contrib.admin' so admin.site is OsedAdminSite, which
+    # groups the review app's models into named sections on the index.
+    'review.admin_site.OsedAdminConfig',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -149,6 +151,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'review.context_processors.branding',
+                'review.context_processors.nav_flags',
             ],
         },
     },
