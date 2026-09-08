@@ -20,6 +20,26 @@ Two further tabs were added in Aug 2026 from the Oxlip TFORS/risk proposal (v7):
 
 Single Django app: `review`. Project package: `osed`.
 
+## How work happens in this repo
+
+**Claude Code leads the work and is accountable for it** — read the code, make the change,
+run the tests, report the real output. Claude may **call in its own subagents** to help:
+the crew in `~/.claude/agents/` (quartermaster, carpenter, bosun, master-at-arms, gunner,
+lookout, surgeon), the built-ins (Explore, Plan, general-purpose), and the user-level
+commands such as `/captain` and `/wheels-up`. They assist; they do not take over — the
+change, the verification and the report come back through Claude.
+
+- **The older persona agents are retired.** The project's `.claude/agents/` (ada, juno,
+  les, stella, tess, theo, vera, victor) and `.claude/commands/` were removed in Sept 2026.
+  Do not recreate them and do not work from them.
+- **The GitHub Copilot copies are gone too.** `.github/agents/*.agent.md` (arthur, les,
+  quinn, stella, theo, victor) were deleted in the same pass. `.github/` now holds only
+  `workflows/azure-deploy.yml`.
+- **Never report a pass you have not seen.** If a subagent reports a result, it is Claude's
+  job to have the real output — `python manage.py test review` — before calling anything
+  done. Check the change against "Security model", "Rules that must not be softened" and
+  "Conventions" below as part of the same pass.
+
 ## Running locally (Windows)
 
 ```powershell
@@ -30,8 +50,13 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**117 tests** in `review/tests.py`; the suite
-  takes ~45s because some tests load the in-depth criteria).
+- Run tests: `python manage.py test review` (**135 tests** in `review/tests.py`; the suite
+  takes ~60–85s because some tests load the in-depth criteria). Capture to a file and
+  grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
+  will show seed-command chatter instead of the verdict.
+- The working copy lives inside **OneDrive**, which locks files under `.git` during sync.
+  A commit may stop on "Deletion of directory '.git/objects/NN' failed. Should I try
+  again?" — that is post-commit `gc`, the commit is already written; answer `y`.
 - Pre-deploy security check: `python manage.py check --deploy` with `DEBUG=0`.
 
 > Running with `DEBUG=0` locally needs `DATABASE_URL`, and `settings.py` adds `sslmode`,
@@ -61,8 +86,12 @@ python manage.py runserver
   computations, and the two verbatim standing texts.
 - **`review/permissions.py`** — `user_can_edit(user)` (superusers + `EDIT_PERMS`) and
   `user_can_qa_risk(user)` (superusers + the `review.qa_risk` permission).
-- **`review/allauth_adapters.py`** — `RestrictMicrosoftLoginAdapter`: SSO only admits
-  pre-provisioned users (existing active `User` + `SchoolProfile`).
+- **`review/allauth_adapters.py`** — the login gate. `provisioning_problem(user)` is the
+  **one** authorisation rule (active `User` + `SchoolProfile`; superusers exempt).
+  `OsedAccountAdapter` (`ACCOUNT_ADAPTER`) applies it in `pre_login` — which every allauth
+  login path goes through — and closes `/accounts/signup/`; `RestrictMicrosoftLoginAdapter`
+  (`SOCIALACCOUNT_ADAPTER`) matches the Entra email to a user and applies the same rule.
+  Guarded by `LoginDoorsTests` (15 tests, mutation-checked: disable the rule and seven go red).
 - **`review/admin.py`** — multi-tenant admin; includes a CSV user-import view
   (`import-users/`, superuser only) and the **pilot visibility grid**
   (`/admin/review/operationsmetricvisibility/grid/`).
@@ -156,6 +185,32 @@ python manage.py runserver
 - No Committee or Trust Board roles exist, deliberately. Those audiences have **no OSED
   logins** and see exported screenshots. Do not build click-through or external-audience
   login paths — that work is cancelled, not deferred.
+
+## User provisioning — what actually links a person to a school
+
+Learned from a live ticket (8 Sept 2026: a Principal "has access but is not assigned to
+Copleston"). None of this is visible from the admin list page.
+
+- A user's schools are `SchoolProfile.schools` (m2m) **plus** `SchoolProfile.school` (FK).
+  `_get_allowed_schools` re-adds the FK if the m2m lacks it, so an **empty Schools box still
+  works** — and, the other way round, **clearing the Schools box does not revoke access**.
+- The admin's **Schools column cannot tell those two states apart**: `schools_access` inserts
+  the FK name when it is missing, so "Copleston High School" renders identically for
+  `m2m=[Copleston]` and `m2m=[]`. Open the change page to know.
+- **Adding a User in the admin creates no `SchoolProfile`** — `SchoolProfileInline` is
+  `extra=0`, so after "Save" the profile is behind an "Add another" link. Miss it and the
+  person is refused at SSO (or, before the adapter fix, landed on the *"Not linked to a
+  school"* 403 page — the wording they will repeat back to you). The list shows "—".
+- The **CSV importer needs the exact `School.name`** ("Copleston High School", not
+  "Copleston"); a non-matching row is skipped with an on-screen error, so read the results
+  panel. It lowercases email; the admin add form does **not** normalise it.
+- **`User.email` is not unique.** Both reads are `email__iexact` and `.first()` is
+  pk-ordered on Django 6 (deterministic: oldest row wins), but nothing prevents or reports
+  a duplicate. Refuse-on-duplicate is a pending follow-up, not built.
+- **Offboarding: `is_active = False` is the only complete action.** Deleting the profile
+  revokes SSO for non-superusers only; superusers skip the profile check entirely.
+- Which Django user an Entra identity lands in is the `SocialAccount` row
+  (`/admin/socialaccount/socialaccount/`) — check it before assuming the profile is wrong.
 
 ## Conventions
 
@@ -280,6 +335,10 @@ up by `import_indepth_workbooks`.
    eight questions the client must answer before it can be costed. The two that block
    everything: whether the report holds pupil-level or aggregate data, and whether the
    dataset exists at all.
+8. **Is the Entra app registration single-tenant?** `MICROSOFT_TENANT` defaults to
+   `organizations` (`settings.py`), `AZURE_DEPLOYMENT.md` documents either, and the adapter
+   authorises on the email claim alone. Multi-tenant + `organizations` is the nOAuth pattern;
+   single-tenant makes it moot. Needs the live App Setting and the Entra portal checked.
 
 ## Proposed: Power BI embed (planned, NOT built)
 
@@ -312,6 +371,15 @@ is generated from tile data specifically so it cannot drift, and it goes into bo
   single worker, while the file's own comment says to add `--workers=3` on Postgres — which
   production uses. Harmless today (no view makes a blocking outbound call), but any feature
   that does, such as the Power BI embed, would stall the whole site on that one worker.
+- **`InDepthResponseAdmin` is the one school-linked admin with no `get_queryset` scoping**
+  (`admin.py`, `InDepthResponseAdmin`) — every other one filters through `_request_schools`.
+  An `is_staff` account holding `change_indepthresponse` (which OSED Staff grants) reads every
+  school's evidence text there. Bounded by `is_staff`, which only superusers can set. Flagged
+  8 Sept 2026; fix is five lines matching `InDepthReviewAdmin`; awaiting a decision.
+- `/admin/login/` takes email+password with **no rate limit**; `/accounts/login/` is
+  limited by allauth. Both are superuser break-glass. `SOCIALACCOUNT_ONLY = True` would
+  remove the `/accounts/` password path and reset/change URLs (it would also fail
+  `test_superuser_without_profile_can_still_password_login`) — a separate decision.
 
 ## Design decisions worth knowing before changing them
 
@@ -332,3 +400,5 @@ is generated from tile data specifically so it cannot drift, and it goes into bo
 - Never commit `.env` or `db.sqlite3` (both gitignored; keep it that way).
 - Don't set `DEBUG=1` in any production config.
 - Commit/push only when asked.
+- Subagents are fine and the crew is welcome; the retired personas (Les, Stella, Theo,
+  Victor et al.) are not — see "How work happens in this repo" above.
