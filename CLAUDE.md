@@ -133,8 +133,13 @@ python manage.py runserver
 
 ## Security model (do not weaken)
 
-- **Authentication** = Microsoft SSO. Self-registration is disabled
-  (`ACCOUNT_ALLOW_SIGNUPS = False`). Imported users get unusable passwords (SSO-only).
+- **Authentication** = Microsoft SSO. The login page offers only the Microsoft button.
+  `ACCOUNT_ADAPTER` (`OsedAccountAdapter`) closes `/accounts/signup/` and applies the
+  provisioning rule to password logins too; **allauth has no `ACCOUNT_ALLOW_SIGNUPS`
+  setting** — that name was in `settings.py` for months and did nothing. Both adapters
+  call the one `provisioning_problem()` rule. Imported users get unusable passwords
+  (SSO-only). Break-glass is any superuser with a usable password, via either
+  `/accounts/login/` (POST still accepted; rate-limited) or `/admin/login/` (not).
 - **Authorization** = per-school scoping. Non-superusers are restricted to their
   `SchoolProfile` schools in **both** views (`_resolve_school_selection`,
   `_get_allowed_schools`) and admin (`_request_schools`). Any new view that reads or
@@ -271,12 +276,42 @@ up by `import_indepth_workbooks`.
    does not classify. It is a label, not logic.
 6. **`School.is_mainstream` defaults to `True`.** Any non-mainstream school must be set in
    the admin, or the Inclusive Mainstream Fund will wrongly appear on its grant checklist.
+7. **The Power BI embed** (planned, not built) — see `POWERBI_EMBED_PLAN.md` §2 for the
+   eight questions the client must answer before it can be costed. The two that block
+   everything: whether the report holds pupil-level or aggregate data, and whether the
+   dataset exists at all.
+
+## Proposed: Power BI embed (planned, NOT built)
+
+Full plan in **`POWERBI_EMBED_PLAN.md`**. Read it before starting any work on this — the
+detail is there, not here. The four things worth knowing without opening it:
+
+- **Nothing is approved and no code exists.** The Django side is ~2–3 days; the feature is
+  weeks, and most of it is Azure tenant and semantic-model work outside this repo.
+- **`School` has no stable external key** — `name` is not even `unique=True`, and the pk
+  is meaningless outside this database. A DfE URN has to be added before any filtering can
+  be trusted, and a blank URN must **fail closed** (no token, no report), never fall back
+  to an unfiltered view.
+- **`_resolve_school_selection` fails closed but silently** (`views.py:194-197`): a forged
+  `?school=` id is discarded and the user's own school substituted. Right for rendering a
+  page, wrong for minting an access token — that path needs a 403. Wrap the helper, do not
+  change it.
+- **`is_superuser` must not become the trust-wide BI identity.** It would silently re-grade
+  every existing superuser from "sees all self-evaluations" to "sees every pupil in the
+  Trust". Use a separate permission shaped like `Risk QA`.
+
+If the embedded report would duplicate the Trust Dashboard, do not build it — that summary
+is generated from tile data specifically so it cannot drift, and it goes into board packs.
 
 ## Known discrepancies (pre-existing, unresolved)
 
 - `startup.sh` runs `ensure_schema` **after** `migrate` (lines 27 and 30), while this file
   previously stated it must run before. Both have been left as they are — confirm the
   intended order before changing either.
+- `startup.sh` starts gunicorn with **no `--workers` flag** (line 55), so production runs a
+  single worker, while the file's own comment says to add `--workers=3` on Postgres — which
+  production uses. Harmless today (no view makes a blocking outbound call), but any feature
+  that does, such as the Power BI embed, would stall the whole site on that one worker.
 
 ## Design decisions worth knowing before changing them
 

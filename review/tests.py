@@ -2156,3 +2156,218 @@ class AdminIndexGroupingTests(TestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertContains(response, "Risks")
 		self.assertContains(response, "Schools")
+
+
+
+class LoginDoorsTests(TestCase):
+	"""Every door into OSED applies the same pre-provisioning rule.
+
+	Before the fix, /accounts/signup/ was open (an anonymous POST created an
+	active user with a usable password) and a password login established a
+	session for any active user, profile or not — the SchoolProfile gate lived
+	only in the Microsoft adapter. Nothing exercised either adapter.
+	"""
+
+	PASSWORD = "Str0ng-Passw0rd!2026"
+
+	def setUp(self):
+		self.school = School.objects.create(name="Door School")
+		# Active, usable password, NO SchoolProfile — the case that used to get in.
+		self.orphan = User.objects.create_user(
+			"orphan", "orphan@example.com", self.PASSWORD
+		)
+		# Active, provisioned.
+		self.provisioned = User.objects.create_user(
+			"provisioned", "provisioned@example.com", self.PASSWORD
+		)
+		profile = SchoolProfile.objects.create(user=self.provisioned, school=self.school)
+		profile.schools.add(self.school)
+		# Superuser with no profile — the break-glass path.
+		self.super = User.objects.create_superuser(
+			"super", "super@example.com", self.PASSWORD
+		)
+		# Provisioned but deactivated.
+		self.inactive = User.objects.create_user(
+			"inactive", "inactive@example.com", self.PASSWORD, is_active=False
+		)
+		inactive_profile = SchoolProfile.objects.create(user=self.inactive, school=self.school)
+		inactive_profile.schools.add(self.school)
+
+	def _password_login(self, email):
+		return self.client.post(
+			reverse("account_login"),
+			{"login": email, "password": self.PASSWORD},
+		)
+
+	# --- self-registration -------------------------------------------------
+
+	# Catches: /accounts/signup/ rendering a working registration form.
+	def test_signup_page_redirects_to_login(self):
+		resp = self.client.get(reverse("account_signup"))
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(resp.url, reverse("account_login"))
+
+	# Catches: an anonymous POST to /accounts/signup/ creating a User.
+	def test_signup_post_creates_no_user(self):
+		before = User.objects.count()
+		resp = self.client.post(
+			reverse("account_signup"),
+			{
+				"email": "intruder@example.com",
+				"username": "intruder",
+				"password1": self.PASSWORD,
+				"password2": self.PASSWORD,
+			},
+		)
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(resp.url, reverse("account_login"))
+		self.assertEqual(User.objects.count(), before)
+		self.assertFalse(User.objects.filter(email="intruder@example.com").exists())
+		self.assertNotIn("_auth_user_id", self.client.session)
+
+	# --- password login ----------------------------------------------------
+
+	# Catches: a password login bypassing the SchoolProfile gate.
+	def test_password_login_without_school_profile_gets_no_session(self):
+		from .allauth_adapters import NO_SCHOOL
+
+		resp = self._password_login("orphan@example.com")
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(resp.url, reverse("account_login"))
+		self.assertNotIn("_auth_user_id", self.client.session)
+
+		followed = self.client.get(reverse("account_login"))
+		shown = [str(m) for m in followed.context["messages"]]
+		self.assertIn(NO_SCHOOL, shown)
+
+	# Catches: the gate over-reaching and locking out provisioned users.
+	def test_password_login_with_school_profile_establishes_session(self):
+		resp = self._password_login("provisioned@example.com")
+		self.assertEqual(resp.status_code, 302)
+		self.assertIn("_auth_user_id", self.client.session)
+		self.assertEqual(
+			int(self.client.session["_auth_user_id"]), self.provisioned.pk
+		)
+
+	# Catches: the break-glass superuser path being closed along with the rest.
+	def test_superuser_without_profile_can_still_password_login(self):
+		resp = self._password_login("super@example.com")
+		self.assertEqual(resp.status_code, 302)
+		self.assertIn("_auth_user_id", self.client.session)
+		self.assertEqual(int(self.client.session["_auth_user_id"]), self.super.pk)
+
+	# Catches: a deactivated account still able to sign in with its password.
+	def test_inactive_user_password_login_gets_no_session(self):
+		self._password_login("inactive@example.com")
+		self.assertNotIn("_auth_user_id", self.client.session)
+
+	# Catches: the password form reappearing on the public login page.
+	def test_login_page_offers_microsoft_only(self):
+		resp = self.client.get(reverse("account_login"))
+		self.assertEqual(resp.status_code, 200)
+		self.assertContains(resp, "Sign in with Microsoft")
+		self.assertNotContains(resp, "id_password")
+		self.assertNotContains(resp, 'name="password"')
+
+	# --- the shared rule ---------------------------------------------------
+
+	# Catches: the single provisioning rule drifting from what both adapters need.
+	def test_provisioning_problem_rule(self):
+		from .allauth_adapters import NO_SCHOOL, NOT_PROVISIONED, provisioning_problem
+
+		self.assertEqual(provisioning_problem(None), NOT_PROVISIONED)
+		self.assertEqual(provisioning_problem(self.inactive), NOT_PROVISIONED)
+		self.assertIsNone(provisioning_problem(self.super))
+		self.assertEqual(provisioning_problem(self.orphan), NO_SCHOOL)
+		self.assertIsNone(provisioning_problem(self.provisioned))
+
+	# --- Microsoft SSO path -----------------------------------------------
+
+	def _social_request(self):
+		from django.contrib.messages.storage.fallback import FallbackStorage
+		from django.contrib.sessions.middleware import SessionMiddleware
+		from django.test import RequestFactory
+
+		request = RequestFactory().get("/accounts/microsoft/login/callback/")
+		SessionMiddleware(lambda r: None).process_request(request)
+		request.session.save()
+		setattr(request, "_messages", FallbackStorage(request))
+		return request
+
+	def _sociallogin(self, email, uid="test-uid"):
+		from allauth.socialaccount.models import SocialAccount, SocialLogin
+
+		return SocialLogin(
+			user=User(email=email),
+			account=SocialAccount(provider="microsoft", uid=uid),
+		)
+
+	def _pre_social_login(self, email):
+		from .allauth_adapters import RestrictMicrosoftLoginAdapter
+
+		request = self._social_request()
+		sociallogin = self._sociallogin(email)
+		RestrictMicrosoftLoginAdapter().pre_social_login(request, sociallogin)
+		return request, sociallogin
+
+	# Catches: a Microsoft identity with no email being let through.
+	def test_sso_rejects_missing_email(self):
+		from allauth.core.exceptions import ImmediateHttpResponse
+
+		with self.assertRaises(ImmediateHttpResponse) as ctx:
+			self._pre_social_login("")
+		self.assertEqual(ctx.exception.response.url, reverse("account_login"))
+
+	# Catches: any tenant Microsoft account being auto-admitted.
+	def test_sso_rejects_unknown_email(self):
+		from allauth.core.exceptions import ImmediateHttpResponse
+
+		with self.assertRaises(ImmediateHttpResponse) as ctx:
+			self._pre_social_login("stranger@example.com")
+		self.assertEqual(ctx.exception.response.url, reverse("account_login"))
+		self.assertFalse(User.objects.filter(email="stranger@example.com").exists())
+
+	# Catches: a known but unprovisioned user getting through SSO.
+	def test_sso_rejects_user_without_school_profile(self):
+		from allauth.core.exceptions import ImmediateHttpResponse
+		from allauth.socialaccount.models import SocialAccount
+
+		with self.assertRaises(ImmediateHttpResponse):
+			self._pre_social_login("orphan@example.com")
+		self.assertFalse(SocialAccount.objects.filter(user=self.orphan).exists())
+
+	# Catches: a deactivated user getting through SSO.
+	def test_sso_rejects_inactive_user(self):
+		from allauth.core.exceptions import ImmediateHttpResponse
+
+		with self.assertRaises(ImmediateHttpResponse):
+			self._pre_social_login("inactive@example.com")
+
+	# Catches: SSO admitting a provisioned user but failing to link the account.
+	def test_sso_connects_provisioned_user(self):
+		from allauth.socialaccount.models import SocialAccount
+
+		_, sociallogin = self._pre_social_login("provisioned@example.com")
+		self.assertEqual(sociallogin.user.pk, self.provisioned.pk)
+		self.assertTrue(
+			SocialAccount.objects.filter(
+				user=self.provisioned, provider="microsoft", uid="test-uid"
+			).exists()
+		)
+
+	# Catches: the superuser SSO path regressing when the profile check moved.
+	def test_sso_connects_superuser_without_profile(self):
+		from allauth.socialaccount.models import SocialAccount
+
+		_, sociallogin = self._pre_social_login("super@example.com")
+		self.assertEqual(sociallogin.user.pk, self.super.pk)
+		self.assertTrue(SocialAccount.objects.filter(user=self.super).exists())
+
+	# Catches: Entra returning a differently-cased email and being turned away.
+	def test_sso_matches_email_case_insensitively(self):
+		cfo = User.objects.create_user("cfo", "cfo@example.com", self.PASSWORD)
+		profile = SchoolProfile.objects.create(user=cfo, school=self.school)
+		profile.schools.add(self.school)
+
+		_, sociallogin = self._pre_social_login("CFO@Example.com")
+		self.assertEqual(sociallogin.user.pk, cfo.pk)
