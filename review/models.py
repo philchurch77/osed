@@ -323,9 +323,9 @@ class InDepthResponse(models.Model):
     rag = models.CharField(max_length=10, choices=Rag.choices, blank=True, default="")
     next_steps = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
-    # Version trail. The auto_now stamp is excluded: it changes on every save and
-    # would make each history row unique for no gain, and history_date records the
-    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    # Version trail. updated_at is excluded: it changes on every save and would
+    # make each history row unique for no gain, and history_date records the
+    # same fact. (This model has no created_at, unlike its siblings.)
     history = HistoricalRecords(excluded_fields=["updated_at"])
 
 

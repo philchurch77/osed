@@ -9,10 +9,13 @@ from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import Http404
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import redirect, render
 from django.urls import path
+
+from simple_history.admin import SimpleHistoryAdmin
 
 from .models import (
 	Branding,
@@ -61,6 +64,72 @@ def _request_schools(request):
 	if profile.school_id:
 		allowed_ids.add(profile.school_id)
 	return School.objects.filter(id__in=allowed_ids)
+
+
+class ScopedHistoryAdminMixin:
+	"""Keep the admin's History tab inside the user's own schools.
+
+	SimpleHistoryAdmin.history_view looks the object up through get_queryset()
+	first, which respects this app's per-school scoping. But when that finds
+	nothing it falls back to rebuilding the object from the history table, which
+	is unscoped, and the permission check behind that is model-level and ignores
+	the object. So without this, a staff user scoped to one school could read
+	another school's full version trail by visiting the history URL directly.
+
+	Filtering the history queryset closes both paths at once: the fallback finds
+	nothing either, and the view 404s.
+
+	The revert view needs guarding separately -- see history_form_view below. It
+	resolves the historical record through the model's DEFAULT manager, so
+	neither get_queryset nor get_history_queryset applies to it.
+
+	Superusers get the queryset unfiltered, for the same reason they bypass
+	school scoping everywhere else in this codebase. It also matters for
+	InDepthResponse: its path traverses `review`, so once a parent InDepthReview
+	is deleted the join drops its history — precisely the rows you would be
+	looking for. The other five filter on a `school_id` column held on the
+	historical row itself, so nothing is lost there either way.
+	"""
+
+	# Lookup from the historical model to School.
+	history_school_path = "school"
+
+	def get_history_queryset(self, request, history_manager, pk_name, object_id):
+		qs = super().get_history_queryset(request, history_manager, pk_name, object_id)
+		if request.user.is_superuser:
+			return qs
+		return qs.filter(
+			**{f"{self.history_school_path}__in": _request_schools(request)}
+		)
+
+	def history_form_view(self, request, object_id, version_id, extra_context=None):
+		"""Guard the revert view, which the library leaves wide open.
+
+		`SimpleHistoryAdmin.history_form_view` fetches the historical record with
+		`get_object_or_404` against the historical model's default manager, and
+		gates it on a model-level permission that ignores the object. Its POST
+		branch then calls save_form/save_model with no change-permission check at
+		all. Before this override, a staff user scoped to one school could open
+		another school's revert URL, read the commentary, and POST to overwrite
+		that school's live row — while the ordinary change view correctly refused
+		them. Reproduced, then fixed.
+
+		Resolve the record through the scoped history queryset instead, and
+		require change permission before any write.
+		"""
+		history_manager = getattr(
+			self.model, self.model._meta.simple_history_manager_attribute
+		)
+		in_scope = self.get_history_queryset(
+			request, history_manager, self.model._meta.pk.attname, object_id
+		)
+		if not in_scope.filter(history_id=version_id).exists():
+			raise Http404
+		if request.method == "POST" and not self.has_change_permission(request):
+			raise PermissionDenied
+		return super().history_form_view(
+			request, object_id, version_id, extra_context=extra_context
+		)
 
 
 class ProtectsWrittenWorkMixin:
@@ -183,7 +252,7 @@ class ReviewPeriodAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 
 @admin.register(Evaluation)
-class EvaluationAdmin(admin.ModelAdmin):
+class EvaluationAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = (
 		"school",
 		"period",
@@ -264,7 +333,7 @@ class InDepthSubSectionAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 
 @admin.register(InDepthReview)
-class InDepthReviewAdmin(admin.ModelAdmin):
+class InDepthReviewAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "year", "area", "step", "overall_grade", "has_reflection", "updated_at", "updated_by")
 	list_filter = ("year", "area", "school", "step")
 	ordering = ("-year", "school__name", "area__order", "area__name")
@@ -296,7 +365,8 @@ class InDepthReviewAdmin(admin.ModelAdmin):
 
 
 @admin.register(InDepthResponse)
-class InDepthResponseAdmin(admin.ModelAdmin):
+class InDepthResponseAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+	history_school_path = "review__school"
 	list_display = ("review", "judgement_area", "subsection", "rag", "grade", "updated_at")
 	list_filter = ("rag", "grade", "judgement_area__standard__area", "subsection__area")
 	search_fields = ("evidence_text", "next_steps", "subsection__name", "judgement_area__statement")
@@ -388,7 +458,7 @@ class RiskRatingInline(admin.TabularInline):
 
 
 @admin.register(Risk)
-class RiskAdmin(admin.ModelAdmin):
+class RiskAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = (
 		"title",
 		"school",
@@ -605,7 +675,7 @@ class OperationsMetricVisibilityAdmin(admin.ModelAdmin):
 
 
 @admin.register(OperationsEntry)
-class OperationsEntryAdmin(admin.ModelAdmin):
+class OperationsEntryAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "period", "metric", "value", "band_choice", "rag", "source", "recorded_at")
 	list_filter = ("rag", "source", "school", "period", "metric__domain", "metric")
 	search_fields = ("commentary", "manual_red_reason", "metric__name")
@@ -651,7 +721,7 @@ class GrantPublicationAdmin(admin.ModelAdmin):
 
 
 @admin.register(OperationsNote)
-class OperationsNoteAdmin(admin.ModelAdmin):
+class OperationsNoteAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "period", "updated_at", "updated_by")
 	list_filter = ("school", "period")
 	search_fields = ("text",)

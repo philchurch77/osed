@@ -3178,3 +3178,410 @@ class InDepthResponseAdminScopingTests(TestCase):
 		visible = list(self._queryset_for(root))
 		self.assertIn(self.responses["mine"], visible)
 		self.assertIn(self.responses["theirs"], visible)
+
+
+class EvaluationVersionHistoryTests(TestCase):
+	"""The version trail itself — is an edit recoverable afterwards?
+
+	The feature exists so commentary lost to an overwrite, or taken out by a
+	cascade from a catalogue row, can still be read back. These prove the trail
+	is written, is readable at a point in time, survives the live row, and
+	records who made the change.
+	"""
+
+	ORIGINAL = "Attendance is improving; PA down 4 points on last term."
+	REVISED = "Attendance has stalled; PA flat since September."
+
+	def setUp(self):
+		self.school = School.objects.create(name="Test School")
+		self.category = Category.objects.create(name="Leadership", order=1, is_active=True)
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		self.evaluation = Evaluation.objects.create(
+			school=self.school,
+			period=self.period,
+			category=self.category,
+			rating=3,
+			judgement_evidence=self.ORIGINAL,
+		)
+
+	def _edit(self, text=REVISED):
+		self.evaluation.judgement_evidence = text
+		self.evaluation.save()
+
+	# Catches: no trail being written at all — the manager dropped from the
+	# model, or migration 0034 never applied.
+	def test_editing_commentary_records_a_new_version(self):
+		self.assertEqual(self.evaluation.history.count(), 1)
+
+		self._edit()
+
+		self.assertEqual(self.evaluation.history.count(), 2)
+		self.assertEqual(
+			list(
+				self.evaluation.history.order_by("history_date").values_list(
+					"history_type", flat=True
+				)
+			),
+			["+", "~"],
+		)
+
+	# Catches: the trail storing today's values on every row, so a point-in-time
+	# read hands back the current text instead of what was live then.
+	def test_history_as_of_returns_the_text_that_was_live_at_that_moment(self):
+		before_edit = timezone.now()
+		self._edit()
+
+		self.assertEqual(
+			self.evaluation.history.as_of(before_edit).judgement_evidence,
+			self.ORIGINAL,
+		)
+		snapshot = Evaluation.history.as_of(before_edit).filter(id=self.evaluation.pk).first()
+		self.assertEqual(snapshot.judgement_evidence, self.ORIGINAL)
+		self.assertEqual(
+			Evaluation.objects.get(pk=self.evaluation.pk).judgement_evidence,
+			self.REVISED,
+		)
+
+	# Catches: excluded_fields being wrong, so a diff either names nothing (the
+	# real change swallowed) or names updated_at on every save.
+	def test_diff_between_versions_names_the_field_that_changed(self):
+		self._edit()
+
+		newest = self.evaluation.history.first()
+		changed = [change.field for change in newest.diff_against(newest.prev_record).changes]
+
+		self.assertEqual(changed, ["judgement_evidence"])
+
+	# Catches: the recovery property — a cascade delete (here a ReviewPeriod
+	# taking a whole term of commentary with it) also wiping the trail, leaving
+	# nothing to recover from. This is the reason the feature exists.
+	def test_history_survives_a_cascade_delete_of_the_review_period(self):
+		self._edit()
+		evaluation_id = self.evaluation.pk
+
+		self.period.delete()
+
+		self.assertFalse(Evaluation.objects.filter(pk=evaluation_id).exists())
+		trail = list(Evaluation.history.filter(id=evaluation_id).order_by("history_date"))
+		self.assertEqual([row.history_type for row in trail], ["+", "~", "-"])
+		self.assertEqual(trail[0].judgement_evidence, self.ORIGINAL)
+		self.assertIn(self.REVISED, [row.judgement_evidence for row in trail])
+
+	# Catches: HistoryRequestMiddleware missing or mis-ordered, so every version
+	# is anonymous and the trail cannot say who changed what.
+	def test_history_user_is_the_logged_in_editor_and_none_for_a_code_change(self):
+		editor = User.objects.create_user(username="editor", email="editor@example.com")
+		SchoolProfile.objects.create(user=editor, school=self.school)
+		editor.schoolprofile.schools.add(self.school)
+		for codename in ("add_evaluation", "change_evaluation"):
+			editor.user_permissions.add(
+				Permission.objects.get(
+					content_type__app_label="review", codename=codename
+				)
+			)
+		self.client.force_login(editor)
+
+		resp = self.client.post(
+			reverse("review:evaluation"),
+			data={
+				"school_id": str(self.school.id),
+				"year": "2026-2027",
+				"round": "1",
+				"form-TOTAL_FORMS": "1",
+				"form-INITIAL_FORMS": "1",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.category.id),
+				"form-0-rating": "3",
+				"form-0-judgement_evidence": self.REVISED,
+				"form-0-to_progress": "",
+			},
+		)
+		self.assertEqual(resp.status_code, 302)
+
+		through_the_request = self.evaluation.history.first()
+		self.assertEqual(through_the_request.judgement_evidence, self.REVISED)
+		self.assertEqual(through_the_request.history_user, editor)
+
+		# A save with no request behind it (management command, shell, migration)
+		# records no user, which is the correct answer rather than a guess.
+		self.evaluation.refresh_from_db()
+		self.evaluation.judgement_evidence = "Corrected by a management command."
+		self.evaluation.save()
+
+		self.assertIsNone(self.evaluation.history.first().history_user)
+
+
+class AdminHistoryTabScopingTests(TestCase):
+	"""The admin History tab must stay inside the user's own schools.
+
+	SimpleHistoryAdmin falls back to rebuilding the object from the history
+	table when get_queryset finds nothing, and gates that on a model-level
+	permission that ignores the object — so without scoping, a staff user for
+	one school reads another school's whole version trail, not merely its
+	current row.
+	"""
+
+	MINE = "Mine Primary attendance commentary for the autumn term."
+	THEIRS = "Theirs Primary safeguarding commentary for the autumn term."
+	MINE_EVIDENCE = "Mine Primary in-depth evidence write-up."
+	THEIRS_EVIDENCE = "Theirs Primary in-depth evidence write-up."
+
+	def setUp(self):
+		self.mine = School.objects.create(name="Mine Primary")
+		self.theirs = School.objects.create(name="Theirs Primary")
+		self.category = Category.objects.create(name="Leadership", order=1, is_active=True)
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+
+		self.my_eval = self._evaluation(self.mine, self.MINE)
+		self.their_eval = self._evaluation(self.theirs, self.THEIRS)
+
+		self.area = InDepthArea.objects.create(name="Achievement", order=1)
+		standard = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.judgement_area = InDepthJudgementArea.objects.create(
+			standard=standard, statement="Pupils achieve well.", order=1
+		)
+		self.my_response = self._response(self.mine, self.MINE_EVIDENCE)
+		self.their_response = self._response(self.theirs, self.THEIRS_EVIDENCE)
+
+		self.staff = User.objects.create_user(
+			username="staff", email="staff@example.com", is_staff=True
+		)
+		profile = SchoolProfile.objects.create(user=self.staff, school=self.mine)
+		profile.schools.add(self.mine)
+		for codename in (
+			"view_evaluation",
+			"change_evaluation",
+			"view_indepthresponse",
+			"change_indepthresponse",
+		):
+			self.staff.user_permissions.add(
+				Permission.objects.get(
+					content_type__app_label="review", codename=codename
+				)
+			)
+
+	def _evaluation(self, school, text):
+		row = Evaluation.objects.create(
+			school=school,
+			period=self.period,
+			category=self.category,
+			rating=3,
+			judgement_evidence=text,
+		)
+		# A second version, so there is a trail to leak rather than one row.
+		row.judgement_evidence = f"{text} Revised."
+		row.save()
+		return row
+
+	def _response(self, school, text):
+		review = InDepthReview.objects.create(school=school, year=2026, area=self.area)
+		row = InDepthResponse.objects.create(
+			review=review,
+			judgement_area=self.judgement_area,
+			rag="green",
+			evidence_text=text,
+		)
+		row.evidence_text = f"{text} Revised."
+		row.save()
+		return row
+
+	# Catches: over-filtering — a scope so tight the user cannot read the trail
+	# for their own school's row either.
+	def test_scoped_staff_user_can_open_their_own_schools_evaluation_history(self):
+		self.client.force_login(self.staff)
+
+		resp = self.client.get(f"/admin/review/evaluation/{self.my_eval.pk}/history/")
+
+		self.assertEqual(resp.status_code, 200)
+
+	# Catches: a staff user for one school reading another school's commentary,
+	# including superseded versions, through the History tab.
+	def test_staff_user_cannot_open_another_schools_evaluation_history(self):
+		self.client.force_login(self.staff)
+
+		resp = self.client.get(f"/admin/review/evaluation/{self.their_eval.pk}/history/")
+
+		self.assertEqual(resp.status_code, 404)
+		self.assertNotContains(resp, self.THEIRS, status_code=404)
+
+	# Catches: the scoping being applied to superusers too, who bypass school
+	# scoping everywhere else by design.
+	def test_superuser_can_open_any_schools_evaluation_history(self):
+		root = User.objects.create_superuser(
+			username="root", email="root@example.com", password="pw12345678"
+		)
+		self.client.force_login(root)
+
+		resp = self.client.get(f"/admin/review/evaluation/{self.their_eval.pk}/history/")
+
+		self.assertEqual(resp.status_code, 200)
+
+	# Catches: the two-hop review__school path being wrong or unapplied on the
+	# model that holds the in-depth write-ups themselves.
+	def test_staff_user_cannot_open_another_schools_indepth_response_history(self):
+		self.client.force_login(self.staff)
+
+		resp = self.client.get(
+			f"/admin/review/indepthresponse/{self.their_response.pk}/history/"
+		)
+
+		self.assertEqual(resp.status_code, 404)
+		self.assertNotContains(resp, self.THEIRS_EVIDENCE, status_code=404)
+
+	# Catches: a review__school filter that 404s everything, which would pass the
+	# test above while breaking the tab for its owner.
+	def test_scoped_staff_user_can_still_open_their_own_indepth_response_history(self):
+		self.client.force_login(self.staff)
+
+		resp = self.client.get(
+			f"/admin/review/indepthresponse/{self.my_response.pk}/history/"
+		)
+
+		self.assertEqual(resp.status_code, 200)
+
+
+class AdminHistoryRevertScopingTests(TestCase):
+	"""The revert view — read and write, on a URL the library leaves open.
+
+	SimpleHistoryAdmin.history_form_view resolves the historical record through
+	the default manager and gates it on a model-level permission, then its POST
+	branch writes with no change check at all. Before the guard, a staff user
+	scoped to one school could GET another school's revert URL, read the
+	commentary, and POST to overwrite that school's live row.
+	"""
+
+	MINE_ORIGINAL = "Mine Primary attendance commentary, first draft."
+	MINE_REVISED = "Mine Primary attendance commentary, second draft."
+	THEIRS_ORIGINAL = "Theirs Primary safeguarding commentary, first draft."
+	THEIRS_REVISED = "Theirs Primary safeguarding commentary, second draft."
+	ATTACKER_TEXT = "Overwritten from another school."
+
+	def setUp(self):
+		self.mine = School.objects.create(name="Mine Primary")
+		self.theirs = School.objects.create(name="Theirs Primary")
+		self.category = Category.objects.create(name="Leadership", order=1, is_active=True)
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+
+		self.my_eval = self._evaluation(self.mine, self.MINE_ORIGINAL, self.MINE_REVISED)
+		self.their_eval = self._evaluation(
+			self.theirs, self.THEIRS_ORIGINAL, self.THEIRS_REVISED
+		)
+		self.my_first_version = self.my_eval.history.order_by("history_date").first()
+		self.their_first_version = self.their_eval.history.order_by("history_date").first()
+
+		self.staff = self._staff_user("staff", ("view_evaluation", "change_evaluation"))
+		self.readonly_staff = self._staff_user("readonly", ("view_evaluation",))
+
+	def _evaluation(self, school, original, revised):
+		row = Evaluation.objects.create(
+			school=school,
+			period=self.period,
+			category=self.category,
+			rating=3,
+			judgement_evidence=original,
+		)
+		row.judgement_evidence = revised
+		row.rating = 4
+		row.save()
+		return row
+
+	def _staff_user(self, username, codenames):
+		user = User.objects.create_user(
+			username=username, email=f"{username}@example.com", is_staff=True
+		)
+		profile = SchoolProfile.objects.create(user=user, school=self.mine)
+		profile.schools.add(self.mine)
+		for codename in codenames:
+			user.user_permissions.add(
+				Permission.objects.get(
+					content_type__app_label="review", codename=codename
+				)
+			)
+		return user
+
+	@staticmethod
+	def _revert_url(evaluation, version):
+		return f"/admin/review/evaluation/{evaluation.pk}/history/{version.history_id}/"
+
+	@staticmethod
+	def _post_data(version, **overrides):
+		data = {
+			"school": str(version.school_id),
+			"period": str(version.period_id),
+			"category": str(version.category_id),
+			"rating": "" if version.rating is None else str(version.rating),
+			"judgement_evidence": version.judgement_evidence,
+			"to_progress": version.to_progress,
+		}
+		data.update(overrides)
+		return data
+
+	def _live(self, evaluation):
+		return Evaluation.objects.get(pk=evaluation.pk)
+
+	# Catches: the read half of the hole — another school's superseded
+	# commentary rendered into a revert form for a user with no access to it.
+	def test_user_cannot_get_another_schools_revert_page(self):
+		self.client.force_login(self.staff)
+
+		resp = self.client.get(self._revert_url(self.their_eval, self.their_first_version))
+
+		self.assertEqual(resp.status_code, 404)
+		self.assertNotContains(resp, self.THEIRS_ORIGINAL, status_code=404)
+		self.assertNotContains(resp, self.THEIRS_REVISED, status_code=404)
+
+	# Catches: the write half — a cross-school POST overwriting the victim's
+	# live row, which the ordinary change view correctly refuses.
+	def test_user_cannot_post_to_another_schools_revert_page(self):
+		self.client.force_login(self.staff)
+
+		resp = self.client.post(
+			self._revert_url(self.their_eval, self.their_first_version),
+			data=self._post_data(
+				self.their_first_version, judgement_evidence=self.ATTACKER_TEXT
+			),
+		)
+
+		self.assertEqual(resp.status_code, 404)
+		victim = self._live(self.their_eval)
+		self.assertEqual(victim.judgement_evidence, self.THEIRS_REVISED)
+		self.assertEqual(victim.rating, 4)
+		self.assertNotIn(
+			self.ATTACKER_TEXT,
+			list(
+				Evaluation.history.filter(id=self.their_eval.pk).values_list(
+					"judgement_evidence", flat=True
+				)
+			),
+		)
+
+	# Catches: a guard that closes the hole by breaking the feature — the
+	# legitimate revert of the user's own school must still work.
+	def test_user_can_revert_their_own_schools_row_to_an_earlier_version(self):
+		self.client.force_login(self.staff)
+		url = self._revert_url(self.my_eval, self.my_first_version)
+
+		self.assertEqual(self.client.get(url).status_code, 200)
+		resp = self.client.post(url, data=self._post_data(self.my_first_version))
+
+		self.assertEqual(resp.status_code, 302)
+		restored = self._live(self.my_eval)
+		self.assertEqual(restored.judgement_evidence, self.MINE_ORIGINAL)
+		self.assertEqual(restored.rating, 3)
+
+	# Catches: privilege escalation — the library's POST branch writes without
+	# any change-permission check, so a view-only account silently reverted the
+	# live row.
+	def test_view_only_user_cannot_post_a_revert_of_their_own_schools_row(self):
+		self.client.force_login(self.readonly_staff)
+
+		resp = self.client.post(
+			self._revert_url(self.my_eval, self.my_first_version),
+			data=self._post_data(self.my_first_version),
+		)
+
+		self.assertEqual(resp.status_code, 403)
+		self.assertEqual(self._live(self.my_eval).judgement_evidence, self.MINE_REVISED)
