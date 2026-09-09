@@ -35,9 +35,9 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from review.management.commands._indepth_sync import sync_judgement_areas
 from review.models import (
     InDepthArea,
-    InDepthJudgementArea,
     InDepthStandard,
 )
 
@@ -185,13 +185,10 @@ class Command(BaseCommand):
                 )
                 n_standards += 1
 
-                standard.judgement_areas.all().delete()
-                rows = [
-                    InDepthJudgementArea(standard=standard, order=i + 1, **ja)
-                    for i, ja in enumerate(jas)
-                ]
-                InDepthJudgementArea.objects.bulk_create(rows)
-                n_ja += len(rows)
+                # Reload in place. A blind delete here cascaded to
+                # InDepthResponse and destroyed written work on every deploy.
+                written, _removed, _kept = sync_judgement_areas(standard, list(jas))
+                n_ja += written
 
             return 1, n_standards, n_ja
         finally:

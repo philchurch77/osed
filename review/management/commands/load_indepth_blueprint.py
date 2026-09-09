@@ -776,14 +776,24 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             # Remove any area that is no longer part of the blueprint.
-            stale_qs = InDepthArea.objects.exclude(name__in=blueprint_names)
-            stale_count = stale_qs.count()
-            if stale_count:
-                stale_qs.delete()
-                self.stdout.write(f"Removed {stale_count} legacy area(s) not in blueprint.")
+            #
+            # Only ever on --clear. BLUEPRINT holds the old placeholder area names;
+            # the live areas come from criteria.json and only Early Years and
+            # Safeguarding appear in both. Unguarded, this purge deleted the other
+            # seven on every deploy, cascading InDepthArea -> InDepthReview ->
+            # InDepthResponse and taking every school's written work with it.
+            if options["clear"]:
+                stale_qs = InDepthArea.objects.exclude(name__in=blueprint_names)
+                stale_count = stale_qs.count()
+                if stale_count:
+                    stale_qs.delete()
+                    self.stdout.write(f"Removed {stale_count} legacy area(s) not in blueprint.")
 
             for area_data in BLUEPRINT:
-                subsections = area_data.pop("subsections")
+                # .get, not .pop — popping mutated the module-level BLUEPRINT, so a
+                # second call in the same process died on KeyError. Harmless on Azure
+                # (fresh process per deploy), a trap anywhere else.
+                subsections = area_data.get("subsections", [])
                 area, created = InDepthArea.objects.update_or_create(
                     name=area_data["name"],
                     defaults={

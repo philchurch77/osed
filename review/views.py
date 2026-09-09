@@ -1150,9 +1150,11 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 							)
 					else:
 						# RAG page — only touch the rating. A blank rating means the
-						# statement is not (or no longer) rated; drop the whole
-						# response so no orphaned commentary lingers on an abandoned
-						# branch (page 2 only ever shows rated statements).
+						# statement is not (or no longer) rated, so the row goes —
+						# but never when it holds a write-up. The ladder JS unchecks
+						# a rung it hides, so changing one Expected rating posts every
+						# Strong statement back blank; deleting there threw away the
+						# leader's commentary and still said "In-depth review saved."
 						rag = f.cleaned_data["rag"]
 						if rag:
 							if resp:
@@ -1163,7 +1165,11 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 									review=review, judgement_area_id=ja_id, rag=rag,
 								)
 						elif resp:
-							resp.delete()
+							if resp.evidence_text or resp.next_steps:
+								resp.rag = ""
+								resp.save()
+							else:
+								resp.delete()
 
 				# The "one or more of the following applies" comment is only
 				# rendered (and therefore posted) on a Needs Attention commentary

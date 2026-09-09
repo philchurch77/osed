@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -36,6 +38,7 @@ from .models import (
 	StatutoryComplianceItem,
 	TrustCategory,
 )
+from .management.commands._indepth_sync import sync_judgement_areas
 from .operations import (
 	GRANT_DRAFTED,
 	GRANT_INCLUSIVE_MAINSTREAM,
@@ -583,6 +586,66 @@ class InDepthJudgementAreaFlowTests(TestCase):
 		self.assertEqual(InDepthResponse.objects.filter(review=review).count(), 0)
 		self.assertEqual(review.overall_grade, "")
 
+	# Clearing a rating used to call resp.delete(), destroying the commentary and
+	# next steps written against that statement. The ladder JS unchecks a rung it
+	# hides, so an ordinary edit posted other statements back blank and silently
+	# binned their write-ups.
+	def test_clearing_a_rating_keeps_the_write_up_on_that_statement(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		self._commentary_post([
+			(self.je1, "Books show secure knowledge over time.", "Moderate across the trust."),
+			(self.je2, "Gaps remain in year 9.", "Target year 9 in the spring."),
+		])
+		review = self._review()
+		before = InDepthResponse.objects.get(review=review, judgement_area=self.je1)
+
+		# Re-post the ladder with that statement's rating blank.
+		resp = self._rag_post([(self.je1, ""), (self.je2, "amber")])
+		self.assertEqual(resp.status_code, 302)
+
+		after = InDepthResponse.objects.filter(
+			review=review, judgement_area=self.je1
+		).first()
+		self.assertIsNotNone(
+			after, "the row was deleted when the rating was cleared, taking the write-up"
+		)
+		self.assertEqual(after.pk, before.pk)
+		self.assertEqual(after.evidence_text, "Books show secure knowledge over time.")
+		self.assertEqual(after.next_steps, "Moderate across the trust.")
+		self.assertEqual(after.rag, "")
+
+	# Keeping de-rated rows must not extend to empty ones: a rated statement with
+	# nothing written against it still goes when its rating is cleared.
+	def test_clearing_a_rating_still_deletes_a_row_with_no_write_up(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		review = self._review()
+		self.assertTrue(
+			InDepthResponse.objects.filter(review=review, judgement_area=self.je2).exists()
+		)
+		self._rag_post([(self.je1, "green"), (self.je2, "")])
+		self.assertFalse(
+			InDepthResponse.objects.filter(review=review, judgement_area=self.je2).exists()
+		)
+
+	# A row kept for its write-up carries rag="" and must count as un-rated, or the
+	# grade would stay frozen at the value the cleared rating produced.
+	def test_grade_recomputes_when_a_rating_is_cleared_but_the_write_up_stays(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		self._commentary_post([(self.je1, "Triangulated evidence.", "Sustain practice.")])
+		self.assertEqual(self._review().overall_grade, "expected_standard")
+
+		self._rag_post([(self.je1, ""), (self.je2, "amber")])
+
+		review = self._review()
+		self.assertEqual(review.overall_grade, "")  # rung incomplete again
+		kept = InDepthResponse.objects.get(review=review, judgement_area=self.je1)
+		self.assertEqual(kept.rag, "")
+		self.assertEqual(kept.evidence_text, "Triangulated evidence.")
+		self.assertEqual(kept.next_steps, "Sustain practice.")
+
 
 class GradeOverrideTests(TestCase):
 	"""Over-writing an evaluation grade with the in-depth-review-derived grade."""
@@ -712,6 +775,193 @@ class ImportWorkbooksTests(TestCase):
 			)
 		}
 		self.assertEqual(first_counts, second_counts)
+
+
+class IndepthDeployReloadTests(TestCase):
+	"""startup.sh re-runs load_indepth_blueprint -> load_indepth_criteria ->
+	import_indepth_workbooks on every Azure deploy. All three used to rebuild
+	their rows by deleting first, cascading InDepthArea -> InDepthReview ->
+	InDepthResponse and taking every school's written work with it."""
+
+	# In criteria.json but NOT in load_indepth_blueprint's BLUEPRINT: the purge
+	# used to delete these seven areas outright on every deploy.
+	UNBLUEPRINTED_AREA = "Achievement"
+	# In both, so it survived the purge and only lost its judgement areas.
+	BLUEPRINTED_AREA = "Safeguarding"
+
+	@staticmethod
+	def _reload_blueprint_module():
+		# load_indepth_blueprint pops "subsections" off its module-level BLUEPRINT
+		# constant, so a second call in one process raises KeyError. On Azure each
+		# deploy is a fresh process; reloading the module reproduces that.
+		importlib.reload(
+			importlib.import_module("review.management.commands.load_indepth_blueprint")
+		)
+
+	@staticmethod
+	def _workbooks_present():
+		from django.conf import settings
+
+		folder = Path(settings.BASE_DIR) / "review" / "data" / "workbooks"
+		return folder.is_dir() and any(folder.glob("*.xlsx"))
+
+	@classmethod
+	def _run_deploy_sequence(cls):
+		cls._reload_blueprint_module()
+		call_command("load_indepth_blueprint", verbosity=0)
+		call_command("load_indepth_criteria", verbosity=0)
+		if cls._workbooks_present():
+			call_command("import_indepth_workbooks", verbosity=0)
+
+	@classmethod
+	def setUpTestData(cls):
+		cls._run_deploy_sequence()
+		cls.school = School.objects.create(name="Deploy Test School")
+		cls.written_work = {}
+		for name in (cls.UNBLUEPRINTED_AREA, cls.BLUEPRINTED_AREA):
+			area = InDepthArea.objects.get(name=name)
+			ja = (
+				InDepthJudgementArea.objects.filter(standard__area=area)
+				.order_by("standard__order", "order", "id")
+				.first()
+			)
+			assert ja is not None, f"no judgement areas loaded for {name}"
+			review = InDepthReview.objects.create(
+				school=cls.school,
+				year=2026,
+				area=area,
+				qa_reflection=f"QA reflection for {name} — written by the school.",
+			)
+			response = InDepthResponse.objects.create(
+				review=review,
+				judgement_area=ja,
+				rag="green",
+				evidence_text=f"Evidence write-up for {name}.",
+				next_steps=f"Next steps agreed for {name}.",
+			)
+			cls.written_work[name] = {
+				"review_pk": review.pk,
+				"response_pk": response.pk,
+				"judgement_area_pk": ja.pk,
+			}
+
+	def _assert_written_work_intact(self, area_name):
+		saved = self.written_work[area_name]
+		review = InDepthReview.objects.filter(pk=saved["review_pk"]).first()
+		self.assertIsNotNone(
+			review, f"the {area_name} review was deleted by the deploy sequence"
+		)
+		self.assertEqual(
+			review.qa_reflection, f"QA reflection for {area_name} — written by the school."
+		)
+		response = InDepthResponse.objects.filter(pk=saved["response_pk"]).first()
+		self.assertIsNotNone(
+			response, f"the {area_name} response was deleted by the deploy sequence"
+		)
+		self.assertEqual(response.evidence_text, f"Evidence write-up for {area_name}.")
+		self.assertEqual(response.next_steps, f"Next steps agreed for {area_name}.")
+
+	# The whole deploy path, run a second time, used to wipe every review and
+	# response and rebuild the statements at fresh pks so nothing looked wrong.
+	def test_redeploy_does_not_destroy_reviews_or_written_work(self):
+		self._run_deploy_sequence()
+		self._assert_written_work_intact(self.UNBLUEPRINTED_AREA)
+		self._assert_written_work_intact(self.BLUEPRINTED_AREA)
+
+	# The blueprint purge ran outside the --clear guard, so an area that exists
+	# only in criteria.json was deleted on every deploy, cascading to its reviews.
+	def test_blueprint_reload_no_longer_purges_areas_it_does_not_list(self):
+		self._reload_blueprint_module()
+		call_command("load_indepth_blueprint", verbosity=0)
+		self.assertTrue(
+			InDepthArea.objects.filter(name=self.UNBLUEPRINTED_AREA).exists(),
+			f"{self.UNBLUEPRINTED_AREA} was purged by load_indepth_blueprint",
+		)
+		self._assert_written_work_intact(self.UNBLUEPRINTED_AREA)
+
+	# load_indepth_criteria rebuilt each standard's judgement areas with a blind
+	# delete + bulk_create; InDepthResponse.judgement_area is a CASCADE.
+	def test_criteria_reload_keeps_judgement_area_pks_and_their_responses(self):
+		call_command("load_indepth_criteria", verbosity=0)
+		for name in (self.UNBLUEPRINTED_AREA, self.BLUEPRINTED_AREA):
+			saved = self.written_work[name]
+			self.assertTrue(
+				InDepthJudgementArea.objects.filter(pk=saved["judgement_area_pk"]).exists(),
+				f"the {name} statement was deleted and rebuilt at a new pk",
+			)
+			self._assert_written_work_intact(name)
+
+
+class SyncJudgementAreasTests(TestCase):
+	"""The shared in-place reload behind both loaders (_indepth_sync)."""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Sync Test School")
+		self.area = InDepthArea.objects.create(name="Achievement", order=4)
+		self.standard = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.review = InDepthReview.objects.create(
+			school=self.school, year=2026, area=self.area
+		)
+
+	def _ja(self, statement, order):
+		return InDepthJudgementArea.objects.create(
+			standard=self.standard, statement=statement, order=order
+		)
+
+	def _response(self, ja):
+		return InDepthResponse.objects.create(
+			review=self.review,
+			judgement_area=ja,
+			rag="green",
+			evidence_text="Written work that must survive a reload.",
+			next_steps="Agreed next steps.",
+		)
+
+	# The reload must update a re-supplied statement in place; recreating it at a
+	# new pk cascades its responses away.
+	def test_unchanged_statement_keeps_its_pk_and_its_responses(self):
+		ja = self._ja("Pupils achieve well.", 1)
+		response = self._response(ja)
+
+		# Same statement, whitespace and casing churn only.
+		sync_judgement_areas(self.standard, [{"statement": "  pupils  achieve well. "}])
+
+		ja.refresh_from_db()
+		response.refresh_from_db()
+		self.assertEqual(self.standard.judgement_areas.count(), 1)
+		self.assertEqual(response.judgement_area_id, ja.pk)
+		self.assertEqual(response.evidence_text, "Written work that must survive a reload.")
+		self.assertEqual(response.next_steps, "Agreed next steps.")
+
+	def test_retired_statement_with_no_responses_is_deleted(self):
+		kept = self._ja("Pupils achieve well.", 1)
+		retired = self._ja("A statement that has been withdrawn.", 2)
+
+		written, deleted, kept_count = sync_judgement_areas(
+			self.standard, [{"statement": "Pupils achieve well."}]
+		)
+
+		self.assertEqual((written, deleted, kept_count), (1, 1, 0))
+		self.assertFalse(InDepthJudgementArea.objects.filter(pk=retired.pk).exists())
+		self.assertTrue(InDepthJudgementArea.objects.filter(pk=kept.pk).exists())
+
+	# Losing a leader's write-up is worse than carrying a retired statement, so a
+	# retired statement that holds responses is kept and reported.
+	def test_retired_statement_with_responses_is_kept_not_deleted(self):
+		self._ja("Pupils achieve well.", 1)
+		retired = self._ja("A statement that has been withdrawn.", 2)
+		response = self._response(retired)
+
+		written, deleted, kept_count = sync_judgement_areas(
+			self.standard, [{"statement": "Pupils achieve well."}]
+		)
+
+		self.assertEqual((written, deleted, kept_count), (1, 0, 1))
+		self.assertTrue(InDepthJudgementArea.objects.filter(pk=retired.pk).exists())
+		response.refresh_from_db()
+		self.assertEqual(response.evidence_text, "Written work that must survive a reload.")
 
 
 class RiskMatrixTests(TestCase):

@@ -22,9 +22,9 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from review.management.commands._indepth_sync import sync_judgement_areas
 from review.models import (
     InDepthArea,
-    InDepthJudgementArea,
     InDepthStandard,
 )
 
@@ -93,6 +93,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"Cleared existing standards/judgement areas ({deleted} rows)."))
 
         n_areas = n_standards = n_ja = 0
+        n_removed = n_kept = 0
 
         for a in areas:
             area, _ = InDepthArea.objects.update_or_create(
@@ -121,21 +122,19 @@ class Command(BaseCommand):
                 )
                 n_standards += 1
 
-                # Replace this standard's judgement areas wholesale (idempotent reload)
-                standard.judgement_areas.all().delete()
-
+                # Reload this standard's judgement areas in place. A blind
+                # delete here cascaded to InDepthResponse and destroyed every
+                # school's commentary on each deploy — see _indepth_sync.
                 rows = []
                 if "judgement_areas" in body:  # rich shape
-                    for i, ja in enumerate(body["judgement_areas"]):
+                    for ja in body["judgement_areas"]:
                         rows.append(
-                            InDepthJudgementArea(
-                                standard=standard,
+                            dict(
                                 statement=ja.get("statement", ""),
                                 key_questions=ja.get("key_questions", []),
                                 suggested_evidence=ja.get("suggested_evidence", []),
                                 sources=ja.get("sources", []),
                                 is_flat=False,
-                                order=i + 1,
                             )
                         )
                 else:  # flat statements/notes shape
@@ -143,21 +142,25 @@ class Command(BaseCommand):
                     # rungs in the ladder, so load them as non-flat judgement
                     # areas; all other flat lists stay reference-only.
                     is_flat = key not in RATEABLE_FLAT_KEYS
-                    for i, stmt in enumerate(body.get("statements", [])):
-                        rows.append(
-                            InDepthJudgementArea(
-                                standard=standard,
-                                statement=stmt,
-                                is_flat=is_flat,
-                                order=i + 1,
-                            )
-                        )
+                    for stmt in body.get("statements", []):
+                        rows.append(dict(statement=stmt, is_flat=is_flat))
 
-                InDepthJudgementArea.objects.bulk_create(rows)
-                n_ja += len(rows)
+                written, removed, kept = sync_judgement_areas(standard, rows)
+                n_ja += written
+                n_removed += removed
+                n_kept += kept
 
         self.stdout.write(
             self.style.SUCCESS(
                 f"Loaded {n_areas} areas, {n_standards} standards, {n_ja} judgement areas/statements."
             )
         )
+        if n_removed:
+            self.stdout.write(f"Removed {n_removed} retired statement(s) with no written work.")
+        if n_kept:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Kept {n_kept} retired statement(s) that hold written work — "
+                    "review them in the admin rather than deleting blind."
+                )
+            )
