@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.exceptions import ObjectDoesNotExist
 from simple_history.models import HistoricalRecords
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.utils import timezone
@@ -23,6 +24,24 @@ from .risk import (
     band_for,
     rag_for_band,
 )
+
+
+def label_or_deleted(instance, field_name: str) -> str:
+    """`str()` of a related object, or a marker when that object is gone.
+
+    Historical rows outlive their parents on purpose -- that is the whole point
+    of the version trail. The admin's history page calls `str()` on an instance
+    rebuilt from a historical row, so a `__str__` that dereferences a foreign key
+    raises `DoesNotExist` and the page 500s in exactly the situation someone is
+    trying to recover from. `__str__` must never raise.
+    """
+    try:
+        related = getattr(instance, field_name)
+    except ObjectDoesNotExist:
+        related = None
+    if related is not None:
+        return str(related)
+    return f"deleted {field_name} #{getattr(instance, f'{field_name}_id', '?')}"
 
 
 def current_academic_year_start() -> int:
@@ -345,7 +364,11 @@ class InDepthResponse(models.Model):
         ordering = ("id",)
 
     def __str__(self):
-        return f"{self.review} — {self.judgement_area or self.subsection}"
+        try:
+            target = self.judgement_area or self.subsection
+        except ObjectDoesNotExist:
+            target = None
+        return f"{label_or_deleted(self, 'review')} — {target or 'statement deleted'}"
 
 
 # ---------------------------------------------------------------------------
@@ -900,7 +923,9 @@ class OperationsEntry(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.school} — {self.period} — {self.metric}"
+        return " — ".join(
+            label_or_deleted(self, name) for name in ("school", "period", "metric")
+        )
 
 
 class ComplaintTheme(models.Model):

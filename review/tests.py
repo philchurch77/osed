@@ -41,6 +41,8 @@ from .models import (
 )
 from .admin import (
 	CategoryAdmin,
+	EvaluationAdmin,
+	RiskAdmin,
 	InDepthAreaAdmin,
 	InDepthJudgementAreaAdmin,
 	InDepthResponseAdmin,
@@ -3585,3 +3587,177 @@ class AdminHistoryRevertScopingTests(TestCase):
 
 		self.assertEqual(resp.status_code, 403)
 		self.assertEqual(self._live(self.my_eval).judgement_evidence, self.MINE_REVISED)
+
+
+class HistoryPageSurvivesDeletedParentTests(TestCase):
+	"""The recovery case must not 500.
+
+	A historical row outlives its parent on purpose. The admin history page calls
+	str() on an instance rebuilt from that row, so a __str__ dereferencing a
+	deleted foreign key raised DoesNotExist and the page died -- in exactly the
+	situation someone was trying to recover from.
+	"""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Britannia Primary")
+		self.root = User.objects.create_superuser(
+			username="root", email="root@example.com", password="pw"
+		)
+		self.client.force_login(self.root)
+
+	def test_indepth_response_history_renders_after_its_review_is_deleted(self):
+		area = InDepthArea.objects.create(name="Achievement", order=1)
+		standard = InDepthStandard.objects.create(
+			area=area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		ja = InDepthJudgementArea.objects.create(
+			standard=standard, statement="Pupils achieve well.", order=1
+		)
+		review = InDepthReview.objects.create(school=self.school, year=2026, area=area)
+		response = InDepthResponse.objects.create(
+			review=review, judgement_area=ja, rag="green",
+			evidence_text="THE LOST WRITE UP",
+		)
+		response.evidence_text = "THE LOST WRITE UP, REVISED"
+		response.save()
+		pk = response.pk
+
+		review.delete()  # cascades the live response away
+
+		self.assertEqual(InDepthResponse.objects.filter(pk=pk).count(), 0)
+		self.assertTrue(InDepthResponse.history.filter(id=pk).exists())
+		page = self.client.get(f"/admin/review/indepthresponse/{pk}/history/")
+		self.assertEqual(page.status_code, 200)
+
+	def test_str_does_not_raise_when_the_parent_is_gone(self):
+		area = InDepthArea.objects.create(name="Inclusion", order=2)
+		standard = InDepthStandard.objects.create(
+			area=area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		ja = InDepthJudgementArea.objects.create(
+			standard=standard, statement="All pupils belong.", order=1
+		)
+		review = InDepthReview.objects.create(school=self.school, year=2026, area=area)
+		response = InDepthResponse.objects.create(
+			review=review, judgement_area=ja, evidence_text="text"
+		)
+		pk = response.pk
+		review.delete()
+		rebuilt = InDepthResponse.history.filter(id=pk).first().instance
+		# The assertion is simply that this does not raise.
+		self.assertIn("deleted review", str(rebuilt))
+
+
+class HistoryDiffIsReadableTests(TestCase):
+	"""The diff must show the commentary, not elide it.
+
+	django-simple-history truncates each changed value to 100 characters, so a
+	150-word write-up rendered as "Attendance at safeguard[719 chars]uary." --
+	the page hid the very text you opened it to recover.
+	"""
+
+	def test_a_long_commentary_is_not_truncated_in_the_history_diff(self):
+		school = School.objects.create(name="Britannia Primary")
+		category = Category.objects.create(name="Safeguarding", order=10)
+		period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		long_text = (
+			"Attendance at safeguarding training was 100 percent for teaching staff. "
+			* 12
+		) + "ENDMARKER"
+		self.assertGreater(len(long_text), 800)
+
+		evaluation = Evaluation.objects.create(
+			school=school, period=period, category=category,
+			judgement_evidence="Short note.",
+		)
+		evaluation.judgement_evidence = long_text
+		evaluation.save()
+
+		root = User.objects.create_superuser(
+			username="root", email="root@example.com", password="pw"
+		)
+		self.client.force_login(root)
+		page = self.client.get(f"/admin/review/evaluation/{evaluation.pk}/history/")
+		self.assertEqual(page.status_code, 200)
+		body = page.content.decode()
+		self.assertNotIn("chars]", body)
+		self.assertIn("ENDMARKER", body)
+
+
+class AdminSchoolChoicesAreScopedTests(TestCase):
+	"""A user must not be able to move their own record into another school.
+
+	get_queryset stops them opening someone else's record; nothing stopped them
+	reassigning their own, because the school dropdown listed the whole Trust.
+	"""
+
+	def setUp(self):
+		self.mine = School.objects.create(name="Mine Primary")
+		self.theirs = School.objects.create(name="Theirs Primary")
+		self.staff = User.objects.create_user(
+			username="staff", email="staff@example.com", is_staff=True
+		)
+		profile = SchoolProfile.objects.create(user=self.staff, school=self.mine)
+		profile.schools.add(self.mine)
+		self.staff.user_permissions.add(
+			Permission.objects.get(
+				content_type__app_label="review", codename="change_evaluation"
+			)
+		)
+
+	def _school_choices_for(self, user):
+		request = RequestFactory().get("/admin/review/evaluation/1/change/")
+		request.user = user
+		model_admin = EvaluationAdmin(Evaluation, django_admin.site)
+		field = model_admin.formfield_for_foreignkey(
+			Evaluation._meta.get_field("school"), request
+		)
+		return list(field.queryset)
+
+	def test_staff_user_is_offered_only_their_own_schools(self):
+		self.assertEqual(self._school_choices_for(self.staff), [self.mine])
+
+	def test_superuser_is_offered_every_school(self):
+		root = User.objects.create_superuser(
+			username="root", email="root@example.com", password="pw"
+		)
+		self.assertCountEqual(
+			self._school_choices_for(root), [self.mine, self.theirs]
+		)
+
+
+class RiskSignOffFieldsAreGatedTests(TestCase):
+	"""close_qa_by / close_qa_at are the CFO's signature, not a form field.
+
+	Anyone holding change_risk could set them and manufacture the sign-off the
+	Committee relies on.
+	"""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Britannia Primary")
+		self.staff = User.objects.create_user(
+			username="principal", email="p@example.com", is_staff=True
+		)
+		profile = SchoolProfile.objects.create(user=self.staff, school=self.school)
+		profile.schools.add(self.school)
+
+	def _readonly_for(self, user):
+		request = RequestFactory().get("/admin/review/risk/1/change/")
+		request.user = user
+		return RiskAdmin(Risk, django_admin.site).get_readonly_fields(request)
+
+	def test_principal_cannot_edit_the_sign_off_fields(self):
+		readonly = self._readonly_for(self.staff)
+		self.assertIn("close_qa_by", readonly)
+		self.assertIn("close_qa_at", readonly)
+
+	def test_a_qa_user_can_edit_them(self):
+		self.staff.user_permissions.add(
+			Permission.objects.get(
+				content_type__app_label="review", codename="qa_risk"
+			)
+		)
+		refreshed = User.objects.get(pk=self.staff.pk)
+		readonly = self._readonly_for(refreshed)
+		self.assertNotIn("close_qa_by", readonly)
+		self.assertNotIn("close_qa_at", readonly)

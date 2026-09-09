@@ -8,7 +8,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, ValidationError
 from django.http import Http404
 from django.db import transaction
 from django.db.models import Q
@@ -16,7 +16,9 @@ from django.shortcuts import redirect, render
 from django.urls import path
 
 from simple_history.admin import SimpleHistoryAdmin
+from simple_history.template_utils import HistoricalRecordContextHelper
 
+from .permissions import user_can_qa_risk
 from .models import (
 	Branding,
 	Category,
@@ -66,6 +68,23 @@ def _request_schools(request):
 	return School.objects.filter(id__in=allowed_ids)
 
 
+
+class ScopesSchoolChoicesMixin:
+	"""Restrict the `school` dropdown to the schools the user may access.
+
+	`get_queryset` stops someone opening another school's record, but nothing
+	stopped them reassigning their OWN record INTO another school: the dropdown
+	listed every school in the Trust. That is a cross-school write by a different
+	door, and it applies to the ordinary change form as much as to the history
+	revert page. Superusers keep the full list, as they do everywhere else.
+	"""
+
+	def formfield_for_foreignkey(self, db_field, request, **kwargs):
+		if db_field.name == "school" and not request.user.is_superuser:
+			kwargs["queryset"] = _request_schools(request)
+		return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
 class ScopedHistoryAdminMixin:
 	"""Keep the admin's History tab inside the user's own schools.
 
@@ -101,6 +120,31 @@ class ScopedHistoryAdminMixin:
 		return qs.filter(
 			**{f"{self.history_school_path}__in": _request_schools(request)}
 		)
+
+	# The library truncates each changed value to 100 characters in the diff, so a
+	# 150-word commentary rendered as "Attendance at safeguarding trai[719 chars]uary."
+	# -- the page hid the very text you opened it to recover. These fields are the
+	# whole point of the trail, so show them.
+	history_delta_change_chars = 4000
+
+	def get_historical_record_context_helper(self, request, historical_record):
+		return HistoricalRecordContextHelper(
+			self.model,
+			historical_record,
+			max_displayed_delta_change_chars=self.history_delta_change_chars,
+		)
+
+	def history_view_title(self, request, obj):
+		"""Never let a deleted parent turn the history page into a 500.
+
+		The title calls str() on an instance rebuilt from a historical row. The
+		models' __str__ methods are defensive now, but a third-party page that
+		crashes on the recovery path is worth belt and braces.
+		"""
+		try:
+			return super().history_view_title(request, obj)
+		except ObjectDoesNotExist:
+			return f"Change history: {self.model._meta.verbose_name} #{obj.pk}"
 
 	def history_form_view(self, request, object_id, version_id, extra_context=None):
 		"""Guard the revert view, which the library leaves wide open.
@@ -252,7 +296,7 @@ class ReviewPeriodAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 
 @admin.register(Evaluation)
-class EvaluationAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+class EvaluationAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = (
 		"school",
 		"period",
@@ -333,7 +377,7 @@ class InDepthSubSectionAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 
 @admin.register(InDepthReview)
-class InDepthReviewAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+class InDepthReviewAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "year", "area", "step", "overall_grade", "has_reflection", "updated_at", "updated_by")
 	list_filter = ("year", "area", "school", "step")
 	ordering = ("-year", "school__name", "area__order", "area__name")
@@ -458,7 +502,7 @@ class RiskRatingInline(admin.TabularInline):
 
 
 @admin.register(Risk)
-class RiskAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+class RiskAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = (
 		"title",
 		"school",
@@ -501,6 +545,20 @@ class RiskAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	def get_queryset(self, request):
 		qs = super().get_queryset(request)
 		return qs.filter(school__in=_request_schools(request))
+
+	def get_readonly_fields(self, request, obj=None):
+		"""The CFO sign-off is a QA signature, not a field anyone can fill in.
+
+		The fieldset was editable by anyone holding change_risk, so a Principal
+		could set close_qa_by and close_qa_at on their own risk and manufacture
+		the sign-off the Committee relies on -- through the change form or the
+		history revert page. Read-only unless the user actually holds
+		review.qa_risk.
+		"""
+		readonly = tuple(super().get_readonly_fields(request, obj))
+		if not user_can_qa_risk(request.user):
+			readonly += ("close_qa_by", "close_qa_at")
+		return readonly
 
 
 @admin.register(RiskRating)
@@ -557,7 +615,7 @@ class VisibilityGridForm(forms.Form):
 
 
 @admin.register(OperationsMetricVisibility)
-class OperationsMetricVisibilityAdmin(admin.ModelAdmin):
+class OperationsMetricVisibilityAdmin(ScopesSchoolChoicesMixin, admin.ModelAdmin):
 	"""Per-school pilot switches.
 
 	The grid view is the one the client will actually use between terms: pick a
@@ -675,7 +733,7 @@ class OperationsMetricVisibilityAdmin(admin.ModelAdmin):
 
 
 @admin.register(OperationsEntry)
-class OperationsEntryAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+class OperationsEntryAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "period", "metric", "value", "band_choice", "rag", "source", "recorded_at")
 	list_filter = ("rag", "source", "school", "period", "metric__domain", "metric")
 	search_fields = ("commentary", "manual_red_reason", "metric__name")
@@ -697,7 +755,7 @@ class ComplaintThemeAdmin(admin.ModelAdmin):
 
 
 @admin.register(StatutoryComplianceItem)
-class StatutoryComplianceItemAdmin(admin.ModelAdmin):
+class StatutoryComplianceItemAdmin(ScopesSchoolChoicesMixin, admin.ModelAdmin):
 	list_display = ("school", "label", "next_due_date", "action_plan_in_place", "updated_at")
 	list_filter = ("school", "item", "action_plan_in_place")
 	ordering = ("school__name", "item")
@@ -709,7 +767,7 @@ class StatutoryComplianceItemAdmin(admin.ModelAdmin):
 
 
 @admin.register(GrantPublication)
-class GrantPublicationAdmin(admin.ModelAdmin):
+class GrantPublicationAdmin(ScopesSchoolChoicesMixin, admin.ModelAdmin):
 	list_display = ("school", "year", "label", "status", "updated_at")
 	list_filter = ("school", "year", "grant", "status")
 	ordering = ("school__name", "-year", "grant")
@@ -721,7 +779,7 @@ class GrantPublicationAdmin(admin.ModelAdmin):
 
 
 @admin.register(OperationsNote)
-class OperationsNoteAdmin(ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+class OperationsNoteAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "period", "updated_at", "updated_by")
 	list_filter = ("school", "period")
 	search_fields = ("text",)
