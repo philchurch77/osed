@@ -2,6 +2,7 @@ Django==6.0.5
 openpyxl==3.1.5
 Pillow
 django-allauth
+django-simple-history==3.13.0
 django-storages[azure]
 whitenoise
 dj-database-url

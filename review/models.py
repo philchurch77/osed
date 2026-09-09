@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from simple_history.models import HistoricalRecords
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.utils import timezone
 
@@ -119,6 +120,11 @@ class Evaluation(models.Model):
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Version trail. The auto_now stamp is excluded: it changes on every save and
+    # would make each history row unique for no gain, and history_date records the
+    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    history = HistoricalRecords(excluded_fields=["updated_at"])
+
     updated_by = models.ForeignKey(
         User,
         null=True,
@@ -248,6 +254,11 @@ class InDepthReview(models.Model):
     needs_attention_comment = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Version trail. The auto_now stamp is excluded: it changes on every save and
+    # would make each history row unique for no gain, and history_date records the
+    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    history = HistoricalRecords(excluded_fields=["updated_at"])
+
     updated_by = models.ForeignKey(
         User,
         null=True,
@@ -312,6 +323,11 @@ class InDepthResponse(models.Model):
     rag = models.CharField(max_length=10, choices=Rag.choices, blank=True, default="")
     next_steps = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
+    # Version trail. The auto_now stamp is excluded: it changes on every save and
+    # would make each history row unique for no gain, and history_date records the
+    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    history = HistoricalRecords(excluded_fields=["updated_at"])
+
 
     class Meta:
         verbose_name = "In-depth response"
@@ -568,6 +584,11 @@ class Risk(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Version trail. The auto_now stamp is excluded: it changes on every save and
+    # would make each history row unique for no gain, and history_date records the
+    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    history = HistoricalRecords(excluded_fields=["updated_at"])
+
 
     class Meta:
         ordering = ("status", "-created_at")
@@ -856,6 +877,11 @@ class OperationsEntry(models.Model):
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="operations_entries"
     )
     recorded_at = models.DateTimeField(auto_now=True)
+    # Version trail. The auto_now stamp is excluded: it changes on every save and
+    # would make each history row unique for no gain, and history_date records the
+    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    history = HistoricalRecords(excluded_fields=["recorded_at"])
+
 
     class Meta:
         ordering = ("-period__year", "-period__round", "metric__order")
@@ -976,6 +1002,11 @@ class OperationsNote(models.Model):
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="operations_notes"
     )
     updated_at = models.DateTimeField(auto_now=True)
+    # Version trail. The auto_now stamp is excluded: it changes on every save and
+    # would make each history row unique for no gain, and history_date records the
+    # same fact. created_at is auto_now_add, so it is constant and worth keeping.
+    history = HistoricalRecords(excluded_fields=["updated_at"])
+
 
     class Meta:
         ordering = ("-period__year", "-period__round")

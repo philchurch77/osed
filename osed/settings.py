@@ -118,6 +118,10 @@ INSTALLED_APPS = [
     'allauth.socialaccount',
     'allauth.socialaccount.providers.microsoft',
 
+    # Row-level version history on the models holding typed commentary. Provides
+    # the admin History tab and Model.history.as_of(<datetime>).
+    'simple_history',
+
     'review',
 ]
 
@@ -134,6 +138,10 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    # Must sit after AuthenticationMiddleware: it reads request.user to stamp
+    # history_user. Changes made by a management command or the shell record no
+    # user, which is correct -- there was no request.
+    'simple_history.middleware.HistoryRequestMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
