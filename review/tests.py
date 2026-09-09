@@ -3934,18 +3934,24 @@ class RemainingAdminCascadeGuardsTests(TestCase):
 
 
 class PruneHistoryCommandTests(TestCase):
-	"""The retention policy: dry run by default, and never near a live row."""
+	"""The retention policy: dry run by default, never near a live row, and the
+	newest snapshot of every record survives however old it is."""
 
 	def setUp(self):
 		self.school = School.objects.create(name="Britannia Primary")
-		category = Category.objects.create(name="Safeguarding", order=10)
-		period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		self.category = Category.objects.create(name="Safeguarding", order=10)
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
 		self.evaluation = Evaluation.objects.create(
-			school=self.school, period=period, category=category, judgement_evidence="v1",
+			school=self.school, period=self.period, category=self.category,
+			judgement_evidence="v1",
 		)
 		self.evaluation.judgement_evidence = "v2"
 		self.evaluation.save()
 		self.assertEqual(Evaluation.history.count(), 2)
+
+	def _prune_everything_old(self):
+		# --days 0 makes every existing row "old", so this is the harshest prune.
+		call_command("prune_history", "--days", "0", "--apply", stdout=io.StringIO())
 
 	def test_dry_run_is_the_default_and_deletes_nothing(self):
 		out = io.StringIO()
@@ -3953,13 +3959,47 @@ class PruneHistoryCommandTests(TestCase):
 		self.assertEqual(Evaluation.history.count(), 2)
 		self.assertIn("DRY RUN", out.getvalue())
 
-	def test_apply_deletes_old_history_but_never_the_live_row(self):
+	def test_apply_removes_old_versions_but_never_the_live_row(self):
 		before = _snapshot_tracked_rows()
-		call_command("prune_history", "--days", "0", "--apply", stdout=io.StringIO())
-		self.assertEqual(Evaluation.history.count(), 0)
+		self._prune_everything_old()
 		self.assertEqual(_snapshot_tracked_rows(), before)
 		self.evaluation.refresh_from_db()
 		self.assertEqual(self.evaluation.judgement_evidence, "v2")
+
+	def test_newest_snapshot_of_every_record_survives_a_zero_day_prune(self):
+		other_period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=2)
+		other = Evaluation.objects.create(
+			school=self.school, period=other_period, category=self.category,
+			judgement_evidence="a",
+		)
+		other.judgement_evidence = "b"
+		other.save()
+		other.judgement_evidence = "c"
+		other.save()
+		self.assertEqual(Evaluation.history.count(), 5)
+
+		self._prune_everything_old()
+
+		remaining = {row.id: row for row in Evaluation.history.all()}
+		self.assertEqual(len(remaining), 2, "exactly one snapshot per record should remain")
+		self.assertEqual(remaining[self.evaluation.pk].judgement_evidence, "v2")
+		self.assertEqual(remaining[other.pk].judgement_evidence, "c")
+
+	def test_a_deleted_records_final_snapshot_is_kept(self):
+		pk = self.evaluation.pk
+		self.evaluation.delete()
+		self.assertEqual(Evaluation.history.filter(id=pk).count(), 3)
+
+		self._prune_everything_old()
+
+		survivors = Evaluation.history.filter(id=pk)
+		self.assertEqual(survivors.count(), 1)
+		self.assertEqual(survivors.get().history_type, "-")
+		self.assertEqual(survivors.get().judgement_evidence, "v2")
+
+	def test_rows_inside_the_window_are_untouched(self):
+		call_command("prune_history", "--days", "90", "--apply", stdout=io.StringIO())
+		self.assertEqual(Evaluation.history.count(), 2)
 
 	def test_default_window_is_three_months(self):
 		from review.management.commands.prune_history import RETENTION_DAYS
