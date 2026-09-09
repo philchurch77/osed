@@ -874,6 +874,16 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 					if _is_stale_write(current, rendered_at):
 						stale += 1
 						continue
+					# Nothing to write when this category is unchanged. Without this
+					# every save rewrote all eight rows, stamping updated_by on seven
+					# the user never touched and leaving a no-op history entry on each.
+					if (
+						current is not None
+						and current.rating == rating
+						and current.judgement_evidence == judgement_evidence
+						and current.to_progress == to_progress
+					):
+						continue
 
 					Evaluation.objects.update_or_create(
 						school=school,

@@ -377,7 +377,7 @@ class InDepthSubSectionAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 
 @admin.register(InDepthReview)
-class InDepthReviewAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
+class InDepthReviewAdmin(ProtectsWrittenWorkMixin, ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, SimpleHistoryAdmin):
 	list_display = ("school", "year", "area", "step", "overall_grade", "has_reflection", "updated_at", "updated_by")
 	list_filter = ("year", "area", "school", "step")
 	ordering = ("-year", "school__name", "area__order", "area__name")
@@ -398,6 +398,12 @@ class InDepthReviewAdmin(ScopesSchoolChoicesMixin, ScopedHistoryAdminMixin, Simp
 	@admin.display(boolean=True, description="Reflection")
 	def has_reflection(self, obj):
 		return bool(obj.qa_reflection)
+
+	def written_work_count(self, obj) -> int:
+		# Its responses cascade with it, and the review row itself carries the
+		# reflection and Needs Attention comment.
+		own_text = int(bool(obj.qa_reflection or obj.needs_attention_comment))
+		return InDepthResponse.objects.filter(review=obj).count() + own_text
 
 	def save_model(self, request, obj, form, change):
 		obj.updated_by = request.user
@@ -589,13 +595,18 @@ class OperationsMetricBandInline(admin.TabularInline):
 
 
 @admin.register(OperationsMetric)
-class OperationsMetricAdmin(admin.ModelAdmin):
+class OperationsMetricAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("order", "name", "domain", "rule", "evidence", "cycle", "band_count")
 	list_filter = ("domain", "evidence", "cycle", "rule")
 	ordering = ("domain__order", "order")
 	search_fields = ("name", "key", "benchmark_source")
 	list_select_related = ("domain",)
 	prepopulated_fields = {"key": ("name",)}
+
+	def written_work_count(self, obj) -> int:
+		# OperationsEntry.metric is CASCADE: deleting a metric took every school's
+		# commentary against it. The confirmation page only said "entries: N".
+		return OperationsEntry.objects.filter(metric=obj).count()
 	inlines = [OperationsMetricBandInline]
 
 	@admin.display(description="Bands")

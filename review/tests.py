@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 
 from datetime import timedelta
 from decimal import Decimal
@@ -42,6 +43,8 @@ from .models import (
 from .admin import (
 	CategoryAdmin,
 	EvaluationAdmin,
+	InDepthReviewAdmin,
+	OperationsMetricAdmin,
 	RiskAdmin,
 	InDepthAreaAdmin,
 	InDepthJudgementAreaAdmin,
@@ -3761,3 +3764,203 @@ class RiskSignOffFieldsAreGatedTests(TestCase):
 		readonly = self._readonly_for(refreshed)
 		self.assertNotIn("close_qa_by", readonly)
 		self.assertNotIn("close_qa_at", readonly)
+
+
+# ---------------------------------------------------------------------------
+# Nothing that runs on a deploy, on a save, or on a history prune may touch a
+# row a person has written. These take a snapshot of every version-tracked row
+# and diff it, rather than asserting one field on one model.
+# ---------------------------------------------------------------------------
+
+_TRACKED_MODELS = (Evaluation, InDepthReview, InDepthResponse, OperationsEntry, OperationsNote, Risk)
+_AUTO_STAMPS = {"updated_at", "recorded_at", "created_at"}
+
+
+def _snapshot_tracked_rows():
+	"""Every concrete field of every tracked row, minus the auto timestamps."""
+	out = {}
+	for model in _TRACKED_MODELS:
+		for row in model.objects.all():
+			out[(model.__name__, row.pk)] = {
+				f.attname: getattr(row, f.attname)
+				for f in model._meta.concrete_fields
+				if f.name not in _AUTO_STAMPS
+			}
+	return out
+
+
+def _run_full_deploy_chain():
+	"""The seed commands startup.sh runs, in its order (migrate is implicit)."""
+	importlib.reload(importlib.import_module("review.management.commands.load_indepth_blueprint"))
+	for command in (
+		"ensure_schema", "seed_categories", "load_indepth_blueprint", "load_indepth_criteria",
+		"seed_trust_categories", "seed_operations_metrics", "import_indepth_workbooks",
+		"seed_schools", "seed_branding",
+	):
+		call_command(command, verbosity=0)
+
+
+def _populate_every_tracked_model(school):
+	"""Written work on all six tracked models for one school."""
+	periods = [ReviewPeriod.objects.get_or_create(year=2026, round=r)[0] for r in (1, 2, 3)]
+	for period in periods:
+		for category in Category.objects.filter(is_active=True):
+			Evaluation.objects.create(
+				school=school, period=period, category=category, rating=3,
+				judgement_evidence=f"EV {period.round} {category.name}", to_progress="NEXT",
+			)
+		OperationsNote.objects.create(school=school, period=period, text=f"NOTE {period.round}")
+		for metric in OperationsMetric.objects.all()[:3]:
+			OperationsEntry.objects.create(
+				school=school, period=period, metric=metric, commentary=f"OPS {metric.key}",
+			)
+	for area in InDepthArea.objects.filter(standards__isnull=False).distinct()[:3]:
+		review = InDepthReview.objects.create(
+			school=school, year=2026, area=area, overall_grade="expected_standard",
+			qa_reflection=f"REFL {area.name}", needs_attention_comment="NA",
+		)
+		for ja in InDepthJudgementArea.objects.filter(standard__area=area, is_flat=False)[:2]:
+			InDepthResponse.objects.create(
+				review=review, judgement_area=ja, rag="green",
+				evidence_text=f"IDR {ja.pk}", next_steps="NS",
+			)
+	Risk.objects.create(
+		school=school, category=TrustCategory.objects.first(), title="RISK", mitigation="MIT",
+	)
+
+
+class DeployChainLeavesWrittenWorkUntouchedTests(TestCase):
+	"""Two consecutive full deploy chains must not alter a single tracked row."""
+
+	def test_two_deploys_change_nothing(self):
+		_run_full_deploy_chain()
+		school, _ = School.objects.get_or_create(name="Britannia Primary and Nursery School")
+		_populate_every_tracked_model(school)
+		before = _snapshot_tracked_rows()
+		self.assertGreater(len(before), 40)
+
+		_run_full_deploy_chain()
+		_run_full_deploy_chain()
+
+		after = _snapshot_tracked_rows()
+		self.assertEqual(set(before), set(after), "rows were lost on deploy")
+		self.assertEqual(before, after, "row contents changed on deploy")
+
+
+class EvaluationSaveTouchesOnlyChangedRowsTests(TestCase):
+	"""Saving the evaluation page must write only the categories that changed.
+
+	It used to rewrite all eight rows on every save, stamping updated_by on
+	seven the user never touched and leaving a no-op history entry on each.
+	"""
+
+	def setUp(self):
+		call_command("seed_categories", verbosity=0)
+		self.school = School.objects.create(name="Britannia Primary")
+		self.user = User.objects.create_user(username="head", email="head@example.com")
+		profile = SchoolProfile.objects.create(user=self.user, school=self.school)
+		profile.schools.add(self.school)
+		for codename in ("add_evaluation", "change_evaluation"):
+			self.user.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		self.categories = list(Category.objects.filter(is_active=True).order_by("order", "name"))
+		for category in self.categories:
+			Evaluation.objects.create(
+				school=self.school, period=self.period, category=category,
+				rating=3, judgement_evidence=f"ORIGINAL {category.name}",
+			)
+
+	def test_only_the_edited_category_is_written(self):
+		target = self.categories[0]
+		data = {
+			"school_id": str(self.school.id), "year": "2026-2027", "round": "1",
+			"form-TOTAL_FORMS": str(len(self.categories)),
+			"form-INITIAL_FORMS": str(len(self.categories)),
+			"form-MIN_NUM_FORMS": "0", "form-MAX_NUM_FORMS": "1000",
+		}
+		for i, category in enumerate(self.categories):
+			current = Evaluation.objects.get(school=self.school, period=self.period, category=category)
+			data[f"form-{i}-category_id"] = str(category.id)
+			data[f"form-{i}-rating"] = str(current.rating)
+			data[f"form-{i}-judgement_evidence"] = (
+				"EDITED" if category == target else current.judgement_evidence
+			)
+			data[f"form-{i}-to_progress"] = current.to_progress
+
+		self.client.force_login(self.user)
+		self.assertEqual(self.client.post(reverse("review:evaluation"), data=data).status_code, 302)
+
+		for category in self.categories:
+			row = Evaluation.objects.get(school=self.school, period=self.period, category=category)
+			if category == target:
+				self.assertEqual(row.judgement_evidence, "EDITED")
+				self.assertEqual(row.updated_by, self.user)
+				self.assertEqual(row.history.count(), 2)
+			else:
+				self.assertEqual(row.judgement_evidence, f"ORIGINAL {category.name}")
+				self.assertIsNone(row.updated_by, f"{category.name} was stamped though untouched")
+				self.assertEqual(row.history.count(), 1, f"{category.name} gained a no-op version")
+
+
+class RemainingAdminCascadeGuardsTests(TestCase):
+	"""OperationsMetric and InDepthReview cascade into commentary too."""
+
+	def setUp(self):
+		call_command("seed_trust_categories", verbosity=0)
+		call_command("seed_operations_metrics", verbosity=0)
+		root = User.objects.create_superuser(username="root", email="root@example.com", password="pw")
+		self.request = RequestFactory().get("/admin/")
+		self.request.user = root
+		self.school = School.objects.create(name="Britannia Primary")
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+
+	def test_metric_with_entries_cannot_be_deleted(self):
+		used, unused = list(OperationsMetric.objects.all()[:2])
+		OperationsEntry.objects.create(school=self.school, period=self.period, metric=used, commentary="text")
+		model_admin = OperationsMetricAdmin(OperationsMetric, django_admin.site)
+		self.assertFalse(model_admin.has_delete_permission(self.request, used))
+		self.assertTrue(model_admin.has_delete_permission(self.request, unused))
+		self.assertNotIn("delete_selected", model_admin.get_actions(self.request))
+
+	def test_review_with_written_work_cannot_be_deleted(self):
+		area = InDepthArea.objects.create(name="Achievement", order=1)
+		with_text = InDepthReview.objects.create(school=self.school, year=2026, area=area, qa_reflection="REFL")
+		empty = InDepthReview.objects.create(school=self.school, year=2027, area=area)
+		model_admin = InDepthReviewAdmin(InDepthReview, django_admin.site)
+		self.assertFalse(model_admin.has_delete_permission(self.request, with_text))
+		self.assertTrue(model_admin.has_delete_permission(self.request, empty))
+
+
+class PruneHistoryCommandTests(TestCase):
+	"""The retention policy: dry run by default, and never near a live row."""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Britannia Primary")
+		category = Category.objects.create(name="Safeguarding", order=10)
+		period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		self.evaluation = Evaluation.objects.create(
+			school=self.school, period=period, category=category, judgement_evidence="v1",
+		)
+		self.evaluation.judgement_evidence = "v2"
+		self.evaluation.save()
+		self.assertEqual(Evaluation.history.count(), 2)
+
+	def test_dry_run_is_the_default_and_deletes_nothing(self):
+		out = io.StringIO()
+		call_command("prune_history", "--days", "0", stdout=out)
+		self.assertEqual(Evaluation.history.count(), 2)
+		self.assertIn("DRY RUN", out.getvalue())
+
+	def test_apply_deletes_old_history_but_never_the_live_row(self):
+		before = _snapshot_tracked_rows()
+		call_command("prune_history", "--days", "0", "--apply", stdout=io.StringIO())
+		self.assertEqual(Evaluation.history.count(), 0)
+		self.assertEqual(_snapshot_tracked_rows(), before)
+		self.evaluation.refresh_from_db()
+		self.assertEqual(self.evaluation.judgement_evidence, "v2")
+
+	def test_default_window_is_three_months(self):
+		from review.management.commands.prune_history import RETENTION_DAYS
+		self.assertEqual(RETENTION_DAYS, 90)
