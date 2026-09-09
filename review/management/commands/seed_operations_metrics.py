@@ -276,7 +276,24 @@ class Command(BaseCommand):
         "every metric stays hidden until someone turns it on per school."
     )
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help=(
+                "Re-apply the seed values to metrics, bands and complaint themes "
+                "that already exist, discarding any admin edits. Off by default "
+                "so a deploy cannot silently revert a correction."
+            ),
+        )
+
     def handle(self, *args, **options):
+        # Seed values are applied on creation. On a row that already exists they
+        # are left alone unless --force, because these fields are admin-editable
+        # and a deploy that overwrites them silently undoes the client's own
+        # corrections -- step_change and the turnover comparators exist
+        # specifically so they can be fixed without a deploy.
+        force: bool = options["force"]
         missing_domains: list[str] = []
         created = updated = 0
 
@@ -287,42 +304,46 @@ class Command(BaseCommand):
                     missing_domains.append(spec["domain"])
                     continue
 
+                metric_values = {
+                    "domain": domain,
+                    "name": spec["name"],
+                    "benchmark_source": spec.get("benchmark_source", ""),
+                    "rule": spec["rule"],
+                    "evidence": spec.get("evidence", JUDGEMENT),
+                    "cycle": spec.get("cycle", TERMLY),
+                    "value_label": spec.get("value_label", ""),
+                    "help_text": spec.get("help_text", ""),
+                    "order": spec["order"],
+                }
                 metric, was_created = OperationsMetric.objects.update_or_create(
                     key=spec["key"],
-                    defaults={
-                        "domain": domain,
-                        "name": spec["name"],
-                        "benchmark_source": spec.get("benchmark_source", ""),
-                        "rule": spec["rule"],
-                        "evidence": spec.get("evidence", JUDGEMENT),
-                        "cycle": spec.get("cycle", TERMLY),
-                        "value_label": spec.get("value_label", ""),
-                        "help_text": spec.get("help_text", ""),
-                        "order": spec["order"],
-                    },
+                    defaults=metric_values if force else {},
+                    create_defaults=metric_values,
                 )
                 created += int(was_created)
                 updated += int(not was_created)
 
                 wanted_phases = {b.get("phase", "") for b in spec["bands"]}
                 for band in spec["bands"]:
+                    band_values = {
+                        "green_descriptor": band.get("green_descriptor", ""),
+                        "amber_descriptor": band.get("amber_descriptor", ""),
+                        "red_descriptor": band.get("red_descriptor", ""),
+                        "green_min": band.get("green_min"),
+                        "green_max": band.get("green_max"),
+                        "amber_min": band.get("amber_min"),
+                        "amber_max": band.get("amber_max"),
+                        "amber_tolerance": band.get("amber_tolerance"),
+                        "comparator_value": band.get("comparator_value"),
+                        "comparator_year": band.get("comparator_year", ""),
+                        "comparator_source": band.get("comparator_source", ""),
+                        "step_change": band.get("step_change", 3),
+                    }
                     OperationsMetricBand.objects.update_or_create(
                         metric=metric,
                         phase=band.get("phase", ""),
-                        defaults={
-                            "green_descriptor": band.get("green_descriptor", ""),
-                            "amber_descriptor": band.get("amber_descriptor", ""),
-                            "red_descriptor": band.get("red_descriptor", ""),
-                            "green_min": band.get("green_min"),
-                            "green_max": band.get("green_max"),
-                            "amber_min": band.get("amber_min"),
-                            "amber_max": band.get("amber_max"),
-                            "amber_tolerance": band.get("amber_tolerance"),
-                            "comparator_value": band.get("comparator_value"),
-                            "comparator_year": band.get("comparator_year", ""),
-                            "comparator_source": band.get("comparator_source", ""),
-                            "step_change": band.get("step_change", 3),
-                        },
+                        defaults=band_values if force else {},
+                        create_defaults=band_values,
                     )
                 # Drop bands that are no longer in the seed, so removing a phase
                 # band here actually removes it (this is how Primary staff costs
@@ -330,8 +351,11 @@ class Command(BaseCommand):
                 metric.bands.exclude(phase__in=wanted_phases).delete()
 
             for order, name in enumerate(COMPLAINT_THEMES, start=1):
+                theme_values = {"order": order * 10, "is_active": True}
                 ComplaintTheme.objects.update_or_create(
-                    name=name, defaults={"order": order * 10, "is_active": True}
+                    name=name,
+                    defaults=theme_values if force else {},
+                    create_defaults=theme_values,
                 )
 
         total = OperationsMetric.objects.count()

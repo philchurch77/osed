@@ -6,9 +6,10 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
+from django.contrib import admin as django_admin
 from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 from django.utils.html import escape
 from django.utils import timezone
@@ -37,6 +38,11 @@ from .models import (
 	SchoolProfile,
 	StatutoryComplianceItem,
 	TrustCategory,
+)
+from .admin import (
+	CategoryAdmin,
+	InDepthAreaAdmin,
+	InDepthJudgementAreaAdmin,
 )
 from .management.commands._indepth_sync import sync_judgement_areas
 from .operations import (
@@ -791,9 +797,11 @@ class IndepthDeployReloadTests(TestCase):
 
 	@staticmethod
 	def _reload_blueprint_module():
-		# load_indepth_blueprint pops "subsections" off its module-level BLUEPRINT
-		# constant, so a second call in one process raises KeyError. On Azure each
-		# deploy is a fresh process; reloading the module reproduces that.
+		# Reload the command module between runs so each call starts from a fresh
+		# BLUEPRINT, exactly as a real deploy does (Azure runs a new process each
+		# time). The command no longer mutates that constant, so this is belt and
+		# braces rather than a workaround — keep it, so a future change that does
+		# mutate it cannot make these tests pass by accident.
 		importlib.reload(
 			importlib.import_module("review.management.commands.load_indepth_blueprint")
 		)
@@ -2621,3 +2629,485 @@ class LoginDoorsTests(TestCase):
 
 		_, sociallogin = self._pre_social_login("CFO@Example.com")
 		self.assertEqual(sociallogin.user.pk, cfo.pk)
+
+
+# ---------------------------------------------------------------------------
+# Data-loss regressions
+# ---------------------------------------------------------------------------
+
+
+class StoredRatingSurvivesRestrictedChoicesTests(TestCase):
+	"""A rating the admin allowed but a category's choice list does not.
+
+	Safeguarding offers only Met (1) / Not Met (5), while the admin lets any
+	1-5 through. A stored 3 drew no checked radio, so the browser posted no
+	`rating` key at all and the save wrote None straight over the judgement.
+	`_apply_category_specific_rating_choices` now appends the stored value —
+	and only the stored value — to the list.
+	"""
+
+	def setUp(self):
+		self.school = School.objects.create(name="Test School")
+		self.category = Category.objects.create(name="Leadership", order=1, is_active=True)
+		self.safeguarding = Category.objects.create(name="Safeguarding", order=0, is_active=True)
+
+		self.staff = User.objects.create_user(username="staff", email="staff@example.com")
+		SchoolProfile.objects.create(user=self.staff, school=self.school)
+		self.staff.schoolprofile.schools.add(self.school)
+		for codename in ("add_evaluation", "change_evaluation"):
+			self.staff.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.autumn, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		ReviewPeriod.objects.get_or_create(year=2026, round=2)
+		ReviewPeriod.objects.get_or_create(year=2026, round=3)
+		self.client.force_login(self.staff)
+
+	def _dashboard_post(self, safeguarding_r1_rating):
+		"""Post the full 2 categories x 3 terms grid the template renders."""
+		return self.client.post(
+			reverse("review:dashboard"),
+			data={
+				"school_id": str(self.school.id),
+				"year": "2026-2027",
+				"form-TOTAL_FORMS": "6",
+				"form-INITIAL_FORMS": "0",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.safeguarding.id),
+				"form-0-round": "1",
+				"form-0-rating": safeguarding_r1_rating,
+				"form-1-category_id": str(self.safeguarding.id),
+				"form-1-round": "2",
+				"form-1-rating": "",
+				"form-2-category_id": str(self.safeguarding.id),
+				"form-2-round": "3",
+				"form-2-rating": "",
+				"form-3-category_id": str(self.category.id),
+				"form-3-round": "1",
+				"form-3-rating": "3",
+				"form-4-category_id": str(self.category.id),
+				"form-4-round": "2",
+				"form-4-rating": "",
+				"form-5-category_id": str(self.category.id),
+				"form-5-round": "3",
+				"form-5-rating": "",
+			},
+		)
+
+	# Catches: an unrenderable stored rating being rejected on the way back in,
+	# so an unrelated edit elsewhere on the grid destroys a Safeguarding grade.
+	def test_a_stored_safeguarding_rating_of_three_survives_a_dashboard_save(self):
+		Evaluation.objects.create(
+			school=self.school,
+			period=self.autumn,
+			category=self.safeguarding,
+			rating=3,
+		)
+
+		resp = self._dashboard_post("3")
+
+		self.assertEqual(resp.status_code, 302)
+		saved = Evaluation.objects.get(
+			school=self.school, period=self.autumn, category=self.safeguarding
+		)
+		self.assertEqual(saved.rating, 3)
+
+	# Catches: the leak in the other direction — widening the choice list far
+	# enough that a user can newly grade Safeguarding on the 1-5 scale.
+	def test_a_new_off_list_safeguarding_rating_is_still_rejected(self):
+		Evaluation.objects.create(
+			school=self.school,
+			period=self.autumn,
+			category=self.safeguarding,
+			rating=1,
+		)
+
+		resp = self._dashboard_post("3")
+
+		self.assertEqual(resp.status_code, 200)
+		saved = Evaluation.objects.get(
+			school=self.school, period=self.autumn, category=self.safeguarding
+		)
+		self.assertEqual(saved.rating, 1)
+
+	# Catches: the same nulling on the evaluation screen, which shares the helper
+	# and would take the commentary's rating with it.
+	def test_a_stored_safeguarding_rating_of_three_survives_an_evaluation_save(self):
+		Evaluation.objects.create(
+			school=self.school,
+			period=self.autumn,
+			category=self.safeguarding,
+			rating=3,
+			judgement_evidence="Single central record checked in September.",
+		)
+
+		resp = self.client.post(
+			reverse("review:evaluation"),
+			data={
+				"school_id": str(self.school.id),
+				"year": "2026-2027",
+				"round": "1",
+				"form-TOTAL_FORMS": "2",
+				"form-INITIAL_FORMS": "2",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.safeguarding.id),
+				"form-0-rating": "3",
+				"form-0-judgement_evidence": "Single central record checked in September.",
+				"form-0-to_progress": "",
+				"form-1-category_id": str(self.category.id),
+				"form-1-rating": "2",
+				"form-1-judgement_evidence": "",
+				"form-1-to_progress": "",
+			},
+		)
+
+		self.assertEqual(resp.status_code, 302)
+		saved = Evaluation.objects.get(
+			school=self.school, period=self.autumn, category=self.safeguarding
+		)
+		self.assertEqual(saved.rating, 3)
+		self.assertEqual(
+			saved.judgement_evidence, "Single central record checked in September."
+		)
+
+
+class StaleWriteGuardTests(TestCase):
+	"""A tab left open since yesterday posting over a colleague's newer work.
+
+	Both the evaluation and dashboard forms post every cell they rendered, not
+	just the one that changed, so a stale tab's empty commentary boxes were
+	written straight over whatever had been saved since. The templates now carry
+	`form_rendered_at` and the views skip any row touched after it.
+	"""
+
+	TAB_A_TEXT = "Attendance is improving; PA down 4 points on last term."
+	TAB_B_TEXT = "Governors reviewed the improvement plan in November."
+
+	def setUp(self):
+		self.school = School.objects.create(name="Test School")
+		self.first = Category.objects.create(name="Leadership", order=1, is_active=True)
+		self.second = Category.objects.create(name="Attendance", order=2, is_active=True)
+
+		self.staff = User.objects.create_user(username="staff", email="staff@example.com")
+		SchoolProfile.objects.create(user=self.staff, school=self.school)
+		self.staff.schoolprofile.schools.add(self.school)
+		for codename in ("add_evaluation", "change_evaluation"):
+			self.staff.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.autumn, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		self.client.force_login(self.staff)
+
+		self.now = timezone.now()
+		# Tab A's work, saved a minute ago. Tab B was drawn an hour ago.
+		self.fresh_row = self._evaluation(self.first, self.TAB_A_TEXT)
+		self._touch(self.fresh_row, self.now - timedelta(minutes=1))
+		self.old_row = self._evaluation(self.second, "Original next-steps note.")
+		self._touch(self.old_row, self.now - timedelta(hours=3))
+		self.tab_b_rendered_at = (self.now - timedelta(hours=1)).isoformat()
+
+	def _evaluation(self, category, text):
+		return Evaluation.objects.create(
+			school=self.school,
+			period=self.autumn,
+			category=category,
+			rating=3,
+			judgement_evidence=text,
+		)
+
+	@staticmethod
+	def _touch(row, when):
+		# updated_at is auto_now, so it has to be set with a queryset update.
+		Evaluation.objects.filter(pk=row.pk).update(updated_at=when)
+
+	def _evaluation_post(self, *, rendered_at, first_text, second_text):
+		data = {
+			"school_id": str(self.school.id),
+			"year": "2026-2027",
+			"round": "1",
+			"form-TOTAL_FORMS": "2",
+			"form-INITIAL_FORMS": "2",
+			"form-MIN_NUM_FORMS": "0",
+			"form-MAX_NUM_FORMS": "1000",
+			"form-0-category_id": str(self.first.id),
+			"form-0-rating": "3",
+			"form-0-judgement_evidence": first_text,
+			"form-0-to_progress": "",
+			"form-1-category_id": str(self.second.id),
+			"form-1-rating": "3",
+			"form-1-judgement_evidence": second_text,
+			"form-1-to_progress": "",
+		}
+		if rendered_at is not None:
+			data["form_rendered_at"] = rendered_at
+		return self.client.post(reverse("review:evaluation"), data=data)
+
+	def _text(self, category):
+		return Evaluation.objects.get(
+			school=self.school, period=self.autumn, category=category
+		).judgement_evidence
+
+	# Catches: the whole point — a stale tab blanking commentary saved since.
+	def test_a_stale_tab_does_not_blank_commentary_saved_after_it_was_opened(self):
+		resp = self._evaluation_post(
+			rendered_at=self.tab_b_rendered_at, first_text="", second_text=self.TAB_B_TEXT
+		)
+
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(self._text(self.first), self.TAB_A_TEXT)
+
+	# Catches: over-correcting into a guard that discards the whole submission,
+	# so the stale tab's own legitimate edit is silently dropped too.
+	def test_a_stale_tab_still_saves_its_edit_to_an_untouched_row(self):
+		resp = self._evaluation_post(
+			rendered_at=self.tab_b_rendered_at, first_text="", second_text=self.TAB_B_TEXT
+		)
+
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(self._text(self.second), self.TAB_B_TEXT)
+
+	# Catches: a cached template or an external poster losing its writes entirely
+	# because the new field is absent.
+	def test_a_post_without_the_timestamp_still_saves(self):
+		resp = self._evaluation_post(
+			rendered_at=None, first_text=self.TAB_B_TEXT, second_text=self.TAB_B_TEXT
+		)
+
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(self._text(self.first), self.TAB_B_TEXT)
+
+	# Catches: the guard freezing a row nobody else has touched, so a real edit
+	# looks saved and is not.
+	def test_a_freshly_rendered_page_still_overwrites(self):
+		resp = self._evaluation_post(
+			rendered_at=timezone.now().isoformat(),
+			first_text=self.TAB_B_TEXT,
+			second_text=self.TAB_B_TEXT,
+		)
+
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(self._text(self.first), self.TAB_B_TEXT)
+
+	# Catches: the dashboard grid, which posts 24 cells, reverting a rating.
+	def test_a_stale_dashboard_tab_does_not_revert_a_newer_rating(self):
+		Evaluation.objects.filter(pk=self.fresh_row.pk).update(rating=1)
+		self._touch(self.fresh_row, self.now - timedelta(minutes=1))
+
+		resp = self.client.post(
+			reverse("review:dashboard"),
+			data={
+				"school_id": str(self.school.id),
+				"year": "2026-2027",
+				"form_rendered_at": self.tab_b_rendered_at,
+				"form-TOTAL_FORMS": "6",
+				"form-INITIAL_FORMS": "0",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.first.id),
+				"form-0-round": "1",
+				"form-0-rating": "4",
+				"form-1-category_id": str(self.first.id),
+				"form-1-round": "2",
+				"form-1-rating": "",
+				"form-2-category_id": str(self.first.id),
+				"form-2-round": "3",
+				"form-2-rating": "",
+				"form-3-category_id": str(self.second.id),
+				"form-3-round": "1",
+				"form-3-rating": "2",
+				"form-4-category_id": str(self.second.id),
+				"form-4-round": "2",
+				"form-4-rating": "",
+				"form-5-category_id": str(self.second.id),
+				"form-5-round": "3",
+				"form-5-rating": "",
+			},
+		)
+
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(Evaluation.objects.get(pk=self.fresh_row.pk).rating, 1)
+		# The stale tab's edit to the row nobody touched still lands.
+		self.assertEqual(Evaluation.objects.get(pk=self.old_row.pk).rating, 2)
+
+
+class AdminDeleteProtectsWrittenWorkTests(TestCase):
+	"""The catalogue models all cascade into a school's written work.
+
+	Deleting a Category takes every school's judgement_evidence for it; an
+	InDepthArea takes its reviews and every response beneath them. The admin's
+	confirmation page counts objects, not terms of commentary, so nothing on
+	screen stops you. `ProtectsWrittenWorkMixin` refuses the delete instead.
+	"""
+
+	def setUp(self):
+		self.factory = RequestFactory()
+		self.superuser = User.objects.create_superuser(
+			"root", "root@example.com", "pw12345678"
+		)
+		self.school = School.objects.create(name="Test School")
+		self.period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+
+		self.used_category = Category.objects.create(name="Leadership", order=1)
+		self.unused_category = Category.objects.create(name="Spare", order=9)
+		Evaluation.objects.create(
+			school=self.school,
+			period=self.period,
+			category=self.used_category,
+			judgement_evidence="Three terms of commentary the admin cannot see.",
+		)
+
+		self.area = InDepthArea.objects.create(name="Achievement", order=1)
+		standard = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.judgement_area = InDepthJudgementArea.objects.create(
+			standard=standard, statement="Pupils achieve well.", order=1
+		)
+		review = InDepthReview.objects.create(
+			school=self.school, year=2026, area=self.area
+		)
+		InDepthResponse.objects.create(
+			review=review,
+			judgement_area=self.judgement_area,
+			rag="green",
+			evidence_text="The school's own evidence write-up.",
+		)
+
+	def _request(self):
+		request = self.factory.get("/admin/")
+		request.user = self.superuser
+		return request
+
+	# Catches: deleting a Category taking every school's evaluation commentary.
+	def test_a_category_with_an_evaluation_cannot_be_deleted(self):
+		model_admin = CategoryAdmin(Category, django_admin.site)
+		self.assertFalse(
+			model_admin.has_delete_permission(self._request(), obj=self.used_category)
+		)
+
+	# Catches: over-blocking, so a genuinely unused catalogue row is undeletable.
+	def test_a_category_with_no_evaluations_can_still_be_deleted(self):
+		model_admin = CategoryAdmin(Category, django_admin.site)
+		self.assertTrue(
+			model_admin.has_delete_permission(self._request(), obj=self.unused_category)
+		)
+
+	# Catches: deleting an in-depth area cascading through reviews to responses.
+	def test_an_indepth_area_with_a_review_cannot_be_deleted(self):
+		model_admin = InDepthAreaAdmin(InDepthArea, django_admin.site)
+		self.assertFalse(
+			model_admin.has_delete_permission(self._request(), obj=self.area)
+		)
+
+	# Catches: deleting a single statement taking the evidence written against it.
+	def test_a_judgement_area_with_a_response_cannot_be_deleted(self):
+		model_admin = InDepthJudgementAreaAdmin(InDepthJudgementArea, django_admin.site)
+		self.assertFalse(
+			model_admin.has_delete_permission(
+				self._request(), obj=self.judgement_area
+			)
+		)
+
+	# Catches: the bulk action walking past the per-row guard — delete_selected
+	# resolves permission per model, not per object.
+	def test_bulk_delete_is_not_offered_on_a_protected_model(self):
+		model_admin = CategoryAdmin(Category, django_admin.site)
+		self.assertNotIn("delete_selected", model_admin.get_actions(self._request()))
+
+
+class SeedCommandsRespectAdminEditsTests(TestCase):
+	"""startup.sh re-runs the seeds on every Azure deploy.
+
+	Their values are admin-editable on purpose — step_change and the turnover
+	comparators exist so the client can correct them without a deploy — and
+	School.phase selects which OperationsMetricBand rows a RAG is computed
+	against. Re-applying the seed on an existing row reverted all of it.
+	"""
+
+	# So a failure names every reverted field, not the first one only.
+	maxDiff = None
+
+	def setUp(self):
+		for order, name in enumerate(OPS_AREA_NAMES, start=1):
+			InDepthArea.objects.get_or_create(name=name, defaults={"order": order * 10})
+		call_command("seed_trust_categories", verbosity=0)
+		call_command("seed_operations_metrics", verbosity=0)
+
+	# Catches: a deploy silently reverting every admin correction. Also proves
+	# load_indepth_blueprint survives a second call in one process.
+	def test_a_second_deploy_does_not_revert_admin_edits(self):
+		call_command("load_indepth_blueprint", verbosity=0)
+		call_command("seed_schools", verbosity=0)
+
+		metric = OperationsMetric.objects.get(key="complaints-stage-2")
+		band = metric.bands.get(phase="")
+		theme = ComplaintTheme.objects.get(name="Admissions")
+		school = School.objects.get(name="Rose Hill School")
+		area = InDepthArea.objects.get(name="Quality of Education")
+		self.assertEqual(school.phase, School.Phase.PRIMARY)
+
+		# The edits an admin would make in the change forms.
+		OperationsMetric.objects.filter(pk=metric.pk).update(
+			help_text="Trust wording agreed with the CFO."
+		)
+		OperationsMetricBand.objects.filter(pk=band.pk).update(step_change=5)
+		ComplaintTheme.objects.filter(pk=theme.pk).update(is_active=False)
+		School.objects.filter(pk=school.pk).update(phase=School.Phase.SECONDARY)
+		InDepthArea.objects.filter(pk=area.pk).update(
+			purpose="Our own wording for this area."
+		)
+
+		call_command("seed_operations_metrics", verbosity=0)
+		call_command("seed_schools", verbosity=0)
+		call_command("load_indepth_blueprint", verbosity=0)
+
+		# Compared as one mapping so a redeploy that reverts three of the five
+		# reports all three, rather than stopping at the first.
+		self.assertEqual(
+			{
+				"metric help_text": OperationsMetric.objects.get(pk=metric.pk).help_text,
+				"band step_change": OperationsMetricBand.objects.get(pk=band.pk).step_change,
+				"theme is_active": ComplaintTheme.objects.get(pk=theme.pk).is_active,
+				"school phase": School.objects.get(pk=school.pk).phase,
+				"area purpose": InDepthArea.objects.get(pk=area.pk).purpose,
+			},
+			{
+				"metric help_text": "Trust wording agreed with the CFO.",
+				"band step_change": 5,
+				"theme is_active": False,
+				"school phase": School.Phase.SECONDARY,
+				"area purpose": "Our own wording for this area.",
+			},
+		)
+
+	# Catches: losing the deliberate way back to the seeded values.
+	def test_force_restores_the_seed_value(self):
+		metric = OperationsMetric.objects.get(key="complaints-stage-2")
+		seeded_help_text = metric.help_text
+		self.assertTrue(seeded_help_text)
+		OperationsMetric.objects.filter(pk=metric.pk).update(help_text="edited")
+
+		call_command("seed_operations_metrics", "--force", verbosity=0)
+
+		self.assertEqual(
+			OperationsMetric.objects.get(pk=metric.pk).help_text, seeded_help_text
+		)
+
+	# Catches: create-only defaults being applied so narrowly that a fresh
+	# database gets an empty catalogue.
+	def test_the_seed_still_builds_the_catalogue_from_empty(self):
+		OperationsMetricBand.objects.all().delete()
+		OperationsMetric.objects.all().delete()
+		ComplaintTheme.objects.all().delete()
+
+		call_command("seed_operations_metrics", verbosity=0)
+
+		self.assertEqual(OperationsMetric.objects.count(), 12)
+		self.assertEqual(ComplaintTheme.objects.count(), 4)
+		band = OperationsMetric.objects.get(key="complaints-stage-2").bands.get(phase="")
+		self.assertEqual(band.step_change, 3)
+		self.assertTrue(band.green_descriptor)

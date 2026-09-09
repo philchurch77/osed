@@ -11,6 +11,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseForbidden
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from allauth.account.views import LoginView
 
@@ -88,23 +89,95 @@ from .risk import (
 MIN_ACADEMIC_YEAR_START = 2026
 
 
-def _apply_category_specific_rating_choices(*, forms, safeguarding_category_ids: set[int]) -> None:
-	for form in forms:
-		# Works for both bound and unbound forms.
-		if form.is_bound:
-			raw_category_id = form.data.get(form.add_prefix("category_id"))
-		else:
-			raw_category_id = (form.initial or {}).get("category_id")
+def _form_rendered_at(request: HttpRequest):
+	"""When the page being saved was drawn, for stale-write detection.
 
-		try:
-			category_id = int(raw_category_id)
-		except (TypeError, ValueError):
-			category_id = None
+	The dashboard and evaluation screens post every cell they rendered, not just
+	the one that changed, so a tab left open since yesterday would happily write
+	its stale values over a colleague's newer ones. Rows touched since this
+	timestamp are left alone instead. Returns None when the field is absent, in
+	which case the save proceeds as before.
+	"""
+	raw = (request.POST.get("form_rendered_at") or "").strip()
+	if not raw:
+		return None
+	parsed = parse_datetime(raw)
+	if parsed is not None and timezone.is_naive(parsed):
+		parsed = timezone.make_aware(parsed)
+	return parsed
+
+
+def _is_stale_write(existing_row, rendered_at) -> bool:
+	"""True when this row changed after the page being saved was rendered."""
+	if rendered_at is None or existing_row is None:
+		return False
+	updated_at = getattr(existing_row, "updated_at", None)
+	return updated_at is not None and updated_at > rendered_at
+
+
+def _report_stale_writes(request: HttpRequest, stale: int) -> None:
+	if not stale:
+		return
+	messages.warning(
+		request,
+		f"{stale} entr{'y was' if stale == 1 else 'ies were'} changed by someone "
+		"else after you opened this page, so "
+		f"{'it was' if stale == 1 else 'they were'} left as they are. "
+		"Reload to see the current values.",
+	)
+
+
+def _form_int(form, field_name: str) -> int | None:
+	"""Read one of this form's values as an int, bound or not."""
+	if form.is_bound:
+		raw = form.data.get(form.add_prefix(field_name))
+	else:
+		raw = (form.initial or {}).get(field_name)
+	try:
+		return int(raw)
+	except (TypeError, ValueError):
+		return None
+
+
+def _form_row_key(form):
+	"""Identify the stored row this form edits: dashboard cells are per term."""
+	category_id = _form_int(form, "category_id")
+	if "round" in form.fields:
+		return (category_id, _form_int(form, "round"))
+	return category_id
+
+
+def _apply_category_specific_rating_choices(
+	*, forms, safeguarding_category_ids: set[int], stored_ratings: dict | None = None
+) -> None:
+	"""Set each form's rating choices, keeping any already-stored value valid.
+
+	`stored_ratings` maps a row key (see `_form_row_key`) to the rating currently
+	in the database. Only that value is added to a restricted list — a rating the
+	user posts is still rejected, so Safeguarding stays Met / Not Met.
+	"""
+	for form in forms:
+		category_id = _form_int(form, "category_id")
 
 		if category_id in safeguarding_category_ids:
-			form.fields["rating"].choices = RATING_CHOICES_SAFEGUARDING
+			choices = list(RATING_CHOICES_SAFEGUARDING)
 		else:
-			form.fields["rating"].choices = RATING_CHOICES_DEFAULT
+			choices = list(RATING_CHOICES_DEFAULT)
+
+		# Keep a stored rating renderable even when it falls outside this
+		# category's list — Safeguarding offers only 1 and 5, but the admin lets
+		# any 1-5 through. An unrenderable value drew no checked radio, so the
+		# browser posted no key at all, and the save wrote None over it: a
+		# Safeguarding judgement silently destroyed by an unrelated edit.
+		# Showing it instead means it round-trips, and only a deliberate
+		# deselect (no key posted) still clears it.
+		stored = (stored_ratings or {}).get(_form_row_key(form))
+		if stored is not None and all(value != stored for value, _label in choices):
+			label = dict(RATING_CHOICES_DEFAULT).get(stored, str(stored))
+			choices.append((stored, label))
+			choices.sort(key=lambda pair: pair[0])
+
+		form.fields["rating"].choices = choices
 
 
 def _parse_academic_year_start(raw_value: str | None, default_year: int) -> int:
@@ -556,6 +629,9 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 		existing_qs = existing_qs.none()
 
 	existing = {(e.category_id, e.period.round): e for e in existing_qs}
+	# What is actually stored, so a rating outside a category's choice list still
+	# renders and round-trips rather than being silently written away as None.
+	stored_ratings = {key: row.rating for key, row in existing.items()}
 
 	DashboardFormSet = formset_factory(DashboardRatingForm, extra=0)
 
@@ -564,8 +640,11 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 		_apply_category_specific_rating_choices(
 			forms=formset.forms,
 			safeguarding_category_ids=safeguarding_category_ids,
+			stored_ratings=stored_ratings,
 		)
 		if formset.is_valid():
+			rendered_at = _form_rendered_at(request)
+			stale = 0
 			with transaction.atomic():
 				for form in formset:
 					category_id = form.cleaned_data["category_id"]
@@ -575,6 +654,15 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 					if round_value not in (1, 2, 3):
 						continue
 					rating = form.cleaned_data["rating"]
+
+					current = existing.get((category_id, round_value))
+					if _is_stale_write(current, rendered_at):
+						stale += 1
+						continue
+					# Nothing to do when the cell already holds this rating; keeps
+					# a save to one cell from rewriting all 24.
+					if current is not None and current.rating == rating:
+						continue
 
 					Evaluation.objects.update_or_create(
 						school=school,
@@ -587,6 +675,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 					)
 
 			messages.success(request, "Dashboard ratings saved.")
+			_report_stale_writes(request, stale)
 			params = f"?year={selected_year_value}"
 			if request.user.is_superuser:
 				params = f"?school={school.id}&year={selected_year_value}"
@@ -607,6 +696,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 		_apply_category_specific_rating_choices(
 			forms=formset.forms,
 			safeguarding_category_ids=safeguarding_category_ids,
+			stored_ratings=stored_ratings,
 		)
 
 	if not can_edit:
@@ -713,6 +803,10 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			for e in Evaluation.objects.filter(school=school, period=period_db, category__in=categories)
 		}
 
+	# What is actually stored, so a rating outside a category's choice list still
+	# renders and round-trips rather than being silently written away as None.
+	stored_ratings = {key: row.rating for key, row in existing.items()}
+
 	# Grade each category's in-depth review concluded, for the over-write feature.
 	indepth_grades = _indepth_grade_for_categories(school, selected_year, categories)
 
@@ -759,8 +853,11 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 		_apply_category_specific_rating_choices(
 			forms=formset.forms,
 			safeguarding_category_ids=safeguarding_category_ids,
+			stored_ratings=stored_ratings,
 		)
 		if formset.is_valid():
+			rendered_at = _form_rendered_at(request)
+			stale = 0
 			with transaction.atomic():
 				for form in formset:
 					category_id = form.cleaned_data["category_id"]
@@ -769,6 +866,14 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 					rating = form.cleaned_data["rating"]
 					judgement_evidence = form.cleaned_data["judgement_evidence"]
 					to_progress = form.cleaned_data["to_progress"]
+
+					# This form posts all eight categories, so a tab opened before
+					# a colleague saved would write its stale (often empty) boxes
+					# over their commentary. Leave anything touched since.
+					current = existing.get(category_id)
+					if _is_stale_write(current, rendered_at):
+						stale += 1
+						continue
 
 					Evaluation.objects.update_or_create(
 						school=school,
@@ -783,6 +888,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 					)
 
 			messages.success(request, "Evaluation saved.")
+			_report_stale_writes(request, stale)
 			params = f"?year={selected_year_value}&round={period.round}"
 			if request.user.is_superuser:
 				params = f"?school={school.id}&year={selected_year_value}&round={period.round}"
@@ -803,6 +909,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 		_apply_category_specific_rating_choices(
 			forms=formset.forms,
 			safeguarding_category_ids=safeguarding_category_ids,
+			stored_ratings=stored_ratings,
 		)
 
 	if not can_edit:

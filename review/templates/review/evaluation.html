@@ -72,6 +72,12 @@
     <input type="hidden" name="school_id" value="{{ school.id }}" />
     <input type="hidden" name="year" value="{{ selected_year_value }}" />
     <input type="hidden" name="round" value="{{ period.round }}" />
+    {% comment %}
+      When this page was drawn. The form posts all eight categories, so the save
+      uses this to leave alone any row someone else has changed since — rather
+      than writing these (possibly stale) boxes over their work.
+    {% endcomment %}
+    <input type="hidden" name="form_rendered_at" value="{% now 'c' %}" />
     {{ formset.management_form }}
 
     <table class="evaluation-table">

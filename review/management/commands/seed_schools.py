@@ -11,7 +11,15 @@ from review.models import School
 class Command(BaseCommand):
     help = "Seed the initial list of schools. Safe to run multiple times."
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Re-apply the seed phase to schools that already exist, discarding admin edits.",
+        )
+
     def handle(self, *args, **options):
+        force: bool = options["force"]
         schools = [
             ("Rose Hill School", School.Phase.PRIMARY),
             ("Copleston High School", School.Phase.SECONDARY),
@@ -45,7 +53,11 @@ class Command(BaseCommand):
             obj, was_created = School.objects.get_or_create(name=name)
             if was_created:
                 created += 1
-            if obj.phase != phase:
+            # Phase is set when the school is first created, and on an existing
+            # school only with --force. It is admin-editable, and it selects the
+            # phase-aware OperationsMetricBand rows, so reverting it every deploy
+            # made a school's Operations RAGs recompute against the wrong bands.
+            if obj.phase != phase and (was_created or force):
                 obj.phase = phase
                 obj.save(update_fields=["phase"])
                 if not was_created:

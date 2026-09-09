@@ -794,13 +794,20 @@ class Command(BaseCommand):
                 # second call in the same process died on KeyError. Harmless on Azure
                 # (fresh process per deploy), a trap anywhere else.
                 subsections = area_data.get("subsections", [])
+                # Seed values on creation only. Safeguarding and Early Years are
+                # the two areas that also come from criteria.json, and `purpose`
+                # is admin-editable, so applying these on every deploy quietly
+                # reverted whatever the client had written there. --clear still
+                # rebuilds from the blueprint.
+                area_values = {
+                    "order": area_data["order"],
+                    "is_safeguarding": area_data["is_safeguarding"],
+                    "purpose": area_data.get("purpose", ""),
+                }
                 area, created = InDepthArea.objects.update_or_create(
                     name=area_data["name"],
-                    defaults={
-                        "order": area_data["order"],
-                        "is_safeguarding": area_data["is_safeguarding"],
-                        "purpose": area_data.get("purpose", ""),
-                    },
+                    defaults=area_values if options["clear"] else {},
+                    create_defaults=area_values,
                 )
                 if created:
                     created_areas += 1

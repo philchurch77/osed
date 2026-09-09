@@ -63,19 +63,64 @@ def _request_schools(request):
 	return School.objects.filter(id__in=allowed_ids)
 
 
+class ProtectsWrittenWorkMixin:
+	"""Refuse to delete a catalogue row that a school's written work hangs off.
+
+	These models all cascade into evidence: deleting a Category takes every
+	school's judgement_evidence for it, a ReviewPeriod takes a whole term across
+	four features, an InDepthArea takes its reviews and every response beneath
+	them. The confirmation page counts objects, not "three terms of Safeguarding
+	commentary", so there is nothing on screen to stop you.
+
+	`_indepth_sync.sync_judgement_areas` already refuses to delete a judgement
+	area that holds responses. This is the same rule for the admin, which
+	performs the identical delete with no guard at all.
+
+	Subclasses define `written_work_count`. Deactivate the row instead, or clear
+	the dependent records deliberately first.
+	"""
+
+	def written_work_count(self, obj) -> int:
+		return 0
+
+	def has_delete_permission(self, request, obj=None):
+		if obj is not None and self.written_work_count(obj):
+			return False
+		return super().has_delete_permission(request, obj=obj)
+
+	def get_actions(self, request):
+		# delete_selected resolves permission per model, not per row, so it walks
+		# straight past has_delete_permission above. Remove it entirely here and
+		# delete one row at a time, where the guard applies.
+		actions = super().get_actions(request)
+		actions.pop("delete_selected", None)
+		return actions
+
+
 @admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
+class CategoryAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("order", "name", "is_active")
 	list_filter = ("is_active",)
 	ordering = ("-is_active", "order", "name")
 	search_fields = ("name",)
 
+	def written_work_count(self, obj) -> int:
+		return Evaluation.objects.filter(category=obj).count()
+
 
 @admin.register(School)
-class SchoolAdmin(admin.ModelAdmin):
+class SchoolAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("name", "phase", "is_mainstream", "logo")
 	list_filter = ("phase", "is_mainstream")
 	search_fields = ("name",)
+
+	def written_work_count(self, obj) -> int:
+		return (
+			Evaluation.objects.filter(school=obj).count()
+			+ InDepthReview.objects.filter(school=obj).count()
+			+ Risk.objects.filter(school=obj).count()
+			+ OperationsEntry.objects.filter(school=obj).count()
+		)
 
 	def get_queryset(self, request):
 		qs = super().get_queryset(request)
@@ -123,10 +168,18 @@ class BrandingAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReviewPeriod)
-class ReviewPeriodAdmin(admin.ModelAdmin):
+class ReviewPeriodAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("year", "round")
 	list_filter = ("year", "round")
 	ordering = ("-year", "round")
+
+	def written_work_count(self, obj) -> int:
+		return (
+			Evaluation.objects.filter(period=obj).count()
+			+ RiskRating.objects.filter(period=obj).count()
+			+ OperationsEntry.objects.filter(period=obj).count()
+			+ OperationsNote.objects.filter(period=obj).count()
+		)
 
 
 @admin.register(Evaluation)
@@ -164,7 +217,7 @@ class EvaluationAdmin(admin.ModelAdmin):
 
 
 @admin.register(InDepthArea)
-class InDepthAreaAdmin(admin.ModelAdmin):
+class InDepthAreaAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("order", "name", "is_safeguarding")
 	list_filter = ("is_safeguarding",)
 	ordering = ("order", "name")
@@ -175,9 +228,12 @@ class InDepthAreaAdmin(admin.ModelAdmin):
 		}),
 	)
 
+	def written_work_count(self, obj) -> int:
+		return InDepthReview.objects.filter(area=obj).count()
+
 
 @admin.register(InDepthSubSection)
-class InDepthSubSectionAdmin(admin.ModelAdmin):
+class InDepthSubSectionAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("area", "order", "name")
 	list_filter = ("area",)
 	ordering = ("area__order", "area__name", "order")
@@ -202,6 +258,9 @@ class InDepthSubSectionAdmin(admin.ModelAdmin):
 			"fields": ("not_met_descriptor", "met_descriptor"),
 		}),
 	)
+
+	def written_work_count(self, obj) -> int:
+		return InDepthResponse.objects.filter(subsection=obj).count()
 
 
 @admin.register(InDepthReview)
@@ -245,7 +304,7 @@ class InDepthResponseAdmin(admin.ModelAdmin):
 
 
 @admin.register(InDepthStandard)
-class InDepthStandardAdmin(admin.ModelAdmin):
+class InDepthStandardAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("area", "key", "order", "judgement_area_count")
 	list_filter = ("area", "key")
 	ordering = ("area__order", "order")
@@ -256,9 +315,12 @@ class InDepthStandardAdmin(admin.ModelAdmin):
 	def judgement_area_count(self, obj):
 		return obj.judgement_areas.count()
 
+	def written_work_count(self, obj) -> int:
+		return InDepthResponse.objects.filter(judgement_area__standard=obj).count()
+
 
 @admin.register(InDepthJudgementArea)
-class InDepthJudgementAreaAdmin(admin.ModelAdmin):
+class InDepthJudgementAreaAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 	list_display = ("standard", "order", "is_flat", "short_statement")
 	list_filter = ("is_flat", "standard__area", "standard__key")
 	ordering = ("standard__area__order", "standard__order", "order")
@@ -268,6 +330,9 @@ class InDepthJudgementAreaAdmin(admin.ModelAdmin):
 	@admin.display(description="Statement")
 	def short_statement(self, obj):
 		return obj.statement[:80]
+
+	def written_work_count(self, obj) -> int:
+		return obj.responses.count()
 
 
 
