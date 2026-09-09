@@ -43,6 +43,7 @@ from .admin import (
 	CategoryAdmin,
 	InDepthAreaAdmin,
 	InDepthJudgementAreaAdmin,
+	InDepthResponseAdmin,
 )
 from .management.commands._indepth_sync import sync_judgement_areas
 from .operations import (
@@ -2357,8 +2358,14 @@ class TemplateCommentTests(TestCase):
 	def test_no_template_opens_a_hash_comment_it_does_not_close(self):
 		root = Path(__file__).resolve().parent.parent
 		offenders = []
+		# Only our own templates. The project root holds both `venv` and `.venv`,
+		# and only the dotted one was skipped — so this already scanned 200-odd
+		# third-party templates, and the first installed package shipping a
+		# multi-line {# comment #} would have failed the build pointing at a
+		# stranger's file.
+		skip = {"staticfiles", "venv", ".venv", "site-packages", "node_modules"}
 		for path in sorted(root.glob("**/templates/**/*.html")):
-			if "staticfiles" in path.parts or ".venv" in path.parts:
+			if skip.intersection(path.parts):
 				continue
 			for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
 				if line.count("{#") != line.count("#}"):
@@ -3111,3 +3118,63 @@ class SeedCommandsRespectAdminEditsTests(TestCase):
 		band = OperationsMetric.objects.get(key="complaints-stage-2").bands.get(phase="")
 		self.assertEqual(band.step_change, 3)
 		self.assertTrue(band.green_descriptor)
+
+
+class InDepthResponseAdminScopingTests(TestCase):
+	"""The evidence text itself must not be readable across schools.
+
+	This admin was the one school-linked admin with no `get_queryset`, so an
+	is_staff account holding change_indepthresponse could read every school's
+	write-ups. Guarding it is also the precondition for giving it a history view,
+	which would otherwise expose every version rather than just the current one.
+	"""
+
+	def setUp(self):
+		self.mine = School.objects.create(name="Mine Primary")
+		self.theirs = School.objects.create(name="Theirs Primary")
+		self.area = InDepthArea.objects.create(name="Achievement", order=1)
+		standard = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.ja = InDepthJudgementArea.objects.create(
+			standard=standard, statement="Pupils achieve well.", order=1
+		)
+		self.responses = {}
+		for key, school in (("mine", self.mine), ("theirs", self.theirs)):
+			review = InDepthReview.objects.create(school=school, year=2026, area=self.area)
+			self.responses[key] = InDepthResponse.objects.create(
+				review=review,
+				judgement_area=self.ja,
+				rag="green",
+				evidence_text=f"{key.upper()} EVIDENCE TEXT",
+			)
+
+		self.staff = User.objects.create_user(
+			username="staff", email="staff@example.com", is_staff=True
+		)
+		profile = SchoolProfile.objects.create(user=self.staff, school=self.mine)
+		profile.schools.add(self.mine)
+		self.staff.user_permissions.add(
+			Permission.objects.get(
+				content_type__app_label="review", codename="change_indepthresponse"
+			)
+		)
+
+	def _queryset_for(self, user):
+		request = RequestFactory().get("/admin/review/indepthresponse/")
+		request.user = user
+		model_admin = InDepthResponseAdmin(InDepthResponse, django_admin.site)
+		return model_admin.get_queryset(request)
+
+	def test_staff_user_sees_only_their_own_schools_evidence(self):
+		visible = list(self._queryset_for(self.staff))
+		self.assertIn(self.responses["mine"], visible)
+		self.assertNotIn(self.responses["theirs"], visible)
+
+	def test_superuser_still_sees_every_school(self):
+		root = User.objects.create_superuser(
+			username="root", email="root@example.com", password="x"
+		)
+		visible = list(self._queryset_for(root))
+		self.assertIn(self.responses["mine"], visible)
+		self.assertIn(self.responses["theirs"], visible)

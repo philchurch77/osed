@@ -302,6 +302,14 @@ class InDepthResponseAdmin(admin.ModelAdmin):
 	search_fields = ("evidence_text", "next_steps", "subsection__name", "judgement_area__statement")
 	list_select_related = ("review", "subsection", "subsection__area", "judgement_area")
 
+	def get_queryset(self, request):
+		# This admin holds the evidence text itself, and was the one school-linked
+		# admin with no scoping — an is_staff account with change_indepthresponse
+		# read every school's write-ups here. Scoped through the review, matching
+		# InDepthReviewAdmin above.
+		qs = super().get_queryset(request)
+		return qs.filter(review__school__in=_request_schools(request))
+
 
 @admin.register(InDepthStandard)
 class InDepthStandardAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
