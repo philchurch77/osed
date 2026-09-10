@@ -5,6 +5,13 @@
 {% block content %}
   <header class="page-header">
     <h1 class="page-title">School Progress</h1>
+    {% if school and not all_schools_selected %}
+      <p class="page-subtitle page-subtitle--school">
+        <span class="page-subtitle-label">Working on</span>
+        <strong>{{ school.name }}</strong>
+        <span class="page-subtitle-year">{{ year }}/{{ year|add:1 }}</span>
+      </p>
+    {% endif %}
     {% if user.is_superuser %}
       <form method="get" class="school-select">
         {% include "review/includes/filter_phase_field.html" %}
@@ -20,7 +27,6 @@
         {% include "review/includes/filter_actions.html" %}
       </form>
     {% else %}
-      <p class="page-subtitle">{{ school.name }} &nbsp; {{ year }}/{{ year|add:1 }}</p>
       <form method="get" class="school-select">
         {% include "review/includes/filter_year_field.html" %}
         {% include "review/includes/filter_actions.html" %}

@@ -6,16 +6,21 @@
   <header class="page-header">
     <h1 class="page-title">In-depth review</h1>
 
+    <p class="page-subtitle page-subtitle--school">
+      <span class="page-subtitle-label">Working on</span>
+      <strong>{{ school.name }}</strong>
+    </p>
     {% if user.is_superuser or schools %}
       <form method="get" class="school-select">
+        <input type="hidden" name="page" value="commentary" />
         {% include "review/includes/filter_school_field.html" %}
         {% include "review/includes/filter_area_field.html" %}
         {% include "review/includes/filter_year_field.html" %}
         {% include "review/includes/filter_actions.html" %}
       </form>
     {% else %}
-      <p class="page-subtitle">{{ school.name }}</p>
       <form method="get" class="school-select">
+        <input type="hidden" name="page" value="commentary" />
         {% include "review/includes/filter_area_field.html" %}
         {% include "review/includes/filter_year_field.html" %}
         {% include "review/includes/filter_actions.html" %}
@@ -42,7 +47,7 @@
   {% if area %}
 
     <nav class="indepth-steps" aria-label="In-depth review steps">
-      <a class="indepth-step" href="{% url 'review:indepth_review' %}?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&page=rag">← 1. Ratings</a>
+      <a class="indepth-step" href="{% url 'review:indepth_review' %}?school={{ school.id }}&year={{ selected_year_value }}&area={{ area.id }}&page=rag">← 1. Ratings</a>
       <span class="indepth-step-sep">→</span>
       <span class="indepth-step indepth-step--current">2. Commentary &amp; next steps</span>
     </nav>
@@ -179,7 +184,7 @@
     {% else %}
       <p class="indepth-empty">
         No ratings yet. Complete the
-        <a href="{% url 'review:indepth_review' %}?{% if user.is_superuser %}school={{ school.id }}&{% endif %}year={{ selected_year_value }}&area={{ area.id }}&page=rag">ratings step</a>
+        <a href="{% url 'review:indepth_review' %}?school={{ school.id }}&year={{ selected_year_value }}&area={{ area.id }}&page=rag">ratings step</a>
         first, then return here to add commentary and next steps.
       </p>
     {% endif %}

@@ -6,6 +6,10 @@
   <header class="page-header">
     <h1 class="page-title">Reflection on QA &amp; Feedback</h1>
 
+    <p class="page-subtitle page-subtitle--school">
+      <span class="page-subtitle-label">Working on</span>
+      <strong>{{ school.name }}</strong>
+    </p>
     {% if user.is_superuser or schools %}
       <form method="get" class="school-select">
         {% include "review/includes/filter_school_field.html" %}
@@ -13,7 +17,6 @@
         {% include "review/includes/filter_actions.html" %}
       </form>
     {% else %}
-      <p class="page-subtitle">{{ school.name }}</p>
       <form method="get" class="school-select">
         {% include "review/includes/filter_year_field.html" %}
         {% include "review/includes/filter_actions.html" %}

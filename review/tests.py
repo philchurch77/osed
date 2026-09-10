@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import re
 
 from datetime import timedelta
 from decimal import Decimal
@@ -4004,3 +4005,522 @@ class PruneHistoryCommandTests(TestCase):
 	def test_default_window_is_three_months(self):
 		from review.management.commands.prune_history import RETENTION_DAYS
 		self.assertEqual(RETENTION_DAYS, 90)
+
+
+class MultiSchoolPrincipalTests(TestCase):
+	"""A non-superuser provisioned for TWO schools.
+
+	Every other SchoolProfile in this file holds exactly one school, which is
+	why a redirect that dropped the `school` key looked harmless for months:
+	with one school, the fallback lands you back where you started.
+
+	School A is named to sort FIRST alphabetically and is the profile's FK
+	school, so both fallbacks (`school_profile.school` and `allowed_schools[0]`)
+	resolve to A. Every assertion below is made against school B, so a redirect
+	that quietly falls back cannot pass by accident.
+	"""
+
+	# What Bacton's leader already wrote. Nothing done for Mendlesham may alter
+	# a byte of it.
+	SCHOOL_A_TEXT = (
+		"Bacton's own write-up - do not overwrite.\n\n"
+		"Governors reviewed the improvement plan in November."
+	)
+	# Long-ish free text with newlines, an em-dash, accents, curly quotes and an
+	# emoji, so the round trip is tested on what a Principal actually types.
+	SCHOOL_B_TEXT = (
+		"Attendance is improving — persistent absence is down 4 points on "
+		"the autumn term.\r\n\r\n"
+		"The Principal’s note: “réussite” was the word she "
+		"used in briefing. \U0001F4C8\n"
+		"Year 6 reading remains the priority for the spring term."
+	)
+
+	def setUp(self):
+		self.school_a = School.objects.create(name="Bacton Primary School")
+		self.school_b = School.objects.create(name="Mendlesham Primary School")
+		self.school_c = School.objects.create(name="Woolpit High School")
+
+		self.principal = User.objects.create_user(
+			username="two_schools", email="two.schools@example.com"
+		)
+		profile = SchoolProfile.objects.create(user=self.principal, school=self.school_a)
+		profile.schools.add(self.school_a, self.school_b)
+		for codename in (
+			"add_evaluation",
+			"change_evaluation",
+			"add_indepthresponse",
+			"change_indepthresponse",
+		):
+			self.principal.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.category = Category.objects.create(name="Achievement", order=1, is_active=True)
+
+		self.area = InDepthArea.objects.create(name="Achievement", order=4)
+		expected = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.je1 = InDepthJudgementArea.objects.create(
+			standard=expected, statement="Pupils achieve well.", order=1
+		)
+		self.je2 = InDepthJudgementArea.objects.create(
+			standard=expected, statement="Pupils are ready for the next stage.", order=2
+		)
+		strong = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.STRONG_STANDARD, order=4
+		)
+		self.js1 = InDepthJudgementArea.objects.create(
+			standard=strong, statement="Achievement is exceptional over time.", order=1
+		)
+
+		self.client.force_login(self.principal)
+
+	# ── helpers ──────────────────────────────────────────────────────────────
+
+	def _rag_post(self, school, rags, save_continue=False):
+		"""Post the RAG ladder for `school`. rags: [(judgement_area, value)]."""
+		data = {
+			"school_id": str(school.id),
+			"year": "2026-2027",
+			"area_id": str(self.area.id),
+			"page": "rag",
+			"form-TOTAL_FORMS": str(len(rags)),
+			"form-INITIAL_FORMS": str(len(rags)),
+			"form-MIN_NUM_FORMS": "0",
+			"form-MAX_NUM_FORMS": "1000",
+		}
+		for i, (ja, rag) in enumerate(rags):
+			data[f"form-{i}-judgement_area_id"] = str(ja.id)
+			data[f"form-{i}-rag"] = rag
+			data[f"form-{i}-commentary"] = ""
+			data[f"form-{i}-next_steps"] = ""
+		if save_continue:
+			data["save_continue"] = "1"
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=rag"
+		return self.client.post(url, data=data)
+
+	def _commentary_post(self, school, items):
+		"""Post the write-up page for `school`. items: [(ja, commentary, next)]."""
+		data = {
+			"school_id": str(school.id),
+			"year": "2026-2027",
+			"area_id": str(self.area.id),
+			"page": "commentary",
+			"form-TOTAL_FORMS": str(len(items)),
+			"form-INITIAL_FORMS": str(len(items)),
+			"form-MIN_NUM_FORMS": "0",
+			"form-MAX_NUM_FORMS": "1000",
+		}
+		for i, (ja, commentary, next_steps) in enumerate(items):
+			data[f"form-{i}-judgement_area_id"] = str(ja.id)
+			data[f"form-{i}-rag"] = ""
+			data[f"form-{i}-commentary"] = commentary
+			data[f"form-{i}-next_steps"] = next_steps
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		return self.client.post(url, data=data)
+
+	def _seed_school_a_commentary(self):
+		"""Give school A stored written work, so a cross-school write has a victim."""
+		review = InDepthReview.objects.create(
+			school=self.school_a, year=2026, area=self.area, overall_grade="expected_standard"
+		)
+		return InDepthResponse.objects.create(
+			review=review,
+			judgement_area=self.je1,
+			rag="green",
+			evidence_text=self.SCHOOL_A_TEXT,
+			next_steps="Sustain and share the practice.",
+		)
+
+	def _response(self, school, judgement_area):
+		return InDepthResponse.objects.get(
+			review__school=school,
+			review__year=2026,
+			review__area=self.area,
+			judgement_area=judgement_area,
+		)
+
+	# ── 1. access control: a third school is out of reach ────────────────────
+
+	# Catches: a forged ?school= id reaching a school the user is not provisioned
+	# for on the in-depth review — the page that holds every school's evidence text.
+	def test_a_two_school_user_cannot_open_a_third_schools_indepth_review(self):
+		foreign_review = InDepthReview.objects.create(
+			school=self.school_c, year=2026, area=self.area
+		)
+		InDepthResponse.objects.create(
+			review=foreign_review,
+			judgement_area=self.je1,
+			rag="red",
+			evidence_text="Woolpit safeguarding concern, not for other schools.",
+		)
+
+		response = self.client.get(
+			reverse("review:indepth_review"),
+			{"school": str(self.school_c.id), "year": "2026-2027", "area": str(self.area.id)},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], self.school_c)
+		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertNotContains(response, "Woolpit safeguarding concern")
+
+	# Catches: a forged ?school= id reaching a third school's dashboard ratings.
+	def test_a_two_school_user_cannot_open_a_third_schools_dashboard(self):
+		response = self.client.get(
+			reverse("review:dashboard"),
+			{"school": str(self.school_c.id), "year": "2026-2027"},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], self.school_c)
+		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+
+	# Catches: a forged ?school= id reaching a third school's evaluation
+	# commentary, which is rendered in full on the page.
+	def test_a_two_school_user_cannot_open_a_third_schools_evaluation(self):
+		# Migration 0008 already seeds the terms, and (year, round) is unique.
+		period, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		Evaluation.objects.create(
+			school=self.school_c,
+			period=period,
+			category=self.category,
+			rating=4,
+			judgement_evidence="Woolpit judgement evidence, confidential to Woolpit.",
+		)
+
+		response = self.client.get(
+			reverse("review:evaluation"),
+			{"school": str(self.school_c.id), "year": "2026-2027", "round": "1"},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], self.school_c)
+		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertNotContains(response, "Woolpit judgement evidence")
+
+	# Catches: a forged ?school= id reaching a third school's QA reflections.
+	def test_a_two_school_user_cannot_open_a_third_schools_reflection(self):
+		InDepthReview.objects.create(
+			school=self.school_c,
+			year=2026,
+			area=self.area,
+			qa_reflection="Woolpit reflection, not for other schools.",
+		)
+
+		response = self.client.get(
+			reverse("review:reflection"),
+			{"school": str(self.school_c.id), "year": "2026-2027"},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], self.school_c)
+		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertNotContains(response, "Woolpit reflection")
+
+	# ── 2. the reported bug: the redirect dropped the school ─────────────────
+
+	# Catches: "Save & continue to commentary" landing a two-school user on the
+	# OTHER school's write-up page, because the redirect emitted `school=` for
+	# superusers only.
+	def test_save_and_continue_keeps_the_chosen_school_in_the_redirect(self):
+		response = self._rag_post(
+			self.school_b,
+			[(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")],
+			save_continue=True,
+		)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		self.assertIn("page=commentary", response["Location"])
+		# And the ratings landed on B, not on the profile's default school.
+		self.assertTrue(
+			InDepthReview.objects.filter(school=self.school_b, year=2026, area=self.area).exists()
+		)
+		self.assertFalse(
+			InDepthReview.objects.filter(school=self.school_a, year=2026, area=self.area).exists()
+		)
+
+	# Catches: the plain (non-continue) in-depth save dropping the school, which
+	# sent the next save to a different school's review.
+	def test_indepth_save_returns_to_the_chosen_school(self):
+		response = self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "amber")])
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		self.assertIn("page=rag", response["Location"])
+
+	# ── 3. the second half of the loop: the commentary page must stay put ────
+
+	# Catches: the commentary page bouncing back to the RAG ladder — with the
+	# redirect above, the two made an unbreakable loop for a two-school user.
+	def test_commentary_page_opens_on_commentary_for_the_chosen_school(self):
+		self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "green")])
+
+		response = self.client.get(
+			reverse("review:indepth_review"),
+			{
+				"school": str(self.school_b.id),
+				"year": "2026-2027",
+				"area": str(self.area.id),
+				"page": "commentary",
+			},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.context["page"], "commentary")
+		self.assertEqual(response.context["school"], self.school_b)
+		self.assertTemplateUsed(response, "review/indepth_review_commentary.html")
+
+	# Catches: the commentary filter bar submitting without `page`, which sent a
+	# user switching school back to the RAG ladder every time.
+	def test_switching_school_on_the_commentary_filter_bar_stays_on_commentary(self):
+		self._rag_post(self.school_a, [(self.je1, "green"), (self.je2, "green")])
+		self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "green")])
+
+		# Exactly what the commentary filter form now submits: the selector
+		# fields plus the hidden page field.
+		response = self.client.get(
+			reverse("review:indepth_review"),
+			{
+				"school": str(self.school_b.id),
+				"area": str(self.area.id),
+				"year": "2026-2027",
+				"page": "commentary",
+			},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.context["page"], "commentary")
+		self.assertEqual(response.context["school"], self.school_b)
+		self.assertTemplateUsed(response, "review/indepth_review_commentary.html")
+
+	# Catches the OTHER half of the loop at its source. The test above proves
+	# the view honours page=commentary -- but it supplies the parameter itself.
+	# If the hidden field goes missing from the template, the filter bar submits
+	# no page at all, the view defaults to "rag", and the user is bounced back
+	# to the ratings step, with every assertion above still green. This is the
+	# one that fails when the field is deleted.
+	def test_the_commentary_filter_bar_actually_submits_the_page_field(self):
+		self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "green")])
+
+		response = self.client.get(
+			reverse("review:indepth_review"),
+			{
+				"school": str(self.school_b.id),
+				"area": str(self.area.id),
+				"year": "2026-2027",
+				"page": "commentary",
+			},
+		)
+
+		self.assertTemplateUsed(response, "review/indepth_review_commentary.html")
+		filter_forms = re.findall(
+			r'<form method="get" class="school-select">.*?</form>',
+			response.content.decode(),
+			re.S,
+		)
+		self.assertTrue(filter_forms, "no filter form rendered on the commentary page")
+		for form_html in filter_forms:
+			self.assertIn(
+				'name="page" value="commentary"',
+				form_html,
+				"the commentary filter bar drops the page parameter, so using it "
+				"bounces the user back to the ratings step",
+			)
+
+	# ── 4. no cross-school write, and nothing typed is lost ──────────────────
+
+	# Catches: a save aimed at school B writing over school A's stored evidence
+	# text, which is what a school-less redirect sets a user up to do.
+	def test_saving_commentary_for_one_school_does_not_touch_the_other(self):
+		self._seed_school_a_commentary()
+		self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "green")])
+
+		response = self._commentary_post(
+			self.school_b, [(self.je1, self.SCHOOL_B_TEXT, "Reading focus for spring.")]
+		)
+		self.assertEqual(response.status_code, 302)
+
+		untouched = self._response(self.school_a, self.je1)
+		self.assertEqual(untouched.evidence_text, self.SCHOOL_A_TEXT)
+		self.assertEqual(untouched.next_steps, "Sustain and share the practice.")
+		self.assertEqual(untouched.rag, "green")
+		self.assertEqual(self._response(self.school_b, self.je1).evidence_text, self.SCHOOL_B_TEXT)
+
+	# Catches: written commentary being altered on the way through the form —
+	# newlines, an em-dash, accents, curly quotes or an emoji lost on save,
+	# on re-render of the edit page, or on an unchanged re-save.
+	def test_commentary_survives_the_round_trip_byte_for_byte(self):
+		self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "green")])
+		self._commentary_post(
+			self.school_b, [(self.je1, self.SCHOOL_B_TEXT, "Reading focus for spring.")]
+		)
+
+		stored = self._response(self.school_b, self.je1)
+		self.assertEqual(stored.evidence_text, self.SCHOOL_B_TEXT)
+
+		# The edit form must render the whole value back, not a truncation.
+		page = self.client.get(
+			reverse("review:indepth_review"),
+			{
+				"school": str(self.school_b.id),
+				"year": "2026-2027",
+				"area": str(self.area.id),
+				"page": "commentary",
+			},
+		)
+		self.assertContains(page, escape(self.SCHOOL_B_TEXT))
+
+		# Re-saving what was rendered changes nothing.
+		self._commentary_post(
+			self.school_b, [(self.je1, self.SCHOOL_B_TEXT, "Reading focus for spring.")]
+		)
+		self.assertEqual(
+			self._response(self.school_b, self.je1).evidence_text, self.SCHOOL_B_TEXT
+		)
+
+	# ── 5. every other post-save redirect keeps the school too ───────────────
+
+	# Catches: a dashboard save returning a two-school user to their other
+	# school, so the next save goes to the wrong ratings grid.
+	def test_dashboard_save_returns_to_the_chosen_school(self):
+		response = self.client.post(
+			reverse("review:dashboard"),
+			data={
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				"form-TOTAL_FORMS": "3",
+				"form-INITIAL_FORMS": "0",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.category.id),
+				"form-0-round": "1",
+				"form-0-rating": "3",
+				"form-1-category_id": str(self.category.id),
+				"form-1-round": "2",
+				"form-1-rating": "",
+				"form-2-category_id": str(self.category.id),
+				"form-2-round": "3",
+				"form-2-rating": "",
+			},
+		)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		self.assertTrue(Evaluation.objects.filter(school=self.school_b).exists())
+		self.assertFalse(Evaluation.objects.filter(school=self.school_a).exists())
+
+	# Catches: an evaluation save returning to the other school, which put the
+	# next set of judgement evidence on the wrong school's page.
+	def test_evaluation_save_returns_to_the_chosen_school(self):
+		response = self.client.post(
+			reverse("review:evaluation"),
+			data={
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				"round": "1",
+				"form-TOTAL_FORMS": "1",
+				"form-INITIAL_FORMS": "0",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.category.id),
+				"form-0-rating": "2",
+				"form-0-judgement_evidence": "Mendlesham evidence, typed once.",
+				"form-0-to_progress": "Keep the reading focus.",
+			},
+		)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		saved = Evaluation.objects.get(school=self.school_b, category=self.category)
+		self.assertEqual(saved.judgement_evidence, "Mendlesham evidence, typed once.")
+		self.assertFalse(Evaluation.objects.filter(school=self.school_a).exists())
+
+	# Catches: a reflection save returning to the other school, so the next
+	# reflection is typed into the wrong school's boxes.
+	def test_reflection_save_returns_to_the_chosen_school(self):
+		response = self.client.post(
+			reverse("review:reflection"),
+			data={
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				f"area_{self.area.id}": "Mendlesham reflection for the autumn term.",
+			},
+		)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		review = InDepthReview.objects.get(school=self.school_b, year=2026, area=self.area)
+		self.assertEqual(review.qa_reflection, "Mendlesham reflection for the autumn term.")
+		self.assertFalse(InDepthReview.objects.filter(school=self.school_a).exists())
+
+	# ── 6. the change's other three moving parts ─────────────────────────────
+
+	# Catches: the school name going back behind the single-school branch, which
+	# is how a multi-school user stopped being able to tell whose data she was
+	# editing. The name must appear OUTSIDE the selector, not only as the
+	# chosen <option> inside it.
+	def test_every_school_scoped_page_names_the_school_outside_the_selector(self):
+		pages = [
+			(reverse("review:indepth_review"), {"area": str(self.area.id), "page": "rag"}),
+			(reverse("review:indepth_review"), {"area": str(self.area.id), "page": "commentary"}),
+			(reverse("review:dashboard"), {}),
+			(reverse("review:evaluation"), {"round": "1"}),
+			(reverse("review:reflection"), {}),
+			(reverse("review:overview"), {}),
+		]
+		for url, extra in pages:
+			with self.subTest(url=url, **extra):
+				response = self.client.get(
+					url, {"school": str(self.school_b.id), "year": "2026-2027", **extra}
+				)
+				self.assertEqual(response.status_code, 200)
+				html = response.content.decode()
+				self.assertIn("page-subtitle--school", html)
+				# Strip the selector, then look for the name in what is left.
+				without_selector = re.sub(r"<select.*?</select>", "", html, flags=re.S)
+				self.assertIn(self.school_b.name, without_selector)
+
+	# Catches: a save confirmation losing the school name. This is the sentence
+	# the Principal reads at the exact moment she would otherwise not notice
+	# she had been moved.
+	def test_save_confirmations_name_the_school(self):
+		response = self.client.post(
+			reverse("review:reflection"),
+			data={
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				f"area_{self.area.id}": "Mendlesham reflection.",
+			},
+			follow=True,
+		)
+
+		self.assertEqual(response.status_code, 200)
+		texts = [str(m) for m in response.context["messages"]]
+		self.assertEqual(texts, [f"Reflections saved for {self.school_b.name}."])
+
+	# Catches: a read-only user's refused POST bouncing them to their default
+	# school. Before the fix this branch was unreachable dead code -- it read
+	# `if request.user.is_superuser`, and a superuser always passes user_can_edit
+	# -- so every read-only multi-school user was silently moved.
+	def test_a_read_only_user_is_bounced_back_to_the_school_they_were_on(self):
+		viewer = User.objects.create_user(username="read_only", email="ro@example.com")
+		viewer_profile = SchoolProfile.objects.create(user=viewer, school=self.school_a)
+		viewer_profile.schools.add(self.school_a, self.school_b)
+		self.client.force_login(viewer)
+
+		response = self.client.post(
+			reverse("review:reflection"),
+			data={
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				f"area_{self.area.id}": "Should not be saved.",
+			},
+		)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		self.assertFalse(InDepthReview.objects.filter(school=self.school_b).exists())

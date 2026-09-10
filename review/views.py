@@ -12,6 +12,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.utils.http import urlencode
 
 from allauth.account.views import LoginView
 
@@ -244,9 +245,11 @@ def _resolve_school_selection(
 		schools = list(School.objects.order_by("name").all())
 		selected = request.GET.get("school") or request.POST.get("school_id")
 		if selected:
+			# int() first: a non-numeric id reaches the ORM as a ValueError,
+			# not a DoesNotExist, and 500s the page.
 			try:
-				school = School.objects.get(id=selected)
-			except School.DoesNotExist:
+				school = School.objects.get(id=int(selected))
+			except (TypeError, ValueError, School.DoesNotExist):
 				school = None
 		if school is None and schools:
 			school = schools[0]
@@ -292,12 +295,47 @@ def _academic_year_context(
 	return selected_year, selected_year_value, academic_year_options
 
 
+def _school_param(school) -> str:
+	"""The `school` key for a redirect back to a school-scoped page.
+
+	Emitted for every user, not just superusers. Dropping it for a
+	non-superuser silently returned a multi-school user to their default
+	school after each save; on the in-depth review, whose filter bar also
+	dropped `page`, the two together made an unbreakable loop. Preserving
+	the id grants nothing: `_resolve_school_selection` re-checks it against
+	the user's own allowed schools on the way back in.
+	"""
+	return f"school={school.id}" if school else ""
+
+
+def _query_string(*parts: str) -> str:
+	"""Join non-empty `key=value` parts into `?a=1&b=2`, or "" if none.
+
+	Empty parts are dropped rather than glued, so a resolved school of None
+	cannot produce a stray `?&year=...`.
+	"""
+	joined = "&".join(p for p in parts if p)
+	return f"?{joined}" if joined else ""
+
+
+def _posted_school_id(request: HttpRequest) -> str:
+	"""The posted school id for a bounce-back redirect — an int, or "".
+
+	Coerced rather than trusted: this is echoed into a redirect URL before
+	`_resolve_school_selection` has had a chance to check it.
+	"""
+	try:
+		return str(int((request.POST.get("school_id") or "").strip()))
+	except (TypeError, ValueError):
+		return ""
+
+
 def _readonly_redirect(
 	request: HttpRequest, url_name: str, params: list[tuple[str, str]]
 ) -> HttpResponse:
 	"""Bounce a read-only user's POST back to the page, preserving their selection."""
 	messages.error(request, "You have read-only access and cannot save changes.")
-	query = "&".join(f"{name}={value}" for name, value in params if value)
+	query = urlencode([(name, value) for name, value in params if value])
 	return redirect(f"{reverse(url_name)}{'?' + query if query else ''}")
 
 
@@ -589,7 +627,7 @@ def board_view(request: HttpRequest) -> HttpResponse:
 def dashboard(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 	if request.method == "POST" and not can_edit:
-		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		school_id = _posted_school_id(request)
 		return _readonly_redirect(
 			request,
 			"review:dashboard",
@@ -674,11 +712,9 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 						},
 					)
 
-			messages.success(request, "Dashboard ratings saved.")
+			messages.success(request, f"Dashboard ratings saved for {school.name}.")
 			_report_stale_writes(request, stale)
-			params = f"?year={selected_year_value}"
-			if request.user.is_superuser:
-				params = f"?school={school.id}&year={selected_year_value}"
+			params = _query_string(_school_param(school), f"year={selected_year_value}")
 			return redirect(f"{reverse('review:dashboard')}{params}")
 	else:
 		initial = []
@@ -758,7 +794,7 @@ def _indepth_grade_for_categories(school, year, categories):
 def evaluation(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 	if request.method == "POST" and not can_edit:
-		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		school_id = _posted_school_id(request)
 		return _readonly_redirect(
 			request,
 			"review:evaluation",
@@ -841,9 +877,9 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			)
 		else:
 			messages.error(request, "Could not over-write that grade.")
-		params = f"?year={selected_year_value}&round={period.round}"
-		if request.user.is_superuser:
-			params = f"?school={school.id}&year={selected_year_value}&round={period.round}"
+		params = _query_string(
+			_school_param(school), f"year={selected_year_value}", f"round={period.round}"
+		)
 		return redirect(f"{reverse('review:evaluation')}{params}")
 
 	EvaluationFormSet = formset_factory(EvaluationEntryForm, extra=0)
@@ -897,11 +933,11 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 						},
 					)
 
-			messages.success(request, "Evaluation saved.")
+			messages.success(request, f"Evaluation saved for {school.name}.")
 			_report_stale_writes(request, stale)
-			params = f"?year={selected_year_value}&round={period.round}"
-			if request.user.is_superuser:
-				params = f"?school={school.id}&year={selected_year_value}&round={period.round}"
+			params = _query_string(
+				_school_param(school), f"year={selected_year_value}", f"round={period.round}"
+			)
 			return redirect(f"{reverse('review:evaluation')}{params}")
 	else:
 		initial = []
@@ -1102,7 +1138,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 		page = "rag"
 
 	if request.method == "POST" and not can_edit:
-		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		school_id = _posted_school_id(request)
 		return _readonly_redirect(
 			request,
 			"review:indepth_review",
@@ -1187,8 +1223,12 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	}
 
 	def _build_params(target_page: str) -> str:
-		base = f"?school={school.id}&" if request.user.is_superuser else "?"
-		return f"{base}year={selected_year_value}&area={area.id}&page={target_page}"
+		return _query_string(
+			_school_param(school),
+			f"year={selected_year_value}",
+			f"area={area.id}",
+			f"page={target_page}",
+		)
 
 	def _rags_by_key(resp_map) -> dict:
 		"""Per-rung RAG lists ("" for un-rated) for grade computation."""
@@ -1309,7 +1349,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				review.step = "review"
 				review.updated_by = request.user
 				review.save()
-			messages.success(request, "In-depth review saved.")
+			messages.success(request, f"In-depth review saved for {school.name}.")
 			# 'Save & continue' takes the user from the ladder to the write-up.
 			target = "commentary" if (page == "rag" and request.POST.get("save_continue")) else page
 			return redirect(f"{reverse('review:indepth_review')}{_build_params(target)}")
@@ -1403,7 +1443,7 @@ def reflection(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 
 	if request.method == "POST" and not can_edit:
-		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		school_id = _posted_school_id(request)
 		return _readonly_redirect(
 			request,
 			"review:reflection",
@@ -1449,11 +1489,8 @@ def reflection(request: HttpRequest) -> HttpResponse:
 					review.qa_reflection = text
 					review.updated_by = request.user
 					review.save()
-		messages.success(request, "Reflections saved.")
-		if request.user.is_superuser:
-			params = f"?school={school.id}&year={selected_year_value}"
-		else:
-			params = f"?year={selected_year_value}"
+		messages.success(request, f"Reflections saved for {school.name}.")
+		params = _query_string(_school_param(school), f"year={selected_year_value}")
 		return redirect(f"{reverse('review:reflection')}{params}")
 
 	# Build per-area context items
@@ -1593,7 +1630,7 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 	can_qa = user_can_qa_risk(request.user)
 
 	if request.method == "POST" and not (can_edit or can_qa):
-		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		school_id = _posted_school_id(request)
 		return _readonly_redirect(
 			request,
 			"review:risk_register",
@@ -1629,7 +1666,7 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 		("round", str(selected_round)),
 		("rag", request.POST.get("rag") or request.GET.get("rag") or ""),
 	]
-	if request.user.is_superuser:
+	if school:
 		redirect_params.insert(0, ("school", str(school.id)))
 
 	def _back():
@@ -1662,7 +1699,7 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 					likelihood=data["likelihood"],
 					recorded_by=request.user,
 				)
-			messages.success(request, "Risk added to the register.")
+			messages.success(request, f"Risk added to {school.name}'s register.")
 			return _back()
 
 	elif action == "save_ratings" and can_edit and period_db is not None:
@@ -1706,7 +1743,7 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 						rating.qa_by = None
 						rating.qa_at = None
 					rating.save()
-			messages.success(request, "Risk ratings saved.")
+			messages.success(request, f"Risk ratings saved for {school.name}.")
 			return _back()
 		messages.error(request, "Set both impact and likelihood, or neither.")
 
@@ -1726,7 +1763,8 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 				risk.save()
 				messages.success(
 					request,
-					"Risk closed. It stays on the register and now awaits CFO sign-off.",
+					f"Risk closed for {school.name}. It stays on the register and "
+					"now awaits CFO sign-off.",
 				)
 			return _back()
 		try:
@@ -1828,7 +1866,7 @@ def _apply_risk_qa(request: HttpRequest, action: str, *, allowed_schools) -> Non
 		rating.qa_by = request.user
 		rating.qa_at = timezone.now()
 		rating.save()
-		messages.success(request, "Rating signed off.")
+		messages.success(request, f"Rating signed off for {rating.risk.school.name}.")
 		return
 
 	risk = Risk.objects.filter(
@@ -1840,7 +1878,7 @@ def _apply_risk_qa(request: HttpRequest, action: str, *, allowed_schools) -> Non
 	risk.close_qa_by = request.user
 	risk.close_qa_at = timezone.now()
 	risk.save()
-	messages.success(request, "Closure signed off.")
+	messages.success(request, f"Closure signed off for {risk.school.name}.")
 
 
 @login_required
@@ -2191,7 +2229,7 @@ def operations(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 
 	if request.method == "POST" and not can_edit:
-		school_id = request.POST.get("school_id") if request.user.is_superuser else None
+		school_id = _posted_school_id(request)
 		return _readonly_redirect(
 			request,
 			"review:operations",
@@ -2223,7 +2261,7 @@ def operations(request: HttpRequest) -> HttpResponse:
 	if request.method == "POST" and can_edit and period_db is not None:
 		_save_operations(request, school=school, period=period_db, year=selected_year)
 		params = [("year", selected_year_value), ("round", str(selected_round))]
-		if request.user.is_superuser:
+		if school:
 			params.insert(0, ("school", str(school.id)))
 		query = "&".join(f"{k}={v}" for k, v in params if v)
 		return redirect(f"{reverse('review:operations')}?{query}")
@@ -2354,4 +2392,4 @@ def _save_operations(request: HttpRequest, *, school, period, year: int) -> None
 			note.updated_by = request.user
 			note.save()
 
-	messages.success(request, "Operations & Resources saved.")
+	messages.success(request, f"Operations & Resources saved for {school.name}.")
