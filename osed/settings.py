@@ -269,12 +269,13 @@ AUTHENTICATION_BACKENDS = (
 
 ACCOUNT_LOGIN_METHODS = {'email'}
 # password1 must be listed: allauth only builds a password field on its login
-# form when the site's signup fields include one. The form is not rendered on
-# the login page. Break-glass: a superuser with a usable password can still POST
-# to /accounts/login/ (rate-limited by allauth) or use /admin/login/ (not).
+# form when the site's signup fields include one. The login page offers the
+# email/password form beside the Microsoft button (reinstated Sept 2026 for staff
+# who cannot use Microsoft SSO); /accounts/login/ is rate-limited by allauth,
+# /admin/login/ is not.
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*', 'password1*', 'password2*']
 ACCOUNT_EMAIL_VERIFICATION = 'none'
-# Access is by Microsoft SSO + pre-provisioning only. allauth has no setting that
+# Access is by Microsoft SSO or password, plus pre-provisioning. allauth has no setting that
 # closes /accounts/signup/ — the adapter's is_open_for_signup hook is the only
 # switch, and its pre_login hook applies the same provisioning rule to password
 # logins that the social adapter applies to Microsoft ones.

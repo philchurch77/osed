@@ -49,7 +49,8 @@ class OsedAccountAdapter(DefaultAccountAdapter):
       page rather than rendering allauth's unstyled "closed" page.
     - Password login: ``pre_login`` runs inside ``perform_login`` for every
       login, password or social, so the provisioning rule holds on both doors.
-      Superusers keep password access as the break-glass path.
+      The login page offers the password form for staff who cannot use
+      Microsoft; a password gets no one past the rule that SSO would not.
     """
 
     def is_open_for_signup(self, request: HttpRequest) -> bool:

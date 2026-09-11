@@ -26,5 +26,38 @@
       </a>
     {% endwith %}
 
+    <div class="login-divider">or</div>
+
+    <p class="login-note login-note--small">Sign in with email and password:</p>
+
+    <form method="post" action="{% url 'account_login' %}">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <ul class="messages">
+          {% for error in form.non_field_errors %}
+            <li class="error">{{ error }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      <div class="login-form-field">
+        <label for="id_login">Email</label>
+        {{ form.login }}
+      </div>
+
+      <div class="login-form-field">
+        <label for="id_password">Password</label>
+        {{ form.password }}
+      </div>
+
+      {% if redirect_field_value %}
+        <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}" />
+      {% endif %}
+
+      <div class="actions login-actions">
+        <button type="submit" class="btn-primary">Sign in</button>
+      </div>
+    </form>
   </div>
 {% endblock %}

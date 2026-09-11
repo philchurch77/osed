@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **OSED** is a Django 6 self-evaluation tool for a multi-academy trust. Schools record
 termly **dashboard ratings** and structured **in-depth reviews** across judgement areas;
-trust leaders and trustees view aggregated results. Access is via **Microsoft SSO**, with
+trust leaders and trustees view aggregated results. Access is via **Microsoft SSO** (or an admin-issued password), with
 authorization handled in-app and scoped per school.
 
 Two further tabs were added in Aug 2026 from the Oxlip TFORS/risk proposal (v7):
@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**135 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**215 tests** in `review/tests.py`; the suite
   takes ~60–85s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -91,7 +91,8 @@ python manage.py runserver
   `OsedAccountAdapter` (`ACCOUNT_ADAPTER`) applies it in `pre_login` — which every allauth
   login path goes through — and closes `/accounts/signup/`; `RestrictMicrosoftLoginAdapter`
   (`SOCIALACCOUNT_ADAPTER`) matches the Entra email to a user and applies the same rule.
-  Guarded by `LoginDoorsTests` (15 tests, mutation-checked: disable the rule and seven go red).
+  Guarded by `LoginDoorsTests` (20 tests; the rule was mutation-checked when it had 15:
+  disable it and seven went red).
 - **`review/admin.py`** — multi-tenant admin; includes a CSV user-import view
   (`import-users/`, superuser only) and the **pilot visibility grid**
   (`/admin/review/operationsmetricvisibility/grid/`).
@@ -162,13 +163,32 @@ python manage.py runserver
 
 ## Security model (do not weaken)
 
-- **Authentication** = Microsoft SSO. The login page offers only the Microsoft button.
+- **Authentication** = Microsoft SSO **or** email + password. The login page offers the
+  Microsoft button and, below it, an email/password form. The form was removed on
+  8 Sept 2026 and **reinstated on 11 Sept at the client's request**: some staff cannot use
+  the Microsoft button (a live ticket — a Cedars Park user whose Entra `mail`/UPN did not
+  match her OSED email had been working on an admin-set password, and was locked out the
+  day the form went). Do not remove it again without the client.
   `ACCOUNT_ADAPTER` (`OsedAccountAdapter`) closes `/accounts/signup/` and applies the
   provisioning rule to password logins too; **allauth has no `ACCOUNT_ALLOW_SIGNUPS`
   setting** — that name was in `settings.py` for months and did nothing. Both adapters
-  call the one `provisioning_problem()` rule. Imported users get unusable passwords
-  (SSO-only). Break-glass is any superuser with a usable password, via either
-  `/accounts/login/` (POST still accepted; rate-limited) or `/admin/login/` (not).
+  call the one `provisioning_problem()` rule, so a password gets no one past **OSED's**
+  rule. It **does** bypass Microsoft's own controls — MFA, conditional access, and Entra
+  account disablement — which is why passwords are **issued by an admin only**, per person
+  (user change page → **Reset password**). Imported users get unusable passwords.
+  `osed/urls.py` returns 404 for allauth's `password/set/` (a user minting their own),
+  `email/` (rewriting the address SSO matches on) and `password/reset/` (no mail backend;
+  would be a single-factor route in the day one is added). `password/change/` stays open —
+  it needs the current password. `LoginDoorsTests` guards all four.
+  `/accounts/login/` is rate-limited by allauth, **but weakly** — see "Known discrepancies".
+- **Microsoft refusals say which rule failed.** "You are not authorised to use this service"
+  means no active user matches the email Entra sent — allauth takes Entra `mail`, falling
+  back to `userPrincipalName`, which may differ from the address people email. "Your
+  account is not configured with a school yet" means a user matched but has no profile
+  (check for an older duplicate). The same two messages appear on a password refusal,
+  except that an inactive user with the right password gets allauth's "account inactive"
+  page. An error on a Microsoft page (`AADSTS…`) never reached OSED — that is the Entra
+  app registration.
 - **Authorization** = per-school scoping. Non-superusers are restricted to their
   `SchoolProfile` schools in **both** views (`_resolve_school_selection`,
   `_get_allowed_schools`) and admin (`_request_schools`). Any new view that reads or
@@ -199,7 +219,7 @@ Copleston"). None of this is visible from the admin list page.
   `m2m=[Copleston]` and `m2m=[]`. Open the change page to know.
 - **Adding a User in the admin creates no `SchoolProfile`** — `SchoolProfileInline` is
   `extra=0`, so after "Save" the profile is behind an "Add another" link. Miss it and the
-  person is refused at SSO (or, before the adapter fix, landed on the *"Not linked to a
+  person is refused at either login door (or, before the adapter fix, landed on the *"Not linked to a
   school"* 403 page — the wording they will repeat back to you). The list shows "—".
 - The **CSV importer needs the exact `School.name`** ("Copleston High School", not
   "Copleston"); a non-matching row is skipped with an on-screen error, so read the results
@@ -209,6 +229,8 @@ Copleston"). None of this is visible from the admin list page.
   a duplicate. Refuse-on-duplicate is a pending follow-up, not built.
 - **Offboarding: `is_active = False` is the only complete action.** Deleting the profile
   revokes SSO for non-superusers only; superusers skip the profile check entirely.
+  **Disabling the person's Microsoft account does not end a password login** — anyone who
+  was issued a password keeps it until OSED's `is_active` is cleared.
 - Which Django user an Entra identity lands in is the `SocialAccount` row
   (`/admin/socialaccount/socialaccount/`) — check it before assuming the profile is wrong.
 
@@ -377,9 +399,17 @@ is generated from tile data specifically so it cannot drift, and it goes into bo
   school's evidence text there. Bounded by `is_staff`, which only superusers can set. Flagged
   8 Sept 2026; fix is five lines matching `InDepthReviewAdmin`; awaiting a decision.
 - `/admin/login/` takes email+password with **no rate limit**; `/accounts/login/` is
-  limited by allauth. Both are superuser break-glass. `SOCIALACCOUNT_ONLY = True` would
-  remove the `/accounts/` password path and reset/change URLs (it would also fail
-  `test_superuser_without_profile_can_still_password_login`) — a separate decision.
+  limited by allauth. `SOCIALACCOUNT_ONLY = True` would remove the `/accounts/` password
+  path — **not an option now** that staff log in with passwords (see "Security model").
+- **allauth's login rate limit is weaker than it looks** (Master-at-Arms, 11 Sept 2026).
+  There is no `CACHES` setting, so the counters are per-process in-memory: they reset on
+  every deploy and multiply with workers or instances. allauth ignores `X-Forwarded-For`
+  unless told otherwise, so on App Service the per-IP bucket is **probably** Azure's front
+  end — shared by the whole Trust (unverified). The per-email half (5 failures / 5 min)
+  lets anyone lock a named person out of password login. Fix: log `REMOTE_ADDR` and
+  `X-Forwarded-For` once in production, then set `ALLAUTH_TRUSTED_PROXY_COUNT` —
+  **never blind**, a wrong count lets an attacker choose their IP. Move to
+  `DatabaseCache` before adding workers.
 
 ## Design decisions worth knowing before changing them
 

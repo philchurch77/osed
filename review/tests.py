@@ -2532,13 +2532,71 @@ class LoginDoorsTests(TestCase):
 		self._password_login("inactive@example.com")
 		self.assertNotIn("_auth_user_id", self.client.session)
 
-	# Catches: the password form reappearing on the public login page.
-	def test_login_page_offers_microsoft_only(self):
+	# Catches: the password form vanishing from the login page again. It was
+	# removed on 8 Sept 2026 and staff who cannot use Microsoft were locked out;
+	# it was reinstated at the client's request. Both doors must be offered.
+	def test_login_page_offers_microsoft_and_password(self):
 		resp = self.client.get(reverse("account_login"))
 		self.assertEqual(resp.status_code, 200)
 		self.assertContains(resp, "Sign in with Microsoft")
-		self.assertNotContains(resp, "id_password")
-		self.assertNotContains(resp, 'name="password"')
+		self.assertContains(resp, 'name="login"')
+		self.assertContains(resp, 'name="password"')
+
+	# Catches: a wrong password reloading the page with no explanation.
+	def test_wrong_password_shows_an_error_on_the_login_page(self):
+		resp = self.client.post(
+			reverse("account_login"),
+			{"login": "provisioned@example.com", "password": "not-the-password"},
+		)
+		self.assertEqual(resp.status_code, 200)
+		self.assertNotIn("_auth_user_id", self.client.session)
+		self.assertContains(resp, 'class="error"')
+
+	# --- allauth self-service, closed in osed/urls.py ---------------------
+
+	# Catches: an SSO-only user minting their own password at
+	# /accounts/password/set/ -- one that skips Microsoft MFA and keeps working
+	# after the Trust disables their Microsoft account.
+	def test_signed_in_user_cannot_set_their_own_password(self):
+		sso_only = User.objects.create_user("ssoonly", "ssoonly@example.com")
+		SchoolProfile.objects.create(user=sso_only, school=self.school)
+		self.assertFalse(sso_only.has_usable_password())
+		self.client.force_login(sso_only)
+
+		resp = self.client.post(
+			reverse("account_set_password"),
+			{"password1": self.PASSWORD, "password2": self.PASSWORD},
+		)
+		self.assertEqual(resp.status_code, 404)
+		sso_only.refresh_from_db()
+		self.assertFalse(sso_only.has_usable_password())
+
+	# Catches: a user rewriting User.email -- the key Microsoft sign-in matches
+	# on -- and capturing a colleague's next SSO login into their own account.
+	def test_signed_in_user_cannot_change_their_own_email(self):
+		self.client.force_login(self.provisioned)
+		resp = self.client.post(
+			reverse("account_email"),
+			{"action_add": "", "email": "someone.else@example.com"},
+		)
+		self.assertEqual(resp.status_code, 404)
+		self.provisioned.refresh_from_db()
+		self.assertEqual(self.provisioned.email, "provisioned@example.com")
+
+	# Catches: password reset by email reopening (it 500s today; it becomes a
+	# single-factor route into any account the day a mail backend is set).
+	def test_password_reset_is_closed(self):
+		resp = self.client.post(
+			reverse("account_reset_password"), {"email": "provisioned@example.com"}
+		)
+		self.assertEqual(resp.status_code, 404)
+
+	# Catches: the closures over-reaching. A user who has been issued a
+	# password must still be able to change it (it needs the current one).
+	def test_password_user_can_still_change_their_password(self):
+		self.client.force_login(self.provisioned)
+		resp = self.client.get(reverse("account_change_password"))
+		self.assertEqual(resp.status_code, 200)
 
 	# --- the shared rule ---------------------------------------------------
 
