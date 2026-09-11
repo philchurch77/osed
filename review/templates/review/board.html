@@ -6,11 +6,23 @@
   <header class="page-header">
     <div class="board-header-titles">
       <h1 class="page-title">Trust Dashboard</h1>
-      <p class="board-period-subtitle">{{ year }}/{{ year|add:1 }} &middot; {{ current_period.term_label|default:"Autumn" }} term</p>
+      {% comment %}
+        Term label comes from selected_term_label, not from current_period: a
+        ReviewPeriod row only exists once an editor has opened that term, and a
+        read-only account never creates one. Falling back to "Autumn" printed
+        the wrong term name beside a filter that said Spring, on the page that
+        goes into board packs as a screenshot.
+      {% endcomment %}
+      <p class="board-period-subtitle">{{ year }}/{{ year|add:1 }} &middot; {{ selected_term_label }} term</p>
     </div>
 
     <form method="get" class="school-select">
-      {% if phase_options|length > 2 %}
+      {% comment %}
+        Phase filter only where there is more than one school to filter. It used
+        to test phase_options, which is always three items, so a single-school
+        user got a dropdown that could only ever eject them off the page.
+      {% endcomment %}
+      {% if schools|length > 1 %}
         {% include "review/includes/filter_phase_field.html" %}
       {% endif %}
       {% include "review/includes/filter_year_field.html" %}
@@ -23,7 +35,7 @@
     <span class="board-legend-item board-legend-item--up">▲ Improvement</span>
     <span class="board-legend-item board-legend-item--down">▼ Decline</span>
     <span class="board-legend-item board-legend-item--same">— No change</span>
-    <span class="board-legend-item board-legend-item--note">Arrows show movement vs previous round</span>
+    <span class="board-legend-item board-legend-item--note">Arrows show movement vs previous term</span>
   </div>
 
   <div class="board-table-wrap">
@@ -61,8 +73,15 @@
         {% if not has_any_data %}
           <tr>
             <td colspan="{{ categories|length|add:1 }}" class="overview-empty">
-              No evaluation data has been entered for {{ year }}/{{ year|add:1 }}, {{ current_period.term_label|default:"Autumn" }} term.
-              Go to <a href="/review/dashboard/">School Dashboard</a> to add ratings.
+              No evaluation data has been entered for {{ year }}/{{ year|add:1 }}, {{ selected_term_label }} term.
+              {% comment %}
+                Do not tell a read-only account to go and add ratings: they
+                arrive at a dashboard with every control disabled and conclude
+                their login is broken.
+              {% endcomment %}
+              {% if can_edit %}
+                Go to <a href="{% url 'review:dashboard' %}">School Dashboard</a> to add ratings.
+              {% endif %}
             </td>
           </tr>
         {% endif %}
@@ -71,11 +90,28 @@
   </div>
 
   {% comment %}
+    Closes the page deliberately for a governor, who sees nothing below the
+    grid. Without it the page simply stops after a table, which reads as
+    half-loaded rather than as the whole of what this account is meant to see.
+  {% endcomment %}
+  {% if is_governor %}
+    <p class="board-governor-note">
+      This view shows the schools you govern. The risk register and Operations &amp;
+      Resources detail are managed by school and trust staff, and are not shown here.
+    </p>
+  {% endif %}
+
+  {% comment %}
     Operations & Resources roll-up. Hidden metrics are excluded from the
     denominator, and each school's scope is shown, so a Board member never
     compares two schools that measured different things without knowing it.
   {% endcomment %}
-  {% if operations_rows %}
+  {% comment %}
+    Suppressed for governors: the Operations & Resources tab is not opened to
+    them, so the roll-up of it does not belong on a page that is. Client
+    decision, 10 Sept 2026.
+  {% endcomment %}
+  {% if operations_rows and not is_governor %}
     <section class="ops-card ops-board">
       <h2 class="ops-domain-title">Operations &amp; Resources</h2>
       <div class="ops-summary-grid">
@@ -109,7 +145,12 @@
     Risk exception report. Red only under the agreed starting rule — this block
     goes into a board pack as a screenshot, so everything is on the page: no
     hover, no click-through, and every colour paired with a text label.
+
+    Suppressed for governors for the same reason as the Operations roll-up
+    above: it renders risk titles and owners, and the Risk tab is not opened to
+    them. Client decision, 10 Sept 2026.
   {% endcomment %}
+  {% if not is_governor %}
   <section class="risk-card risk-board">
     <h2 class="risk-card-title">Risk — exception report</h2>
     <p class="risk-card-sub">
@@ -157,4 +198,5 @@
       <p class="risk-empty">No risks are escalating this term.</p>
     {% endif %}
   </section>
+  {% endif %}
 {% endblock %}

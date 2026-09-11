@@ -73,7 +73,12 @@ from .operations import (
 # The three band statements a Principal can pick between; Blue is a computed
 # state, never a choice.
 OPS_BAND_CHOICES = [c for c in OPS_RAG_CHOICES if c[0] != OPS_BLUE]
-from .permissions import user_can_edit, user_can_qa_risk
+from .permissions import (
+	governor_denied,
+	user_can_edit,
+	user_can_qa_risk,
+	user_is_governor,
+)
 from .risk import (
 	BAND_LABELS,
 	RAG_CSS,
@@ -355,6 +360,7 @@ def home(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
+@governor_denied
 def overview(request: HttpRequest) -> HttpResponse:
 	school = None
 	schools = None
@@ -587,16 +593,27 @@ def board_view(request: HttpRequest) -> HttpResponse:
 
 	has_any_data = any(cell["band"] is not None for row in rows for cell in row["cells"])
 
+	# Governors are approved for the judgement grid only: the Risk and
+	# Operations tabs are not opened to them, so the roll-ups of those tabs do
+	# not belong on a page that is. Decided here rather than only in the
+	# template so the data is never put into a context a governor can reach --
+	# a technical 500 page renders the whole context.
+	show_trust_extras = not user_is_governor(request.user)
+
 	# Risk exception report — Red only under the agreed starting rule. Sits on
 	# this page rather than a separate one, and is built to screenshot cleanly:
 	# the Committee and Trust Board see it as an image in a board pack.
-	escalated_risks = _escalated_risk_rows(
-		schools, year=year, round_number=selected_round
+	escalated_risks = (
+		_escalated_risk_rows(schools, year=year, round_number=selected_round)
+		if show_trust_extras
+		else []
 	)
 
 	# Operations & Resources roll-up, with each school's pilot scope shown.
-	operations_rows = _operations_summary_rows(
-		schools, year=year, round_number=selected_round
+	operations_rows = (
+		_operations_summary_rows(schools, year=year, round_number=selected_round)
+		if show_trust_extras
+		else []
 	)
 
 	return render(
@@ -613,12 +630,18 @@ def board_view(request: HttpRequest) -> HttpResponse:
 			"year": year,
 			"selected_year_value": selected_year_value,
 			"selected_round": selected_round,
+			# The term the user actually asked for. current_period is None
+			# until an editor has opened that term, and a read-only account
+			# never opens one -- so the template must not derive the label
+			# from it or it prints the wrong term beside the filter.
+			"selected_term_label": TERM_LABELS[selected_round],
 			"round_options": round_options,
 			"academic_year_options": academic_year_options,
 			"phase_options": phase_options,
 			"selected_phase": selected_phase,
 			"current_period": current_period,
 			"has_any_data": has_any_data,
+			"can_edit": user_can_edit(request.user),
 		},
 	)
 
@@ -1128,6 +1151,7 @@ def conclude_indepth_grade(rags_by_key, *, is_safeguarding: bool = False) -> str
 
 
 @login_required
+@governor_denied
 def indepth_review(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 
@@ -1439,6 +1463,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
+@governor_denied
 def reflection(request: HttpRequest) -> HttpResponse:
 	can_edit = user_can_edit(request.user)
 
@@ -1624,6 +1649,7 @@ def _escalated_risk_rows(schools, *, year: int, round_number: int) -> list[dict]
 
 
 @login_required
+@governor_denied
 def risk_register(request: HttpRequest) -> HttpResponse:
 	"""A school's risk register: review what is already open, then add what is new."""
 	can_edit = user_can_edit(request.user)
@@ -1882,6 +1908,7 @@ def _apply_risk_qa(request: HttpRequest, action: str, *, allowed_schools) -> Non
 
 
 @login_required
+@governor_denied
 def risk_qa(request: HttpRequest) -> HttpResponse:
 	"""Cross-school "awaiting QA" queue.
 
@@ -2224,6 +2251,7 @@ def _operations_executive_summary(rows) -> list[str]:
 
 
 @login_required
+@governor_denied
 def operations(request: HttpRequest) -> HttpResponse:
 	"""A school's Operations & Resources position for one term."""
 	can_edit = user_can_edit(request.user)

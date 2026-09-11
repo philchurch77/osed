@@ -242,9 +242,15 @@ class SchoolAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 @admin.register(SchoolProfile)
 class SchoolProfileAdmin(admin.ModelAdmin):
-	list_display = ("user", "school")
+	list_display = ("user", "school", "role")
 	list_display_links = ("user",)
+	# `role` is deliberately NOT in list_editable. Django's changelist writes
+	# back every row whose posted value differs from the database at POST time,
+	# so a submitter silently reverts rows they never touched if someone else
+	# changed them first -- and SchoolProfile carries no simple_history, so the
+	# prior role is unrecoverable. Role changes go through the change page.
 	list_editable = ("school",)
+	list_filter = ("role",)
 	search_fields = ("user__username", "school__name")
 	list_select_related = ("user", "school")
 	filter_horizontal = ("schools",)
@@ -820,7 +826,9 @@ class UserImportForm(forms.Form):
 		label="CSV file",
 		help_text=(
 			"Upload a CSV with two columns: "
-			"<strong>email</strong> and <strong>school</strong>. "
+			"<strong>email</strong> and <strong>school</strong>, plus an optional "
+			"<strong>role</strong> column (<code>FULL</code> or <code>GOVERNOR</code>; "
+			"blank leaves an existing account's role unchanged). "
 			"Include a header row. One row per user per school."
 		),
 	)
@@ -905,6 +913,7 @@ class UserAdmin(DjangoUserAdmin):
 				rows = list(reader)
 				created_count = 0
 				updated_count = 0
+				no_role_count = 0
 				errors = []
 
 				with transaction.atomic():
@@ -919,6 +928,20 @@ class UserAdmin(DjangoUserAdmin):
 						if not school_name:
 							errors.append(f"Row {i}: missing school for {email} \u2014 skipped.")
 							continue
+
+						# An unrecognised role skips the row rather than falling
+						# back to FULL: silently granting wider access than the
+						# spreadsheet asked for is the failure that matters here.
+						role_raw = norm.get("role", "")
+						role = ""
+						if role_raw:
+							role = role_raw.upper().replace(" ", "_").replace("-", "_")
+							if role not in SchoolProfile.Role.values:
+								errors.append(
+									f'Row {i}: unrecognised role "{role_raw}" for {email} '
+									"\u2014 skipped. Use FULL or GOVERNOR."
+								)
+								continue
 
 						try:
 							school = School.objects.get(name__iexact=school_name)
@@ -935,11 +958,32 @@ class UserAdmin(DjangoUserAdmin):
 						else:
 							updated_count += 1
 
-						profile, _ = SchoolProfile.objects.get_or_create(
+						profile, profile_created = SchoolProfile.objects.get_or_create(
 							user=user,
 							defaults={"school": school},
 						)
+						# get_or_create ignores `defaults` when the profile
+						# already exists, so the role has to be applied
+						# explicitly -- otherwise a GOVERNOR row would silently
+						# fail to demote an account that is already on file.
+						if role and profile.role != role:
+							profile.role = role
+							profile.save(update_fields=["role"])
+						elif profile_created and not role:
+							# A brand-new profile takes the model default, which
+							# is full access. That is the right default, but a
+							# spreadsheet of governors uploaded with a mistyped
+							# or missing header would create them all as editors
+							# and report nothing. Count them and say so.
+							no_role_count += 1
 						profile.schools.add(school)
+
+				if no_role_count:
+					errors.append(
+						f"{no_role_count} new account(s) had no role column and were "
+						"created with Full access. If these are governors, set the "
+						"role column to GOVERNOR and import again."
+					)
 
 				results = {
 					"created": created_count,
@@ -957,6 +1001,25 @@ class UserAdmin(DjangoUserAdmin):
 		}
 		return render(request, "admin/review/user/import_users.html", context)
 
+	@admin.display(description="Role")
+	def access_role(self, obj: User):
+		"""Show the access role as its own column.
+
+		Deliberately not folded into `schools_access`, which already cannot
+		distinguish an empty m2m from one holding the FK school (a known
+		defect). One ambiguous column is enough.
+		"""
+		# Superusers first: most of them have no SchoolProfile at all (they are
+		# exempt from needing one), so checking the profile first would render
+		# the highest-privilege accounts identically to a broken one.
+		if obj.is_superuser:
+			return "Superuser"
+		try:
+			profile = obj.schoolprofile
+		except SchoolProfile.DoesNotExist:
+			return "—"
+		return profile.get_role_display()
+
 	@admin.display(description="Schools")
 	def schools_access(self, obj: User):
 		try:
@@ -969,7 +1032,15 @@ class UserAdmin(DjangoUserAdmin):
 		return ", ".join(schools) if schools else "—"
 
 	inlines = [SchoolProfileInline]
-	list_display = ("username", "email", "first_name", "last_name", "is_active", "schools_access")
+	list_display = (
+		"username",
+		"email",
+		"first_name",
+		"last_name",
+		"is_active",
+		"access_role",
+		"schools_access",
+	)
 	add_form = SSOUserCreationForm
 	add_fieldsets = (
 		(

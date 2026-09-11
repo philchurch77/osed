@@ -43,14 +43,24 @@
           <a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Home</a>
           <a href="/review/dashboard/" {% if '/review/dashboard/' in request.path %}aria-current="page"{% endif %}>School Dashboard</a>
           <a href="/review/evaluation/" {% if '/review/evaluation/' in request.path %}aria-current="page"{% endif %}>Evaluation</a>
-          <a href="/review/in-depth/" {% if '/review/in-depth/' in request.path %}aria-current="page"{% endif %}>In-depth review</a>
-          <a href="/review/reflection/" {% if '/review/reflection/' in request.path %}aria-current="page"{% endif %}>Reflection</a>
-          <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>School Progress</a>
+          {% comment %}
+            Governors reach only the School Dashboard, Evaluation and Trust
+            Dashboard. Hiding these links is decoration -- the gate is
+            @governor_denied on the views. If the two ever disagree, the view
+            is the truth.
+          {% endcomment %}
+          {% if not is_governor %}
+            <a href="/review/in-depth/" {% if '/review/in-depth/' in request.path %}aria-current="page"{% endif %}>In-depth review</a>
+            <a href="/review/reflection/" {% if '/review/reflection/' in request.path %}aria-current="page"{% endif %}>Reflection</a>
+            <a href="/review/overview/" {% if '/review/overview/' in request.path %}aria-current="page"{% endif %}>School Progress</a>
+          {% endif %}
           <a href="/review/board/" {% if '/review/board/' in request.path %}aria-current="page"{% endif %}>Trust Dashboard</a>
-          {% if show_operations_tab %}
+          {% if show_operations_tab and not is_governor %}
             <a href="/review/operations/" {% if '/review/operations/' in request.path %}aria-current="page"{% endif %}>Operations &amp; Resources</a>
           {% endif %}
-          <a href="/review/risk/" {% if request.path == '/review/risk/' %}aria-current="page"{% endif %}>Risk</a>
+          {% if not is_governor %}
+            <a href="/review/risk/" {% if request.path == '/review/risk/' %}aria-current="page"{% endif %}>Risk</a>
+          {% endif %}
           {% if can_qa_risk %}
             <a href="/review/risk/qa/" {% if '/review/risk/qa/' in request.path %}aria-current="page"{% endif %}>Risk QA</a>
           {% endif %}

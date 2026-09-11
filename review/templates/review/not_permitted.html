@@ -1,0 +1,48 @@
+{% extends "review/base.html" %}
+
+{% block title %}Not available to your account{% endblock %}
+
+{% block content %}
+  {% comment %}
+    Shown to a governor account that has reached a page outside its three
+    allowed ones. A 403 with a real explanation rather than a redirect: a
+    silent bounce to the dashboard makes a deliberate rule look like a broken
+    link, and generates a support ticket nobody can diagnose.
+
+    The heading confirms the sign-in worked first, because the commonest way to
+    land here is following a link a Principal emailed: allauth honours ?next=,
+    so this can be the first screen a governor ever sees.
+
+    Every link carries school_param so a governor holding two schools is not
+    silently moved to their default school by the one page whose whole job is
+    to recover them.
+  {% endcomment %}
+  <header class="page-header">
+    <h1 class="page-title">You're signed in — but this page isn't one of yours</h1>
+  </header>
+
+  <p>
+    Your account has <strong>governor access</strong>, and this page is not one of
+    the pages it covers. Nothing has gone wrong — this is how governor accounts
+    are set up.
+  </p>
+
+  <h2>What governor access includes</h2>
+  <ul>
+    <li><a href="{% url 'review:dashboard' %}{{ school_param }}">School Dashboard</a> — the termly ratings for your school.</li>
+    <li><a href="{% url 'review:evaluation' %}{{ school_param }}">Evaluation</a> — the judgement areas and the commentary behind them.</li>
+    <li><a href="{% url 'review:board' %}{{ school_param }}">Trust Dashboard</a> — the term's grid, with movement against the previous term.</li>
+  </ul>
+
+  <p>
+    All three are read-only. The in-depth review, reflection, risk register and
+    Operations &amp; Resources pages are not opened to governors.
+  </p>
+
+  <p>
+    If you think you should be able to see this page, ask whoever set up your OSED
+    login at school — they can change what your account sees.
+  </p>
+
+  <p><a class="button" href="{% url 'review:dashboard' %}{{ school_param }}">Back to the School Dashboard</a></p>
+{% endblock %}

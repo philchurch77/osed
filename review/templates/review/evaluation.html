@@ -135,14 +135,33 @@
                 </div>
               </details>
             </td>
+            {% comment %}
+              A read-only account gets the stored text, not a live textarea.
+              The ratings above already disable themselves; leaving these two
+              editable invited a governor or trustee to write at length with no
+              Save button and no unsaved-changes warning, and lose the lot on
+              the next click.
+            {% endcomment %}
             <td class="evaluation-textcell">
               {{ row.form.category_id }}
-              {{ row.form.judgement_evidence.errors }}
-              {{ row.form.judgement_evidence }}
+              {% if can_edit %}
+                {{ row.form.judgement_evidence.errors }}
+                {{ row.form.judgement_evidence }}
+              {% elif row.form.judgement_evidence.value %}
+                <div class="evaluation-readonly-text">{{ row.form.judgement_evidence.value|linebreaks }}</div>
+              {% else %}
+                <p class="evaluation-readonly-empty">No commentary recorded yet.</p>
+              {% endif %}
             </td>
             <td class="evaluation-textcell">
-              {{ row.form.to_progress.errors }}
-              {{ row.form.to_progress }}
+              {% if can_edit %}
+                {{ row.form.to_progress.errors }}
+                {{ row.form.to_progress }}
+              {% elif row.form.to_progress.value %}
+                <div class="evaluation-readonly-text">{{ row.form.to_progress.value|linebreaks }}</div>
+              {% else %}
+                <p class="evaluation-readonly-empty">No next steps recorded yet.</p>
+              {% endif %}
             </td>
           </tr>
         {% endfor %}

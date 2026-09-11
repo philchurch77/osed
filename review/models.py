@@ -84,12 +84,36 @@ class Category(models.Model):
         return self.name
     
 class SchoolProfile(models.Model):
+    class Role(models.TextChoices):
+        FULL = "FULL", "Full access"
+        GOVERNOR = "GOVERNOR", "Governor (read-only, limited pages)"
+
     school = models.ForeignKey(School, on_delete=models.CASCADE)
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     schools = models.ManyToManyField(
         School,
         blank=True,
         related_name="school_profiles",
+    )
+    # Which *pages* an account may reach, as opposed to what it may write.
+    #
+    # Deliberately a field here rather than a Django group, even though "Risk
+    # QA" sets the group precedent: a "Governor" permission would be a
+    # permission that *removes* access, and the admin presents permissions as
+    # grants -- someone would eventually tick it onto a Principal believing it
+    # gave them something. Groups stay additive ("may they write?"); this field
+    # answers a different question ("which pages exist for them?").
+    #
+    # FULL is the default so that adding this field re-grades nobody: every
+    # existing profile keeps exactly the access it had.
+    role = models.CharField(
+        max_length=20,
+        choices=Role.choices,
+        default=Role.FULL,
+        help_text=(
+            "Governors see only the School Dashboard, Trust Dashboard and "
+            "Evaluation pages, read-only, for their own school(s)."
+        ),
     )
 
     def __str__(self):

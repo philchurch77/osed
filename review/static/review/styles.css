@@ -3021,3 +3021,34 @@ summary:focus-visible {
 .ops-note-history-item p { margin: 2px 0 0; }
 
 .ops-note-history-term { font-weight: 600; font-size: 0.76rem; color: var(--colour-muted); }
+
+/* Governor-only closing line on the Trust Dashboard: the risk and operations
+   blocks are suppressed for them, so the page needs a deliberate ending. */
+.board-governor-note {
+  margin: 18px 0 0;
+  font-size: 0.85rem;
+  color: var(--colour-muted);
+  line-height: 1.55;
+}
+
+/* Read-only commentary on the Evaluation page: the stored text, not a
+   textarea a read-only account can type into and never save. */
+.evaluation-readonly-text {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.evaluation-readonly-text p { margin: 0 0 8px; }
+.evaluation-readonly-text p:last-child { margin-bottom: 0; }
+.evaluation-readonly-text:empty::before {
+  content: "4";
+  color: var(--colour-muted);
+}
+
+.evaluation-readonly-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--colour-muted);
+}

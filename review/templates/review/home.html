@@ -7,6 +7,19 @@
     <h1 class="page-title">The OSED</h1>
   </header>
 
+  {% comment %}
+    Home is a redirect target for "no schools are available" on the Trust
+    Dashboard, so it has to be able to show a message -- without this block the
+    user was bounced here and told nothing at all.
+  {% endcomment %}
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
   <section class="home-intro" aria-label="About the OSED">
     <p>
       The Oxlip School Evaluation Dashboard (OSED) is designed to help schools complete a clear, termly evaluation of their current position across each key Ofsted area. School leaders use the Ofsted framework, the Oxlip supporting tool and their own school evidence base to decide which judgement best reflects the school’s current position in each area. These judgements are entered into the OSED app to create a simple colour-coded and numerical overview for the school.

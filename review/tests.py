@@ -12,7 +12,7 @@ from django.contrib import admin as django_admin
 from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
 from django.test import RequestFactory, TestCase
-from django.urls import reverse
+from django.urls import resolve, reverse
 from django.utils.html import escape
 from django.utils import timezone
 
@@ -68,7 +68,9 @@ from .operations import (
 	grant_rag,
 	statutory_rag,
 )
-from .permissions import user_can_qa_risk
+from . import permissions as review_permissions
+from . import urls as review_urls
+from .permissions import user_can_edit, user_can_qa_risk, user_is_governor
 from .risk import rag_for, trend_for
 from .views import (
 	_build_risk_rows,
@@ -124,6 +126,451 @@ class ViewerAccessTests(TestCase):
 		)
 		self.assertEqual(resp.status_code, 200)
 		self.assertEqual(InDepthReview.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Governor access role
+# ---------------------------------------------------------------------------
+
+
+class GovernorUrlCoverageTests(TestCase):
+	"""The allow-list is the guarantee named in permissions.governor_denied.
+
+	@governor_denied on its own is a deny-list, and a deny-list fails OPEN for
+	the next route somebody adds: forget the decorator and the new page is
+	simply visible to governors, with nothing to say so. This walks
+	review/urls.py and requires a decision -- allow-listed or decorated -- for
+	every route, so a new one is refused by default and turns this red.
+	"""
+
+	# Catches: a new route added to review/urls.py with no governor decision.
+	def test_every_review_route_is_either_allowed_or_denied_to_a_governor(self):
+		undecided = []
+		for pattern in review_urls.urlpatterns:
+			if pattern.name in review_permissions.GOVERNOR_URL_NAMES:
+				continue
+			# An include() would be a URLResolver with no callback at all, so it
+			# lands here too rather than slipping past unexamined.
+			if getattr(getattr(pattern, "callback", None), "governor_denied", False):
+				continue
+			undecided.append(pattern.name or str(pattern.pattern))
+
+		self.assertEqual(
+			undecided,
+			[],
+			"These review routes are neither in GOVERNOR_URL_NAMES nor decorated "
+			"with @governor_denied, so a governor account can reach them: "
+			f"{undecided}. Add the decorator, or add the name to the allow-list.",
+		)
+
+	# Catches: the introspection above quietly passing because the decorator's
+	# marker never survives login_required, which is applied outside it.
+	def test_the_denied_marker_survives_the_login_required_wrapper(self):
+		from django.contrib.auth.decorators import login_required
+
+		def a_view(request):  # pragma: no cover - never called
+			return None
+
+		wrapped = login_required(review_permissions.governor_denied(a_view))
+		self.assertTrue(
+			getattr(wrapped, "governor_denied", False),
+			"functools.wraps must carry governor_denied out through "
+			"login_required, or the URL coverage test above proves nothing.",
+		)
+
+	# Catches: the allow-list keeping a name for a route that has been renamed
+	# or removed -- a stale entry that stops guarding anything.
+	def test_every_allow_listed_name_is_a_real_review_route(self):
+		route_names = {p.name for p in review_urls.urlpatterns}
+		self.assertTrue(
+			review_permissions.GOVERNOR_URL_NAMES <= route_names,
+			"GOVERNOR_URL_NAMES holds names that are not routes in review/urls.py: "
+			f"{sorted(review_permissions.GOVERNOR_URL_NAMES - route_names)}",
+		)
+		for name in review_permissions.GOVERNOR_URL_NAMES:
+			reverse(f"review:{name}")
+
+	# Catches: `home` being assumed rather than decided. It lives in osed/urls.py,
+	# so the walk above never sees it; it is open to governors on purpose,
+	# because it is the post-login landing page and the nav links to it.
+	def test_home_is_open_to_governors_by_decision_not_by_oversight(self):
+		self.assertNotIn(
+			"home",
+			review_permissions.GOVERNOR_URL_NAMES,
+			"home is not a review: route -- it is allowed because it is not "
+			"gated, not because it is in this set.",
+		)
+		match = resolve("/")
+		self.assertEqual(match.url_name, "home")
+		self.assertFalse(
+			getattr(match.func, "governor_denied", False),
+			"home is deliberately reachable by a governor; if that changes, "
+			"GovernorAccessTests must change with it.",
+		)
+
+
+class GovernorAccessTests(TestCase):
+	"""A governor account: read-only, and three pages wide.
+
+	Fixture shape follows the 10 Sept ticket. The governor holds TWO schools --
+	the FK school sorts FIRST alphabetically, the m2m holds the OTHER one, and
+	every assertion is made against the other one, so a silent fallback to
+	`SchoolProfile.school` cannot pass by accident. A third school exists that
+	the governor has no link to at all.
+	"""
+
+	DENIED_URL_NAMES = (
+		"overview",
+		"indepth_review",
+		"reflection",
+		"operations",
+		"risk_register",
+		"risk_qa",
+	)
+
+	def setUp(self):
+		# Seeds the trust categories and the twelve operations metrics, so the
+		# Trust Dashboard roll-up has real data to be suppressed. Creates its own
+		# school, which no user here is provisioned for.
+		self.ops = _ops_env()
+		call_command("ensure_risk_qa_group", verbosity=0)
+		self.autumn = self.ops["autumn"]
+
+		self.school_a = School.objects.create(name="Ashfield Primary School")
+		self.school_b = School.objects.create(name="Mendlesham Primary School")
+		self.school_c = School.objects.create(name="Woolpit High School")
+
+		# Category name matches an InDepthArea name so the grade over-write path
+		# resolves (see GradeOverrideTests).
+		self.category = Category.objects.create(name="Achievement", order=1, is_active=True)
+		self.area = InDepthArea.objects.get(name="Achievement")
+
+		self.governor = User.objects.create_user("gov", "gov@example.com")
+		gov_profile = SchoolProfile.objects.create(
+			user=self.governor,
+			school=self.school_a,
+			role=SchoolProfile.Role.GOVERNOR,
+		)
+		gov_profile.schools.add(self.school_b)
+
+		# The control: same two schools, default FULL role.
+		self.principal = User.objects.create_user("principal", "principal@example.com")
+		full_profile = SchoolProfile.objects.create(user=self.principal, school=self.school_a)
+		full_profile.schools.add(self.school_b)
+		self.principal.groups.add(Group.objects.get(name="OSED Staff"))
+		self.principal.groups.add(Group.objects.get(name="Risk QA"))
+
+		# A Red risk and a Red operations metric at school B, so the Trust
+		# Dashboard has something to hide from a governor and to show a Principal.
+		self.risk = Risk.objects.create(
+			school=self.school_b,
+			category=TrustCategory.objects.filter(
+				group=TrustCategory.Group.EVALUATION_AREA
+			).order_by("order").first(),
+			title="Perimeter fence unsecured at Mendlesham",
+			owner="Site Manager",
+			opened_period=self.autumn,
+		)
+		RiskRating.objects.create(
+			risk=self.risk,
+			period=self.autumn,
+			impact="High",
+			likelihood="Highly probable",
+		)
+		_show(self.school_b, "cyber-essentials")
+		OperationsEntry.objects.create(
+			school=self.school_b,
+			period=self.autumn,
+			metric=OperationsMetric.objects.get(key="cyber-essentials"),
+			band_choice="red",
+		)
+
+	# ── helpers ──────────────────────────────────────────────────────────────
+
+	def _dashboard_post(self, school, rating="3"):
+		return {
+			"school_id": str(school.id),
+			"year": "2026-2027",
+			"form-TOTAL_FORMS": "3",
+			"form-INITIAL_FORMS": "0",
+			"form-MIN_NUM_FORMS": "0",
+			"form-MAX_NUM_FORMS": "1000",
+			"form-0-category_id": str(self.category.id),
+			"form-0-round": "1",
+			"form-0-rating": rating,
+			"form-1-category_id": str(self.category.id),
+			"form-1-round": "2",
+			"form-1-rating": "",
+			"form-2-category_id": str(self.category.id),
+			"form-2-round": "3",
+			"form-2-rating": "",
+		}
+
+	# ── the gate itself ──────────────────────────────────────────────────────
+
+	# Catches: @governor_denied being removed, becoming a no-op, or never having
+	# been applied -- a governor reading the in-depth evidence, the reflections,
+	# the full risk register or the operations data of their own schools.
+	def test_governor_is_refused_every_page_outside_its_three(self):
+		derived = [
+			p.name
+			for p in review_urls.urlpatterns
+			if p.name not in review_permissions.GOVERNOR_URL_NAMES
+		]
+		self.assertEqual(
+			sorted(derived),
+			sorted(self.DENIED_URL_NAMES),
+			"review/urls.py has changed -- decide what a governor sees on the "
+			"new route and add it here, so this is proved by a real request.",
+		)
+
+		self.client.force_login(self.governor)
+		for name in self.DENIED_URL_NAMES:
+			url = reverse(f"review:{name}")
+			with self.subTest(route=name, method="GET"):
+				response = self.client.get(url, {"year": "2026-2027", "round": "1"})
+				self.assertEqual(response.status_code, 403)
+				self.assertTemplateUsed(response, "review/not_permitted.html")
+			with self.subTest(route=name, method="POST"):
+				before = Risk.objects.count()
+				response = self.client.post(
+					url,
+					{
+						"year": "2026-2027",
+						"round": "1",
+						"action": "add_risk",
+						"school_id": str(self.school_b.id),
+						"title": "Governor should never be able to write this",
+					},
+				)
+				self.assertEqual(response.status_code, 403)
+				self.assertTemplateUsed(response, "review/not_permitted.html")
+				self.assertEqual(Risk.objects.count(), before)
+
+	# Catches: the gate over-reaching and locking a governor out of the three
+	# pages the role exists to provide.
+	def test_governor_reaches_its_own_pages(self):
+		self.client.force_login(self.governor)
+		for name in ("dashboard", "board", "evaluation"):
+			with self.subTest(route=name):
+				response = self.client.get(
+					reverse(f"review:{name}"), {"year": "2026-2027", "round": "1"}
+				)
+				self.assertEqual(response.status_code, 200)
+
+		self.assertEqual(self.client.get("/").status_code, 200)
+
+		entered = self.client.get(reverse("review:enter"))
+		self.assertEqual(entered.status_code, 302)
+		self.assertEqual(entered.url, reverse("review:dashboard"))
+
+	# ── read-only ────────────────────────────────────────────────────────────
+
+	# Catches: a governor's dashboard POST being written, which is the one place
+	# the role could quietly change a published judgement.
+	def test_governor_post_to_dashboard_saves_nothing(self):
+		self.client.force_login(self.governor)
+		before = Evaluation.objects.count()
+
+		response = self.client.post(
+			reverse("review:dashboard"), data=self._dashboard_post(self.school_b)
+		)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertEqual(Evaluation.objects.count(), before)
+		self.assertFalse(Evaluation.objects.filter(school=self.school_b).exists())
+
+	# Catches: the evaluation page's override_grade action, which bypasses the
+	# formset entirely, being reachable by a read-only governor.
+	def test_governor_cannot_over_write_an_evaluation_grade(self):
+		InDepthReview.objects.create(
+			school=self.school_b, year=2026, area=self.area, overall_grade="exceptional"
+		)
+		evaluation = Evaluation.objects.create(
+			school=self.school_b, period=self.autumn, category=self.category, rating=3
+		)
+		self.client.force_login(self.governor)
+
+		response = self.client.post(
+			reverse("review:evaluation"),
+			data={
+				"action": "override_grade",
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				"round": "1",
+				"category_id": str(self.category.id),
+				"reason": "Governor pressing the button.",
+			},
+		)
+
+		self.assertEqual(response.status_code, 302)
+		evaluation.refresh_from_db()
+		self.assertEqual(evaluation.rating, 3)
+		self.assertFalse(evaluation.rating_overridden)
+		self.assertIsNone(evaluation.overridden_by)
+
+	# Catches: user_can_edit() checking EDIT_PERMS before the role, so a governor
+	# who is also put in the OSED Staff group silently becomes an editor.
+	def test_governor_holding_every_edit_permission_still_cannot_save(self):
+		for codename in (
+			"add_evaluation",
+			"change_evaluation",
+			"add_indepthresponse",
+			"change_indepthresponse",
+			"add_risk",
+			"change_risk",
+		):
+			self.governor.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+		governor = User.objects.get(pk=self.governor.pk)  # drop the perm cache
+
+		self.assertFalse(user_can_edit(governor))
+
+		self.client.force_login(governor)
+		before = Evaluation.objects.count()
+		response = self.client.post(
+			reverse("review:dashboard"), data=self._dashboard_post(self.school_b)
+		)
+		self.assertEqual(response.status_code, 302)
+		self.assertEqual(Evaluation.objects.count(), before)
+
+	# Catches: the Risk QA permission re-opening a page the role closes. QA is
+	# additive ("may they sign off?"); the role answers "which pages exist?".
+	def test_governor_in_the_risk_qa_group_is_still_refused_the_queue(self):
+		self.governor.groups.add(Group.objects.get(name="Risk QA"))
+		governor = User.objects.get(pk=self.governor.pk)
+
+		self.assertTrue(governor.has_perm(review_permissions.QA_RISK_PERM))
+		self.assertFalse(user_can_qa_risk(governor))
+
+		self.client.force_login(governor)
+		response = self.client.get(reverse("review:risk_qa"), {"year": "2026-2027"})
+		self.assertEqual(response.status_code, 403)
+		self.assertTemplateUsed(response, "review/not_permitted.html")
+
+	# ── scoping still applies ────────────────────────────────────────────────
+
+	# Catches: the role being read as the whole of a governor's access control,
+	# leaving a forged ?school= id to reach a school they hold no link to. The
+	# evaluation page renders the judgement evidence in full.
+	def test_governor_cannot_reach_a_third_schools_data_by_url(self):
+		Evaluation.objects.create(
+			school=self.school_c,
+			period=self.autumn,
+			category=self.category,
+			rating=5,
+			judgement_evidence="Woolpit judgement evidence, confidential to Woolpit.",
+		)
+		self.client.force_login(self.governor)
+
+		response = self.client.get(
+			reverse("review:evaluation"),
+			{"school": str(self.school_c.id), "year": "2026-2027", "round": "1"},
+		)
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], self.school_c)
+		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertNotContains(response, "Woolpit judgement evidence")
+
+		response = self.client.get(
+			reverse("review:dashboard"),
+			{"school": str(self.school_c.id), "year": "2026-2027"},
+		)
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], self.school_c)
+
+		# The second of the governor's two schools is genuinely reachable, so the
+		# refusal above is scoping and not a blanket fallback.
+		response = self.client.get(
+			reverse("review:dashboard"),
+			{"school": str(self.school_b.id), "year": "2026-2027"},
+		)
+		self.assertEqual(response.context["school"], self.school_b)
+
+	# ── the Trust Dashboard ──────────────────────────────────────────────────
+
+	# Catches: the risk exception report or the operations roll-up reaching a
+	# governor's Trust Dashboard. Both are built in the view, not just hidden in
+	# the template, so a technical 500 -- which renders the whole context --
+	# cannot leak risk titles and owners either.
+	def test_trust_dashboard_hides_risk_and_operations_from_a_governor(self):
+		self.client.force_login(self.governor)
+		response = self.client.get(
+			reverse("review:board"), {"year": "2026-2027", "round": "1"}
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.context["escalated_risks"], [])
+		self.assertEqual(response.context["operations_rows"], [])
+		self.assertNotContains(response, "Perimeter fence unsecured at Mendlesham")
+		self.assertNotContains(response, "Risk — exception report")
+		self.assertNotContains(response, "ops-summary-tiles")
+		self.assertNotContains(response, "Cyber Essentials")
+		# The page says why it stops where it does, rather than looking truncated.
+		self.assertContains(response, "board-governor-note")
+
+	# Catches: the assertions above passing because the data never rendered for
+	# anybody. The same page, same term, for a FULL account at the same schools.
+	def test_trust_dashboard_still_shows_risk_and_operations_to_a_full_account(self):
+		self.client.force_login(self.principal)
+		response = self.client.get(
+			reverse("review:board"), {"year": "2026-2027", "round": "1"}
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, "Perimeter fence unsecured at Mendlesham")
+		self.assertContains(response, "Cyber Essentials")
+		self.assertNotContains(response, "board-governor-note")
+
+	# Catches: the nav offering a governor links to pages that will 403 them.
+	# Decoration, not the gate -- but a link that always fails trains people to
+	# report the product as broken.
+	def test_governor_nav_omits_the_pages_it_cannot_open(self):
+		self.client.force_login(self.governor)
+		response = self.client.get(reverse("review:dashboard"), {"year": "2026-2027"})
+
+		self.assertTrue(response.context["is_governor"])
+		self.assertNotContains(response, "/review/in-depth/")
+		self.assertNotContains(response, "/review/risk/")
+		self.assertNotContains(response, "/review/operations/")
+		self.assertNotContains(response, "/review/reflection/")
+		self.assertContains(response, "/review/board/")
+
+	# ── the two exemptions ───────────────────────────────────────────────────
+
+	# Catches: the role being read off a SchoolProfile without the superuser
+	# exemption, locking a superuser out of the Trust's own admin pages because
+	# somebody set a role on their profile.
+	def test_superuser_with_a_governor_profile_is_not_treated_as_a_governor(self):
+		root = User.objects.create_superuser("root", "root@example.com", "pw12345678")
+		SchoolProfile.objects.create(
+			user=root, school=self.school_a, role=SchoolProfile.Role.GOVERNOR
+		)
+
+		self.assertFalse(user_is_governor(root))
+		self.assertTrue(user_can_edit(root))
+		self.assertTrue(user_can_qa_risk(root))
+
+		self.client.force_login(root)
+		response = self.client.get(
+			reverse("review:risk_register"), {"year": "2026-2027", "round": "1"}
+		)
+		self.assertEqual(response.status_code, 200)
+
+	# Catches: the governor gate catching everyone -- the role defaults to FULL,
+	# so adding it must re-grade nobody.
+	def test_a_full_account_still_reaches_every_page_a_governor_is_refused(self):
+		self.assertFalse(user_is_governor(self.principal))
+		self.assertTrue(user_can_edit(self.principal))
+
+		self.client.force_login(self.principal)
+		for name in self.DENIED_URL_NAMES:
+			with self.subTest(route=name):
+				response = self.client.get(
+					reverse(f"review:{name}"), {"year": "2026-2027", "round": "1"}
+				)
+				self.assertEqual(response.status_code, 200)
 
 
 class StaffEditTests(TestCase):
@@ -2609,6 +3056,36 @@ class LoginDoorsTests(TestCase):
 		self.assertIsNone(provisioning_problem(self.super))
 		self.assertEqual(provisioning_problem(self.orphan), NO_SCHOOL)
 		self.assertIsNone(provisioning_problem(self.provisioned))
+
+	# Catches: the governor role's fail-open lookup becoming reachable. The role
+	# lives on SchoolProfile, so an account with no profile has no role and
+	# user_is_governor() reads False -- i.e. FULL access. permissions.py says in
+	# as many words that this is safe only because provisioning_problem() turns
+	# a profile-less non-superuser away at every door. This is that dependency,
+	# written down: if the login gate is relaxed, the role fails open.
+	def test_governor_without_school_profile_is_refused_at_login(self):
+		from .allauth_adapters import NO_SCHOOL, provisioning_problem
+		from .permissions import user_is_governor
+
+		governor = User.objects.create_user(
+			"governor_door", "governor.door@example.com", self.PASSWORD
+		)
+		profile = SchoolProfile.objects.create(
+			user=governor, school=self.school, role=SchoolProfile.Role.GOVERNOR
+		)
+		self.assertIsNone(provisioning_problem(governor))
+		self.assertTrue(user_is_governor(User.objects.get(pk=governor.pk)))
+
+		# Take the profile away: the role goes with it, and reads as full access.
+		profile.delete()
+		reloaded = User.objects.get(pk=governor.pk)
+		self.assertFalse(user_is_governor(reloaded))
+
+		# Which is why the door has to be shut.
+		self.assertEqual(provisioning_problem(reloaded), NO_SCHOOL)
+		resp = self._password_login("governor.door@example.com")
+		self.assertEqual(resp.url, reverse("account_login"))
+		self.assertNotIn("_auth_user_id", self.client.session)
 
 	# --- Microsoft SSO path -----------------------------------------------
 

@@ -66,14 +66,23 @@
                 {{ form.round }}
                 <details class="rag-picker">
                   <summary class="rag-picker-summary">
+                    {% comment %}
+                      A read-only account cannot select anything, so an unrated
+                      cell reads "Not rated" rather than instructing them to do
+                      something the disabled controls will not let them do.
+                      The aria-label follows suit -- it previously announced
+                      "Select rating" on all 24 cells regardless of state.
+                    {% endcomment %}
                     {% with current=form.rating.value %}
-                      <span class="rag-current rag-current--{% if current %}{{ current }}{% else %}blank{% endif %}" aria-label="Select rating">
+                      <span class="rag-current rag-current--{% if current %}{{ current }}{% else %}blank{% endif %}" aria-label="{% if current %}Rating{% elif can_edit %}Select rating{% else %}Not rated{% endif %}">
                         {% if current %}
                           {% for value,label in form.rating.field.choices %}
                             {% if value|stringformat:'s' == current|stringformat:'s' %}({{ value }}) {{ label }}{% endif %}
                           {% endfor %}
-                        {% else %}
+                        {% elif can_edit %}
                           Select rating
+                        {% else %}
+                          Not rated
                         {% endif %}
                       </span>
                     {% endwith %}
