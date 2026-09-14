@@ -168,6 +168,10 @@ html, body {
   color: var(--colour-text) !important;
 }
 
+.nav-bottom a.nav-signout[aria-current="page"] {
+  color: var(--colour-primary-dark) !important;
+}
+
 .app-content {
   flex: 1;
 }
@@ -1390,6 +1394,16 @@ details.rag-picker:not([open]) .rag-picker-panel {
 .login-note--small {
   font-size: 13px;
   margin: 0 0 14px;
+}
+
+/* Django's password-rule help text is a bare <ul>. */
+.login-note--small ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.login-note--small li {
+  margin-bottom: 2px;
 }
 
 .login-actions {

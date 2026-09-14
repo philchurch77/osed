@@ -2889,6 +2889,12 @@ class LoginDoorsTests(TestCase):
 	PASSWORD = "Str0ng-Passw0rd!2026"
 
 	def setUp(self):
+		from django.core.cache import cache
+
+		# allauth's rate-limit counters live in the process-wide cache and key on
+		# user pk, which SQLite reuses after each test's rollback. Without this,
+		# change_password POSTs from earlier tests count against later ones.
+		cache.clear()
 		self.school = School.objects.create(name="Door School")
 		# Active, usable password, NO SchoolProfile — the case that used to get in.
 		self.orphan = User.objects.create_user(
@@ -3044,6 +3050,153 @@ class LoginDoorsTests(TestCase):
 		self.client.force_login(self.provisioned)
 		resp = self.client.get(reverse("account_change_password"))
 		self.assertEqual(resp.status_code, 200)
+
+	# Catches: /accounts/3rdparty/ reopening, letting a signed-in user list or
+	# disconnect the Microsoft identity linked to their account. Links are made
+	# only by the email match in RestrictMicrosoftLoginAdapter.
+	def test_signed_in_user_cannot_list_or_disconnect_linked_microsoft_account(self):
+		from allauth.socialaccount.models import SocialAccount
+
+		linked = SocialAccount.objects.create(
+			user=self.provisioned, provider="microsoft", uid="entra-provisioned"
+		)
+		self.client.force_login(self.provisioned)
+		url = reverse("socialaccount_connections")
+
+		self.assertEqual(self.client.get(url).status_code, 404)
+		resp = self.client.post(url, {"account": linked.pk})
+		self.assertEqual(resp.status_code, 404)
+		self.assertTrue(SocialAccount.objects.filter(pk=linked.pk).exists())
+
+	# Catches: the 3rdparty closure over-reaching onto the page Microsoft
+	# returns a cancelled sign-in to -- a user who backs out would get a 404.
+	def test_microsoft_cancelled_login_page_is_still_reachable(self):
+		resp = self.client.get(reverse("socialaccount_login_cancelled"))
+		self.assertNotEqual(resp.status_code, 404)
+		self.assertEqual(resp.status_code, 200)
+
+	# Catches: the change-password form rendering but not actually changing the
+	# password, so a temporary admin-issued password stays live.
+	def test_password_change_with_correct_current_password_replaces_it(self):
+		new_password = "An0ther-Str0ng-Pass!2026"
+		self.client.force_login(self.provisioned)
+		resp = self.client.post(
+			reverse("account_change_password"),
+			{
+				"oldpassword": self.PASSWORD,
+				"password1": new_password,
+				"password2": new_password,
+			},
+		)
+		self.assertEqual(resp.status_code, 302)
+		self.provisioned.refresh_from_db()
+		self.assertTrue(self.provisioned.check_password(new_password))
+		self.assertFalse(self.provisioned.check_password(self.PASSWORD))
+
+	# Catches: the change page accepting a new password without proof of the
+	# current one -- which would make an unattended signed-in browser enough to
+	# take over the account for good.
+	def test_password_change_with_wrong_current_password_changes_nothing(self):
+		new_password = "An0ther-Str0ng-Pass!2026"
+		self.client.force_login(self.provisioned)
+		resp = self.client.post(
+			reverse("account_change_password"),
+			{
+				"oldpassword": "not-the-current-password",
+				"password1": new_password,
+				"password2": new_password,
+			},
+		)
+		self.assertEqual(resp.status_code, 200)
+		self.assertTrue(resp.context["form"].errors)
+		self.provisioned.refresh_from_db()
+		self.assertTrue(self.provisioned.check_password(self.PASSWORD))
+		self.assertFalse(self.provisioned.check_password(new_password))
+
+	# Catches: a password change leaving other sessions alive, so anyone who
+	# signed in with the temporary password keeps their session after the owner
+	# replaces it. The changing session itself must stay signed in.
+	def test_password_change_signs_out_other_sessions_but_not_this_one(self):
+		from django.test import Client
+
+		new_password = "An0ther-Str0ng-Pass!2026"
+		dashboard_url = reverse("review:dashboard")
+
+		# Client B: a real password login with the old (temporary) password.
+		other = Client()
+		other.post(
+			reverse("account_login"),
+			{"login": "provisioned@example.com", "password": self.PASSWORD},
+		)
+		self.assertEqual(
+			int(other.session["_auth_user_id"]), self.provisioned.pk
+		)
+		self.assertEqual(other.get(dashboard_url).status_code, 200)
+
+		# Client A: the owner changes the password.
+		self._password_login("provisioned@example.com")
+		resp = self.client.post(
+			reverse("account_change_password"),
+			{
+				"oldpassword": self.PASSWORD,
+				"password1": new_password,
+				"password2": new_password,
+			},
+		)
+		self.assertEqual(resp.status_code, 302)
+
+		stale = other.get(dashboard_url)
+		self.assertEqual(stale.status_code, 302)
+		self.assertTrue(stale.url.startswith(reverse("account_login")))
+		self.assertNotIn("_auth_user_id", other.session)
+
+		self.assertEqual(self.client.get(dashboard_url).status_code, 200)
+
+	# Catches: the OSED change-password page linking to closed routes (reset,
+	# email, connections), as allauth's stock page and menu did.
+	def test_change_password_page_links_to_no_closed_route(self):
+		self.client.force_login(self.provisioned)
+		resp = self.client.get(reverse("account_change_password"))
+		self.assertEqual(resp.status_code, 200)
+		for name in (
+			"account_reset_password",
+			"account_email",
+			"socialaccount_connections",
+		):
+			self.assertNotContains(resp, f'href="{reverse(name)}"')
+
+	# Catches: the nav "Change password" link missing for a password user, or
+	# shown to an SSO-only account -- where allauth would bounce it to the
+	# closed password/set/ page.
+	def test_change_password_nav_link_only_for_users_holding_a_password(self):
+		link = f'href="{reverse("account_change_password")}"'
+		dashboard_url = reverse("review:dashboard")
+
+		self.client.force_login(self.provisioned)
+		resp = self.client.get(dashboard_url)
+		self.assertEqual(resp.status_code, 200)
+		self.assertContains(resp, link)
+
+		sso_only = User.objects.create_user("ssonav", "ssonav@example.com")
+		sso_only.set_unusable_password()
+		sso_only.save()
+		sso_profile = SchoolProfile.objects.create(user=sso_only, school=self.school)
+		sso_profile.schools.add(self.school)
+		self.client.force_login(sso_only)
+		resp = self.client.get(dashboard_url)
+		self.assertEqual(resp.status_code, 200)
+		self.assertNotContains(resp, link)
+
+	# Catches: a stock allauth page (sign-in cancelled) falling back to allauth's
+	# own layout, whose menu links to the closed email and connections pages.
+	def test_stock_allauth_page_links_to_no_closed_route(self):
+		self.client.force_login(self.provisioned)
+		resp = self.client.get(reverse("socialaccount_login_cancelled"))
+		self.assertEqual(resp.status_code, 200)
+		self.assertNotContains(resp, f'href="{reverse("account_email")}"')
+		self.assertNotContains(
+			resp, f'href="{reverse("socialaccount_connections")}"'
+		)
 
 	# --- the shared rule ---------------------------------------------------
 

@@ -80,6 +80,10 @@
             <a href="/admin/" {% if '/admin/' in request.path %}aria-current="page"{% endif %}>Admin</a>
           {% endif %}
           {% if user.is_authenticated %}
+            {# Only admin-issued password users; SSO-only accounts have no password to change. #}
+            {% if user.has_usable_password %}
+              <a href="{% url 'account_change_password' %}" class="nav-signout" {% if '/accounts/password/change/' in request.path %}aria-current="page"{% endif %}>Change password</a>
+            {% endif %}
             <a href="/accounts/logout/" class="nav-signout">Sign out</a>
           {% else %}
             <a href="/accounts/login/" {% if '/accounts/login/' in request.path %}aria-current="page"{% endif %}>Sign in</a>

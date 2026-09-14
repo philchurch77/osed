@@ -1,0 +1,9 @@
+{% extends "review/base.html" %}
+{% comment %}
+  Puts every stock allauth page we have not overridden (sign-in cancelled or
+  failed, account inactive, reauthenticate) inside OSED's own layout. allauth's
+  own base carried a menu linking to Change Email and Account Connections,
+  both closed in osed/urls.py, so those pages showed links that 404.
+{% endcomment %}
+
+{% block title %}{% block head_title %}{% endblock head_title %} · OSED{% endblock %}

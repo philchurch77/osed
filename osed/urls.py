@@ -35,8 +35,11 @@ def _closed(request, *args, **kwargs):
     account, so users may not mint one (password/set), may not rewrite the
     email that Microsoft sign-in matches on (email), and may not reset one by
     mail (password/reset -- no mail backend today, a single-factor route into
-    any account the day one is added). Password *change* stays open: it needs
-    the current password. These must sit above include('allauth.urls').
+    any account the day one is added), and may not add or remove the Microsoft
+    identity linked to their account (3rdparty -- links are made only by the
+    email match in RestrictMicrosoftLoginAdapter). Password *change* stays
+    open: it needs the current password, and is linked from the nav for users
+    who hold one. These must sit above include('allauth.urls').
     """
     raise Http404
 
@@ -54,6 +57,9 @@ urlpatterns = [
     path('accounts/password/set/', _closed),
     path('accounts/email/', _closed),
     re_path(r'^accounts/password/reset/', _closed),
+    # Exact path only: 3rdparty/login/cancelled/ and login/error/ are where
+    # Microsoft returns a cancelled or failed sign-in, and must stay open.
+    path('accounts/3rdparty/', _closed),
     path('accounts/', include('allauth.urls')),
     path('review/', include('review.urls')),
 ]

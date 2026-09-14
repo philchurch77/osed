@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**232 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**240 tests** in `review/tests.py`; the suite
   takes ~85–130s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -91,7 +91,7 @@ python manage.py runserver
   `OsedAccountAdapter` (`ACCOUNT_ADAPTER`) applies it in `pre_login` — which every allauth
   login path goes through — and closes `/accounts/signup/`; `RestrictMicrosoftLoginAdapter`
   (`SOCIALACCOUNT_ADAPTER`) matches the Entra email to a user and applies the same rule.
-  Guarded by `LoginDoorsTests` (21 tests; the rule was mutation-checked when it had 15:
+  Guarded by `LoginDoorsTests` (29 tests; the rule was mutation-checked when it had 15:
   disable it and seven went red).
 - **`review/admin.py`** — multi-tenant admin; includes a CSV user-import view
   (`import-users/`, superuser only) and the **pilot visibility grid**
@@ -202,8 +202,18 @@ Three things about it that are not obvious and have already mattered:
   (user change page → **Reset password**). Imported users get unusable passwords.
   `osed/urls.py` returns 404 for allauth's `password/set/` (a user minting their own),
   `email/` (rewriting the address SSO matches on) and `password/reset/` (no mail backend;
-  would be a single-factor route in the day one is added). `password/change/` stays open —
-  it needs the current password. `LoginDoorsTests` guards all four.
+  would be a single-factor route in the day one is added) and `3rdparty/` (listing or
+  disconnecting the linked Microsoft identity — **exact path only**: `3rdparty/login/cancelled/`
+  and `login/error/` are where Microsoft returns a failed sign-in). `password/change/` stays
+  open — it needs the current password, and since 14 Sept 2026 it is **linked from the nav**
+  ("Change password", shown only when `user.has_usable_password`) and styled by
+  `templates/account/password_change.html`. The client had reported that password users could
+  not replace an admin's temporary password: the page existed but nothing linked to it. A
+  successful change signs out every other session. `templates/allauth/layouts/base.html` puts
+  the remaining stock allauth pages inside `review/base.html`, because allauth's own layout
+  linked to the closed routes. `LoginDoorsTests` guards all of it. **A "Forgot password"
+  button was requested at the same time and is not built** — it needs a mail backend and
+  reopens `password/reset/`; awaiting a client decision (see "Open with the client").
   `/accounts/login/` is rate-limited by allauth, **but weakly** — see "Known discrepancies".
 - **Microsoft refusals say which rule failed.** "You are not authorised to use this service"
   means no active user matches the email Entra sent — allauth takes Entra `mail`, falling
@@ -469,6 +479,11 @@ up by `import_indepth_workbooks`.
    `organizations` (`settings.py`), `AZURE_DEPLOYMENT.md` documents either, and the adapter
    authorises on the email claim alone. Multi-tenant + `organizations` is the nOAuth pattern;
    single-tenant makes it moot. Needs the live App Setting and the Entra portal checked.
+9. **Self-service "Forgot password" (requested 14 Sept 2026, not built).** OSED has no
+   `EMAIL_BACKEND` or Azure mail service, and a reset-by-email link lets anyone who can read
+   a mailbox mint a password that bypasses MFA, conditional access and Entra disablement.
+   Needs a mail service and the client's acceptance of that trade-off. Change-password
+   (needs the current one) was built instead.
 
 ## Proposed: Power BI embed (planned, NOT built)
 
