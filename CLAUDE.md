@@ -91,6 +91,9 @@ python manage.py runserver
   `OsedAccountAdapter` (`ACCOUNT_ADAPTER`) applies it in `pre_login` — which every allauth
   login path goes through — and closes `/accounts/signup/`; `RestrictMicrosoftLoginAdapter`
   (`SOCIALACCOUNT_ADAPTER`) matches the Entra email to a user and applies the same rule.
+  `LoginDoorsTests.setUp` calls `cache.clear()`: allauth's rate-limit counters live in the
+  in-memory cache across tests and are keyed on user pk, which SQLite reuses after each
+  rollback — without it, change-password POSTs in one test count against the next (429).
   Guarded by `LoginDoorsTests` (29 tests; the rule was mutation-checked when it had 15:
   disable it and seven went red).
 - **`review/admin.py`** — multi-tenant admin; includes a CSV user-import view
@@ -202,7 +205,7 @@ Three things about it that are not obvious and have already mattered:
   (user change page → **Reset password**). Imported users get unusable passwords.
   `osed/urls.py` returns 404 for allauth's `password/set/` (a user minting their own),
   `email/` (rewriting the address SSO matches on) and `password/reset/` (no mail backend;
-  would be a single-factor route in the day one is added) and `3rdparty/` (listing or
+  would be a single-factor route in the day one is added), and `3rdparty/` (listing or
   disconnecting the linked Microsoft identity — **exact path only**: `3rdparty/login/cancelled/`
   and `login/error/` are where Microsoft returns a failed sign-in). `password/change/` stays
   open — it needs the current password, and since 14 Sept 2026 it is **linked from the nav**
@@ -314,6 +317,13 @@ Copleston"). None of this is visible from the admin list page.
 - **`User.email` is not unique.** Both reads are `email__iexact` and `.first()` is
   pk-ordered on Django 6 (deterministic: oldest row wins), but nothing prevents or reports
   a duplicate. Refuse-on-duplicate is a pending follow-up, not built.
+- **Issuing a password: one temporary password per person, never a shared one.** The person
+  replaces it via the nav's "Change password" (needs the current one; signs out other
+  sessions). A shared temporary password lets anyone who knows it change a colleague's
+  first, and **nothing records a password change** — no `password_changed` receiver, and
+  `LOGGING` is WARNING+. `MinimumLengthValidator` is at its default of **8**;
+  Master-at-Arms suggested 12 for a route that bypasses MFA (new passwords only). Both are
+  open suggestions (14 Sept 2026), not built.
 - **Offboarding: `is_active = False` is the only complete action.** Deleting the profile
   revokes SSO for non-superusers only; superusers skip the profile check entirely.
   **Disabling the person's Microsoft account does not end a password login** — anyone who
@@ -564,6 +574,11 @@ is generated from tile data specifically so it cannot drift, and it goes into bo
   `evaluation.html` that is the grade-override form whenever it renders, leaving the
   eight-category commentary form unguarded — navigate away and the typing is gone, with no
   warning and nothing saved to recover.
+- **The `{% if messages %}` block is copied into 12 templates** (every page template plus
+  `account/login.html` and `account/password_change.html`) rather than rendered once in
+  `review/base.html`. Not broken; the tidy is to render it above `{% block content %}` in
+  the base and delete the copies — check no page renders messages somewhere other than the
+  top first. Flagged by the Carpenter, 14 Sept 2026.
 - **Redirect query strings are built two different ways** — f-string concatenation via
   `_query_string` in four views, list-of-tuples in `_readonly_redirect` / `risk_register` /
   `operations`. Unifying them into one `_redirect_with_params(url_name, **params)` is a
