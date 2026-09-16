@@ -454,6 +454,11 @@ class GovernorAccessTests(TestCase):
 	# Catches: the role being read as the whole of a governor's access control,
 	# leaving a forged ?school= id to reach a school they hold no link to. The
 	# evaluation page renders the judgement evidence in full.
+	#
+	# An id outside the governor's own set is refused by NOT resolving to
+	# anything: the chooser is returned in place of the page, with no `school`
+	# in the context at all. The older contract substituted one of the user's
+	# own schools, which hid the forgery behind a page that looked ordinary.
 	def test_governor_cannot_reach_a_third_schools_data_by_url(self):
 		Evaluation.objects.create(
 			school=self.school_c,
@@ -469,8 +474,8 @@ class GovernorAccessTests(TestCase):
 			{"school": str(self.school_c.id), "year": "2026-2027", "round": "1"},
 		)
 		self.assertEqual(response.status_code, 200)
-		self.assertNotEqual(response.context["school"], self.school_c)
-		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
 		self.assertNotContains(response, "Woolpit judgement evidence")
 
 		response = self.client.get(
@@ -478,7 +483,10 @@ class GovernorAccessTests(TestCase):
 			{"school": str(self.school_c.id), "year": "2026-2027"},
 		)
 		self.assertEqual(response.status_code, 200)
-		self.assertNotEqual(response.context["school"], self.school_c)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+		# The third school is not even named as an option.
+		self.assertNotContains(response, "Woolpit High School")
 
 		# The second of the governor's two schools is genuinely reachable, so the
 		# refusal above is scoping and not a blanket fallback.
@@ -528,8 +536,16 @@ class GovernorAccessTests(TestCase):
 	# report the product as broken.
 	def test_governor_nav_omits_the_pages_it_cannot_open(self):
 		self.client.force_login(self.governor)
-		response = self.client.get(reverse("review:dashboard"), {"year": "2026-2027"})
+		# Name the school explicitly. Without it this governor -- who holds two
+		# schools -- is handed the chooser, and the assertions below pass
+		# against a page that has no nav decisions to get wrong.
+		response = self.client.get(
+			reverse("review:dashboard"),
+			{"school": str(self.school_b.id), "year": "2026-2027"},
+		)
 
+		self.assertTemplateUsed(response, "review/dashboard.html")
+		self.assertEqual(response.context["school"], self.school_b)
 		self.assertTrue(response.context["is_governor"])
 		self.assertNotContains(response, "/review/in-depth/")
 		self.assertNotContains(response, "/review/risk/")
@@ -553,10 +569,16 @@ class GovernorAccessTests(TestCase):
 		self.assertTrue(user_can_qa_risk(root))
 
 		self.client.force_login(root)
+		# Name the school: a superuser sees every school in the Trust, so with
+		# no `school` this lands on the chooser and a 200 proves nothing about
+		# the risk register being open to them.
 		response = self.client.get(
-			reverse("review:risk_register"), {"year": "2026-2027", "round": "1"}
+			reverse("review:risk_register"),
+			{"school": str(self.school_a.id), "year": "2026-2027", "round": "1"},
 		)
 		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/risk.html")
+		self.assertEqual(response.context["school"], self.school_a)
 
 	# Catches: the governor gate catching everyone -- the role defaults to FULL,
 	# so adding it must re-grade nobody.
@@ -4834,6 +4856,10 @@ class MultiSchoolPrincipalTests(TestCase):
 
 	# Catches: a forged ?school= id reaching a school the user is not provisioned
 	# for on the in-depth review — the page that holds every school's evidence text.
+	#
+	# The refusal is "no school resolved", not "a different school substituted":
+	# an id outside the user's own set leaves the selection empty, and the
+	# chooser is returned in place of the page with no `school` in the context.
 	def test_a_two_school_user_cannot_open_a_third_schools_indepth_review(self):
 		foreign_review = InDepthReview.objects.create(
 			school=self.school_c, year=2026, area=self.area
@@ -4851,9 +4877,10 @@ class MultiSchoolPrincipalTests(TestCase):
 		)
 
 		self.assertEqual(response.status_code, 200)
-		self.assertNotEqual(response.context["school"], self.school_c)
-		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
 		self.assertNotContains(response, "Woolpit safeguarding concern")
+		self.assertNotContains(response, "Woolpit High School")
 
 	# Catches: a forged ?school= id reaching a third school's dashboard ratings.
 	def test_a_two_school_user_cannot_open_a_third_schools_dashboard(self):
@@ -4863,8 +4890,9 @@ class MultiSchoolPrincipalTests(TestCase):
 		)
 
 		self.assertEqual(response.status_code, 200)
-		self.assertNotEqual(response.context["school"], self.school_c)
-		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+		self.assertNotContains(response, "Woolpit High School")
 
 	# Catches: a forged ?school= id reaching a third school's evaluation
 	# commentary, which is rendered in full on the page.
@@ -4885,9 +4913,10 @@ class MultiSchoolPrincipalTests(TestCase):
 		)
 
 		self.assertEqual(response.status_code, 200)
-		self.assertNotEqual(response.context["school"], self.school_c)
-		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
 		self.assertNotContains(response, "Woolpit judgement evidence")
+		self.assertNotContains(response, "Woolpit High School")
 
 	# Catches: a forged ?school= id reaching a third school's QA reflections.
 	def test_a_two_school_user_cannot_open_a_third_schools_reflection(self):
@@ -4904,9 +4933,10 @@ class MultiSchoolPrincipalTests(TestCase):
 		)
 
 		self.assertEqual(response.status_code, 200)
-		self.assertNotEqual(response.context["school"], self.school_c)
-		self.assertIn(response.context["school"], [self.school_a, self.school_b])
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
 		self.assertNotContains(response, "Woolpit reflection")
+		self.assertNotContains(response, "Woolpit High School")
 
 	# ── 2. the reported bug: the redirect dropped the school ─────────────────
 
@@ -5212,3 +5242,237 @@ class MultiSchoolPrincipalTests(TestCase):
 		self.assertEqual(response.status_code, 302)
 		self.assertIn(f"school={self.school_b.id}", response["Location"])
 		self.assertFalse(InDepthReview.objects.filter(school=self.school_b).exists())
+
+	# ── 7. nothing is shown, and nothing is written, until a school is named ──
+
+	@staticmethod
+	def _outside_the_selector(response):
+		"""The rendered page with every <select> block removed.
+
+		A school name inside the chooser's own dropdown is the point of the
+		page; a school name anywhere else is that school's data on screen.
+		"""
+		return re.sub(r"<select.*?</select>", "", response.content.decode(), flags=re.S)
+
+	# Catches: the reinstatement of `school = school_profile.school or
+	# allowed_schools[0]`. A save that cannot name its school used to be written
+	# to whichever school sorted first, so one school's write-up landed in
+	# another school's record with nothing on screen to say so. The refusal must
+	# be a refusal -- a 409 that writes nothing -- and not a 500 either, because
+	# a crash on POST discards the typing just as completely.
+	def test_a_post_with_no_school_writes_nothing_to_any_school(self):
+		existing = InDepthReview.objects.create(
+			school=self.school_a,
+			year=2026,
+			area=self.area,
+			qa_reflection=self.SCHOOL_A_TEXT,
+		)
+		before = InDepthReview.objects.count()
+
+		response = self.client.post(
+			reverse("review:reflection"),
+			data={
+				"school_id": "",
+				"year": "2026-2027",
+				f"area_{self.area.id}": self.SCHOOL_B_TEXT,
+			},
+		)
+
+		# The database first: if the fallback is ever reinstated this is the
+		# assertion that should name the harm, rather than the status code
+		# failing ahead of it and hiding what was written.
+		existing.refresh_from_db()
+		self.assertEqual(
+			existing.qa_reflection,
+			self.SCHOOL_A_TEXT,
+			"a save that could not name its school overwrote Bacton's write-up",
+		)
+		self.assertEqual(InDepthReview.objects.count(), before)
+		self.assertFalse(InDepthReview.objects.filter(school=self.school_b).exists())
+
+		self.assertEqual(response.status_code, 409)
+		self.assertLess(response.status_code, 500, "a refusal, not a crash on POST")
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+
+	# Catches: a posted school id naming a school outside the user's own set
+	# falling back to their default school -- a forged id that writes, rather
+	# than one that merely reads.
+	def test_a_forged_school_id_cannot_write_to_the_users_default_school(self):
+		existing = InDepthReview.objects.create(
+			school=self.school_a,
+			year=2026,
+			area=self.area,
+			qa_reflection=self.SCHOOL_A_TEXT,
+		)
+		before = InDepthReview.objects.count()
+
+		response = self.client.post(
+			reverse("review:reflection"),
+			data={
+				"school_id": str(self.school_c.id),
+				"year": "2026-2027",
+				f"area_{self.area.id}": self.SCHOOL_B_TEXT,
+			},
+		)
+
+		existing.refresh_from_db()
+		self.assertEqual(
+			existing.qa_reflection,
+			self.SCHOOL_A_TEXT,
+			"a forged school id overwrote the user's own default school",
+		)
+		self.assertEqual(InDepthReview.objects.count(), before)
+		self.assertFalse(InDepthReview.objects.filter(school=self.school_b).exists())
+		self.assertFalse(InDepthReview.objects.filter(school=self.school_c).exists())
+
+		self.assertEqual(response.status_code, 409)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+
+	# Catches: a school's data appearing on a page nobody asked for. Opening
+	# OSED in front of a room used to put whichever school sorts first on
+	# screen; neither school's name may reach the page outside the dropdown.
+	def test_a_multi_school_user_sees_no_school_data_until_they_choose(self):
+		response = self.client.get(reverse("review:dashboard"), {"year": "2026-2027"})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+
+		body = self._outside_the_selector(response)
+		self.assertNotIn(self.school_a.name, body)
+		self.assertNotIn(self.school_b.name, body)
+
+	# Catches: the chooser leaking out to the 90% case -- a single-school user
+	# made to pick the only school they have, on every page, forever.
+	def test_a_single_school_user_is_never_asked_to_choose(self):
+		solo = User.objects.create_user(username="one_school", email="one@example.com")
+		SchoolProfile.objects.create(user=solo, school=self.school_b)
+		self.client.force_login(solo)
+
+		response = self.client.get(reverse("review:dashboard"), {"year": "2026-2027"})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/dashboard.html")
+		self.assertEqual(response.context["school"], self.school_b)
+		# No selector either: one school is not a choice.
+		self.assertIsNone(response.context["schools"])
+
+	# Catches: the superuser branch keeping the old fallback, which lands them
+	# on the alphabetically-first school of the whole Trust -- the widest
+	# version of the disclosure this page exists to prevent.
+	def test_a_superuser_sees_no_school_data_until_they_choose(self):
+		root = User.objects.create_superuser("root", "root@example.com", "pw12345678")
+		self.client.force_login(root)
+
+		response = self.client.get(reverse("review:dashboard"), {"year": "2026-2027"})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+
+		body = self._outside_the_selector(response)
+		for school in (self.school_a, self.school_b, self.school_c):
+			self.assertNotIn(school.name, body)
+
+	# Catches: the chooser growing a POST form. It is a navigation page, not a
+	# form page: a POST from here would be a save whose school was picked on
+	# the same screen that admits it does not know which school this is.
+	def test_the_chooser_offers_no_way_to_save(self):
+		response = self.client.get(reverse("review:dashboard"), {"year": "2026-2027"})
+
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotContains(response, '<form method="post"')
+		self.assertNotContains(response, 'name="school_id"')
+		self.assertContains(response, '<form method="get"')
+
+	# Catches: the refusal page offering a school selector. Picking one issues a
+	# GET, which reloads the form from the database -- so the button that looks
+	# like the way forward is the one that puts the user's unsaved typing two
+	# history steps away. The refusal must offer Back, and nothing else.
+	def test_a_refused_save_offers_no_forward_button_that_would_lose_the_typing(self):
+		response = self.client.post(
+			reverse("review:reflection"),
+			data={
+				"school_id": "",
+				"year": "2026-2027",
+				f"area_{self.area.id}": self.SCHOOL_B_TEXT,
+			},
+		)
+
+		self.assertEqual(response.status_code, 409)
+		self.assertTrue(response.context["refused"])
+		self.assertNotContains(response, "<select", status_code=409)
+		self.assertNotContains(response, self.school_b.name, status_code=409)
+		# And it says so, rather than looking like an empty page.
+		self.assertContains(
+			response, "still in the page you came from", status_code=409
+		)
+
+	# Catches: the chooser dropping the year or term already on the query
+	# string, so choosing a school silently returns the user to the current
+	# term -- and they type an autumn judgement into the spring boxes.
+	def test_choosing_a_school_keeps_the_year_and_term_already_selected(self):
+		response = self.client.get(
+			reverse("review:evaluation"), {"year": "2027-2028", "round": "2"}
+		)
+
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertContains(response, '<input type="hidden" name="year" value="2027-2028" />')
+		self.assertContains(response, '<input type="hidden" name="round" value="2" />')
+
+	# Catches: the phase filter on School Progress narrowing the candidate list
+	# BEFORE the requested school is resolved against it. The requested school
+	# then failed to match, the list was down to one, and that one was handed
+	# over silently -- a wrong-school switch arriving through the filter bar
+	# rather than through a missing `school` id.
+	def test_the_phase_filter_cannot_switch_a_user_to_a_school_they_did_not_ask_for(self):
+		secondary = School.objects.create(
+			name="Alderman Secondary School", phase=School.Phase.SECONDARY
+		)
+		primary = School.objects.create(
+			name="Zenith Primary School", phase=School.Phase.PRIMARY
+		)
+		user = User.objects.create_user(username="two_phases", email="phases@example.com")
+		# FK school sorts FIRST and is the one the old fallback would supply.
+		profile = SchoolProfile.objects.create(user=user, school=secondary)
+		profile.schools.add(secondary, primary)
+		self.client.force_login(user)
+
+		response = self.client.get(
+			reverse("review:overview"),
+			{"school": str(primary.id), "phase": "SECONDARY", "year": "2026-2027"},
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertNotEqual(response.context["school"], secondary)
+		self.assertEqual(response.context["school"], primary)
+		# The secondary school is legitimately one of this user's own, so it
+		# belongs in her selector. What must not happen is its data being on
+		# screen -- so assert outside the dropdown, not against the whole page.
+		self.assertNotIn(
+			"Alderman Secondary School",
+			self._outside_the_selector(response),
+			"the phase filter switched the user to a school she did not ask for",
+		)
+
+	# Catches: "Clear — choose again" in the school box doing nothing. It posts
+	# an empty school, and an empty school must mean the blank screen -- that
+	# option is the only way back to it before sharing a screen.
+	def test_clearing_the_school_returns_the_blank_screen(self):
+		# Proves the page is reachable first, so the assertion below is about
+		# clearing and not about the page being broken.
+		opened = self.client.get(
+			reverse("review:dashboard"),
+			{"school": str(self.school_b.id), "year": "2026-2027"},
+		)
+		self.assertEqual(opened.context["school"], self.school_b)
+
+		response = self.client.get(
+			reverse("review:dashboard"), {"school": "", "year": "2026-2027"}
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+		self.assertNotIn(self.school_b.name, self._outside_the_selector(response))

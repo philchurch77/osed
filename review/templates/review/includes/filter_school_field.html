@@ -10,6 +10,16 @@
       {% for s in schools %}
         <option value="{{ s.id }}" {% if school and s.id == school.id %}selected{% endif %}>{{ s.name }}</option>
       {% endfor %}
+      {% comment %}
+        An empty value resolves to "no school chosen", which returns the
+        chooser -- the way back to a blank screen before sharing a screen.
+
+        Kept LAST on purpose. This select auto-submits on change (see
+        base.html), so an option adjacent to the resting position is one
+        stray arrow key from navigating away, and on these pages that
+        discards anything typed but not yet saved.
+      {% endcomment %}
+      <option value="">Clear — choose again</option>
     {% endif %}
   </select>
 </div>

@@ -80,7 +80,7 @@
                 their login is broken.
               {% endcomment %}
               {% if can_edit %}
-                Go to <a href="{% url 'review:dashboard' %}">School Dashboard</a> to add ratings.
+                Go to <a href="{% url 'review:dashboard' %}{% if school %}?school={{ school.id }}{% endif %}">School Dashboard</a> to add ratings.
               {% endif %}
             </td>
           </tr>

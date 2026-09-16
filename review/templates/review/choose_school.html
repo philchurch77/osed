@@ -1,0 +1,98 @@
+{% extends "review/base.html" %}
+
+{% block title %}{% if refused %}Nothing was saved{% else %}Choose a school{% endif %}{% endblock %}
+
+{% block content %}
+  {% comment %}
+    Shown in place of a school's data on every school-scoped page, whenever the
+    user holds more than one school and has not said which one they want.
+
+    This page deliberately renders NO school data. It replaces a fallback that
+    silently picked SchoolProfile.school, else the alphabetically-first allowed
+    school -- so opening OSED in front of a room always put whichever school
+    sorts first on screen, on a page nobody had asked for.
+
+    The select has a placeholder option rather than reusing
+    includes/filter_school_field.html. That partial leaves no option marked
+    selected when there is no school, so the browser lands on the first one --
+    which is the exact disclosure this page exists to prevent, one stray Enter
+    from being submitted.
+
+    data-no-auto-submit opts the form out of the filter-bar behaviour wired up
+    in base.html. Without it the button is hidden by CSS and a single arrow key
+    on the closed select opens the first school. Do not remove the attribute.
+
+    `refused` is the POST branch: a save arrived that could not name its
+    school. It offers NO way forward on purpose -- the selector would issue a
+    GET, reload the form from the database, and put the user's unsaved text two
+    history steps behind a button styled as the obvious thing to press.
+  {% endcomment %}
+  <div class="choose-school">
+    <header class="page-header">
+      <h1 class="page-title">
+        {% if refused %}Your changes were not saved{% else %}Which school would you like to open?{% endif %}
+      </h1>
+      {% if page_label %}
+        <p class="page-subtitle">
+          <span class="page-subtitle-label">{{ page_label }}</span>
+        </p>
+      {% endif %}
+    </header>
+
+    {% if messages %}
+      <ul class="messages">
+        {% for message in messages %}
+          <li class="{{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if refused %}
+      <p class="choose-school-lead">
+        OSED could not tell which school that page belonged to, so it saved nothing
+        rather than risk writing your words onto the wrong school.
+      </p>
+      <p class="choose-school-note">
+        <strong>Your words are still in the page you came from.</strong> Use your
+        browser's Back button to return to it, check the school named at the top,
+        and save again. Going forward from here — to another tab, or by reloading —
+        is what would lose them.
+      </p>
+    {% else %}
+      {% if rejected %}
+        <p class="choose-school-lead">
+          That link was for a school your account does not cover, so nothing has been
+          opened. Choose one of your own schools below.
+        </p>
+      {% else %}
+        <p class="choose-school-lead">
+          Your account covers more than one school, and OSED does not pick one for you.
+          Nothing from any school is on screen until you ask for it.
+        </p>
+      {% endif %}
+
+      <form method="get" action="" class="school-select school-select--choose" data-no-auto-submit>
+        {% for name, value in other_params %}
+          <input type="hidden" name="{{ name }}" value="{{ value }}" />
+        {% endfor %}
+        <div class="form-field">
+          <label for="school">School</label>
+          <select id="school" name="school" required autofocus>
+            <option value="" selected disabled>Select a school&hellip;</option>
+            {% for s in schools %}
+              <option value="{{ s.id }}">{{ s.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% include "review/includes/filter_actions.html" with submit_label="Open this school" %}
+      </form>
+
+      <p class="choose-school-note">
+        Your choice follows you from tab to tab while you are working. OSED starts
+        here again each time you sign in or go Home — so opening it in front of a
+        room never puts a school on screen by itself. To clear the screen again,
+        choose “Clear — choose again” in the school box at the top of any page.
+      </p>
+    {% endif %}
+  </div>
+{% endblock %}

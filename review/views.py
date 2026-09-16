@@ -216,6 +216,71 @@ def _no_school_profile_response(request: HttpRequest) -> HttpResponse:
 	)
 
 
+_CHOOSE_SCHOOL_PAGE_LABELS = {
+	"dashboard": "School Dashboard",
+	"evaluation": "Evaluation",
+	"indepth_review": "In-depth review",
+	"reflection": "Reflection",
+	"overview": "School Progress",
+	"risk_register": "Risk",
+	"operations": "Operations & Resources",
+}
+
+
+def _choose_school_response(request: HttpRequest, schools) -> HttpResponse:
+	"""Render "choose a school" in place of a school's data.
+
+	Returned through the `error` slot of `_resolve_school_selection`, which
+	every scoped view already returns immediately -- so no view runs a query,
+	builds a formset or saves anything while no school has been chosen.
+
+	Why this exists: the helper used to fall back to `SchoolProfile.school`,
+	else the alphabetically-first allowed school. That meant opening OSED in
+	front of a room always disclosed whichever school sorts first, on a page
+	nobody had asked for. Nothing is shown until it is asked for.
+
+	On POST it is also the refusal. A save that cannot name its school is
+	never guessed at: guessing is what quietly wrote one school's text onto
+	another's. No redirect -- that would discard the posted body as well.
+	"""
+	# Whitelisted rather than copied wholesale: these are the only keys any
+	# view reads back off the query string, and an unknown one has no business
+	# being reflected into the next URL.
+	carried = ("year", "round", "area", "page", "rag", "phase")
+	source = request.POST if request.method == "POST" else request.GET
+	other_params = [(key, source[key]) for key in carried if source.get(key)]
+
+	refused = request.method == "POST"
+	# A school WAS named and did not resolve: a stale bookmark, a link from a
+	# colleague, or access that has since changed. Worth saying, or the page
+	# reads as the app having forgotten rather than the link being wrong.
+	rejected = bool(request.GET.get("school") or request.POST.get("school_id"))
+	return render(
+		request,
+		"review/choose_school.html",
+		{
+			"schools": schools,
+			"other_params": other_params,
+			"rejected": rejected,
+			# Bare nav links on this page. The context processor would echo
+			# the rejected id into all eight tabs, so every tab would return
+			# here and the app would feel stuck.
+			"nav_school_param": "",
+			# On a refusal the page offers no way forward on purpose. The
+			# selector would issue a GET, reload the form from the database
+			# and put the user's unsaved text two history steps behind a
+			# button styled as the obvious thing to press.
+			"refused": refused,
+			"page_label": _CHOOSE_SCHOOL_PAGE_LABELS.get(
+				getattr(getattr(request, "resolver_match", None), "url_name", ""), ""
+			),
+		},
+		# 409 on a refused save: it is a real refusal, not a page the user
+		# asked for. Nothing downstream treats it specially.
+		status=409 if refused else 200,
+	)
+
+
 def _get_allowed_schools(
 	request: HttpRequest,
 ) -> tuple[SchoolProfile | None, list[School] | None, HttpResponse | None]:
@@ -242,8 +307,14 @@ def _resolve_school_selection(
 ) -> tuple[School | None, list[School] | None, HttpResponse | None]:
 	"""Resolve the working school and the selector dropdown list.
 
-	Returns (school, schools, error_response). `schools` is None when the user
+	Returns (school, schools, early_response). `schools` is None when the user
 	only has access to a single school (the selector is hidden in that case).
+
+	The third slot is a response the view must return immediately. It is not
+	always a failure: it is a 403 render (no SchoolProfile), a redirect (no
+	schools exist at all), or the school chooser (more than one school and
+	none named). Every scoped view returns it unexamined, which is what keeps
+	the "ask, don't guess" rule in one place instead of six.
 	"""
 	school = None
 	if request.user.is_superuser:
@@ -256,6 +327,11 @@ def _resolve_school_selection(
 				school = School.objects.get(id=int(selected))
 			except (TypeError, ValueError, School.DoesNotExist):
 				school = None
+		if school is None and len(schools) > 1:
+			# No school named, or one named that does not exist. Ask rather
+			# than guess -- for a superuser most of all, since the school they
+			# would land on is the first of every school in the Trust.
+			return None, None, _choose_school_response(request, schools)
 		if school is None and schools:
 			school = schools[0]
 		if school is None:
@@ -263,9 +339,26 @@ def _resolve_school_selection(
 			return None, None, redirect("home")
 		return school, schools, None
 
-	school_profile, allowed_schools, error = _get_allowed_schools(request)
+	_, allowed_schools, error = _get_allowed_schools(request)
 	if error is not None:
 		return None, None, error
+	return _select_from_allowed(request, allowed_schools)
+
+
+def _select_from_allowed(
+	request: HttpRequest, allowed_schools: list[School]
+) -> tuple[School | None, list[School] | None, HttpResponse | None]:
+	"""Pick the working school out of a candidate list the caller has built.
+
+	Split out because `overview` builds its own candidate list (it filters by
+	phase first) and then needs exactly this rule. Two copies of "which school
+	are we on" is how one of them ends up a term behind the other.
+
+	Resolution is by list membership, never a database lookup on the raw id:
+	an id for a school outside the list simply does not match, and the user is
+	asked rather than quietly given something else.
+	"""
+	school = None
 	selected = request.GET.get("school") or request.POST.get("school_id")
 	if selected:
 		try:
@@ -274,8 +367,18 @@ def _resolve_school_selection(
 			selected_id = None
 		if selected_id is not None:
 			school = next((s for s in allowed_schools if s.id == selected_id), None)
-	if school is None:
-		school = school_profile.school or (allowed_schools[0] if allowed_schools else None)
+	if school is None and len(allowed_schools) > 1:
+		# Someone holding two or more schools is never auto-landed on one of
+		# them. This is also the guard on the write path: a POST whose
+		# school_id is missing, malformed or naming a school outside the
+		# user's own set arrives here with school still None, and is refused
+		# instead of falling through to their default school.
+		return None, None, _choose_school_response(request, allowed_schools)
+	if school is None and allowed_schools:
+		# Exactly one by this point -- the multi-school case returned above,
+		# and _get_allowed_schools guarantees the profile's FK school is in
+		# the list, so this is that school either way.
+		school = allowed_schools[0]
 	schools = allowed_schools if len(allowed_schools) > 1 else None
 	return school, schools, None
 
@@ -390,9 +493,11 @@ def overview(request: HttpRequest) -> HttpResponse:
 				# Keep a non-None school in context for template convenience.
 				school = schools[0]
 		else:
+			# int() first, as in _resolve_school_selection: a non-numeric id
+			# reaches the ORM as a ValueError, not a DoesNotExist, and 500s.
 			try:
-				school = School.objects.get(id=selected)
-			except School.DoesNotExist:
+				school = School.objects.get(id=int(selected))
+			except (TypeError, ValueError, School.DoesNotExist):
 				school = None
 		if school is None and schools and not all_schools_selected:
 			school = schools[0]
@@ -403,19 +508,24 @@ def overview(request: HttpRequest) -> HttpResponse:
 		_, allowed_schools, error = _get_allowed_schools(request)
 		if error is not None:
 			return error
-		# Filter the school dropdown by phase for non-superusers too.
-		if selected_phase:
-			allowed_schools = [s for s in allowed_schools if s.phase == selected_phase]
-		selected = request.GET.get("school")
-		if selected:
-			try:
-				selected_id = int(selected)
-			except (TypeError, ValueError):
-				selected_id = None
-			if selected_id is not None:
-				school = next((s for s in allowed_schools if s.id == selected_id), None)
-		if school is None:
-			school = (allowed_schools[0] if allowed_schools else None)
+		# Resolve against the user's WHOLE set, then filter only the dropdown.
+		# Resolving against the phase-filtered list let the phase selector
+		# narrow the candidates to one and silently hand the user a different
+		# school than the one they asked for -- the same wrong-school switch
+		# this page's chooser exists to prevent, arriving by another door.
+		# The superuser branch above is left alone: its default is "all
+		# schools", which is a trust-wide view, not one school on show.
+		school, _, early = _select_from_allowed(request, allowed_schools)
+		if early is not None:
+			return early
+		# The phase filter deliberately does NOT narrow this dropdown. For a
+		# non-superuser it never did anything else -- the figures below are
+		# for the one resolved school -- and narrowing it did two harmful
+		# things: it could drop the school the user is actually on out of
+		# their own selector, and where a phase left one school it hid the
+		# selector altogether, taking "Clear - choose again" with it. That is
+		# the one control this page exists to give someone about to share
+		# their screen.
 		schools = allowed_schools if len(allowed_schools) > 1 else None
 
 	year, selected_year_value, academic_year_options = _academic_year_context(

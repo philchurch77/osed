@@ -3066,3 +3066,34 @@ summary:focus-visible {
   font-style: italic;
   color: var(--colour-muted);
 }
+
+
+/* Choose-a-school: the deliberate blank state shown on a scoped page when the
+   user holds more than one school and has not named one. A narrow column so
+   the single control reads as a decision to make, not as a filter bar with a
+   page that failed to load underneath it. */
+.choose-school {
+  max-width: 560px;
+}
+
+.choose-school-lead {
+  font-size: 16px;
+  margin: 0 0 20px;
+}
+
+.choose-school-note {
+  margin: 16px 0 0;
+  max-width: 52ch;
+  font-size: 14px;
+  color: var(--colour-muted);
+}
+
+/* One column, and the button stays visible: this form opts out of the
+   filter-bar auto-submit in base.html via data-no-auto-submit. */
+.school-select--choose {
+  grid-template-columns: 1fr;
+}
+
+.school-select--choose .form-actions {
+  justify-content: flex-start;
+}

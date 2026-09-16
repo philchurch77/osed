@@ -304,7 +304,7 @@
     {% else %}
       <p class="ops-empty">No open risks rated for this term.</p>
     {% endif %}
-    <p class="ops-meta"><a href="/review/risk/?year={{ selected_year_value }}&amp;round={{ selected_round }}">View the full risk register</a></p>
+    <p class="ops-meta"><a href="/review/risk/?year={{ selected_year_value }}&amp;round={{ selected_round }}{% if school %}&amp;school={{ school.id }}{% endif %}">View the full risk register</a></p>
   </section>
 
   <p class="ops-small-print">{{ small_print }}</p>

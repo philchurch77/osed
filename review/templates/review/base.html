@@ -104,8 +104,15 @@
     <script>
       document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('.school-select select').forEach(function (sel) {
-          sel.closest('form').classList.add('auto-submit');
-          sel.addEventListener('change', function () { this.closest('form').submit(); });
+          var form = sel.closest('form');
+          if (!form) { return; }
+          // The choose-a-school page opts out. There the button IS the page,
+          // and auto-submit would open the first school on a single arrow
+          // key -- putting the very school the page exists to withhold on
+          // screen, which is the whole defect it was built to fix.
+          if (form.hasAttribute('data-no-auto-submit')) { return; }
+          form.classList.add('auto-submit');
+          sel.addEventListener('change', function () { form.submit(); });
         });
       });
     </script>
