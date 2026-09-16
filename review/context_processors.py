@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .models import Branding
-from .permissions import user_can_qa_risk, user_is_governor
+from .permissions import requested_school_param, user_can_qa_risk, user_is_governor
 
 
 def branding(request):
@@ -18,6 +18,14 @@ def nav_flags(request):
     risk and operations blocks on the Trust Dashboard. It is decoration only --
     the gate is @governor_denied on the views themselves. Both helpers share one
     cached lookup per request, so this adds at most a single query.
+
+    `nav_school_param` carries the working school from tab to tab. Without it
+    every nav link is a bare path, so a multi-school user is silently returned
+    to their default school on every move -- and now that the scoped pages open
+    without a school, they would be sent back to the chooser on every move too.
+    It is read from the query string, not the database, so it costs no query;
+    an unrequested school stays unrequested, which is what keeps "nothing
+    chosen" chosen.
     """
 
     user = getattr(request, "user", None)
@@ -25,4 +33,5 @@ def nav_flags(request):
         "show_operations_tab": True,
         "can_qa_risk": user_can_qa_risk(user),
         "is_governor": user_is_governor(user),
+        "nav_school_param": requested_school_param(request),
     }

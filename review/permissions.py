@@ -111,6 +111,25 @@ def user_is_governor(user) -> bool:
     return is_governor
 
 
+def requested_school_param(request) -> str:
+    """The `?school=N` suffix for a link that must keep the working school.
+
+    Returns "" when no school was requested, so a bare link stays bare -- which
+    is what keeps "nothing chosen" chosen on the pages that now open without a
+    school. Coerced through int() before it can reach an href.
+
+    Echoing the id back grants nothing: _resolve_school_selection re-checks it
+    against the user's own allowed set by list membership on the way back in.
+    """
+    raw_school = (getattr(request, "GET", {}).get("school") or "").strip()
+    if not raw_school:
+        return ""
+    try:
+        return f"?school={int(raw_school)}"
+    except (TypeError, ValueError):
+        return ""
+
+
 def governor_denied(view_func):
     """Refuse a governor account this page with a rendered 403.
 
@@ -125,16 +144,9 @@ def governor_denied(view_func):
     def _wrapped(request, *args, **kwargs):
         if user_is_governor(getattr(request, "user", None)):
             # Carry the school the governor was working on through to the
-            # recovery links. Coerced through int() before it can reach an
-            # href, and _resolve_school_selection re-checks it against the
-            # user's own allowed set on the way back in.
-            school_param = ""
-            raw_school = (request.GET.get("school") or "").strip()
-            if raw_school:
-                try:
-                    school_param = f"?school={int(raw_school)}"
-                except (TypeError, ValueError):
-                    school_param = ""
+            # recovery links, so the page they are bounced to does not itself
+            # switch school under them.
+            school_param = requested_school_param(request)
             return render(
                 request,
                 "review/not_permitted.html",
