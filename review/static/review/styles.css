@@ -3141,7 +3141,18 @@ summary:focus-visible {
 .bi-frame-wrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 1140 / 541.25;
+  /* The report canvas is authored 16:9, so the frame is shaped to match it or
+     Power BI answers with a scrollbar and the bottom of the report is cut off
+     -- which is what the old 1140/541.25 (2.11:1) did.
+
+     Slightly taller than 16:9 on purpose. Power BI draws its own page-tab
+     strip INSIDE the frame, below the canvas, and that strip is a fixed
+     height whatever the width. At exactly 16/9 it eats into the canvas and
+     the scrollbar comes back. 16/9.5 leaves room for it across the widths
+     this frame is shown at (it is hidden below 1024px), at the cost of a
+     shallow letterbox at the extremes -- which is the harmless failure of
+     the two. If the strip ever changes height, this is the number to tune. */
+  aspect-ratio: 16 / 9.5;
   background: var(--colour-surface);
   border: 1px solid var(--colour-border);
   border-radius: 10px;
