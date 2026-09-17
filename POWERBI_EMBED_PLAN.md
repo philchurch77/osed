@@ -334,6 +334,51 @@ If pupil-level rows are genuinely needed, apply small-number suppression (cohort
 so that "2 pupils, Year 3, persistent absence, SEND" cannot re-identify a child from an
 aggregate.
 
+### Observed, 17 September 2026 — and it corrects the paragraph above
+
+The embedded panel rendered for the first time on 17 September (the in-frame sign-in was
+being broken by a response header; see `CLAUDE.md`, "Context Dashboard"). What the Context
+page shows is **aggregates — percentages and counts, not pupil rows**. That is better than
+this section feared, and worth saying plainly.
+
+**It does not make the aggregate-only version safe, and the framing above is too
+comfortable about that.** This section treats aggregate-only as "materially lighter" and
+reserves small-number suppression for the pupil-level build. One screen of real data
+refutes that. On a single primary of a few hundred on roll:
+
+- **Two tiles resolved to one child** — one a sub-1% share of the cohort, one an absolute
+  count of 1. One was a care status; the other an exclusion.
+- **Two more resolved to fewer than five**, both SEN categories.
+
+They sit on the same page as Ethnicity, FSM, Pupil Premium, SEN/EHCP and persistent
+absence. **An aggregate of one is not an aggregate** — it is an individual record wearing a
+percentage sign, and in a primary school where staff know every child by name it is
+re-identifiable by anyone who can do the arithmetic.
+
+*The school and the exact figures are deliberately not recorded here.* Combined, they
+identify children, and a git repository is precisely the "outside OSED, outside the
+warehouse and outside any retention rule" copy this section warns about below. Anyone who
+needs the specifics can reproduce them from the report in a minute; nobody needs them
+committed. If a DPO asks for the worked example, show them the screen — do not paste it
+into a document.
+
+Two consequences:
+
+1. **Small-number suppression (cohorts under 5) is a requirement of the build that exists
+   now**, not of a hypothetical pupil-level one. It belongs in the report, not in OSED —
+   OSED cannot suppress what it does not compute — so it is a change the Trust's report
+   author must make.
+2. **The smaller the school, the worse this gets.** A primary of a few hundred produces a
+   cohort of one from a sub-1% tile; the same tile at a large secondary produces a dozen.
+   Any review across the Trust's schools should assume the smallest ones are the exposed
+   ones, which is the reverse of where attention usually goes.
+
+Still not done, and unaffected by the above: **"Show as table" and the drillthroughs**.
+Those are the §4.6 checks that reach *underneath* the aggregates to the `(1) Oxlip
+Students` rows themselves. Nobody has tried them. Until someone has, "it only shows
+aggregates" is an observation about the pages that were looked at, not a property of the
+report.
+
 Also settle: export/print policy (RLS is respected, so no cross-school leak — but it
 produces pupil-level files on school laptops, outside OSED, outside the warehouse and
 outside any retention rule); how long the access log is kept and who may read it; and

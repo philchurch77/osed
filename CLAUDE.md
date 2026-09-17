@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**273 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**277 tests** in `review/tests.py`; the suite
   takes ~85–130s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -559,9 +559,54 @@ this page as restricting a user to their own school.**
   single-school user and then as a two-school user, and record the result. If any pupil row
   is reachable, this build is **not** adequate — `POWERBI_EMBED_PLAN.md` §7 applies in full
   and it needs the DPO before it is switched on.
+  **Sharpened on 17 Sept 2026, and no longer hypothetical.** The panel now renders (see the
+  COOP entry below), and what the Context page shows is *aggregates* — percentages and
+  counts, not pupil rows, which is better than feared. But on one primary of a few hundred
+  on roll, several cohorts came out under five and **two came out at exactly one** — a care
+  status and an exclusion — on the same page as Ethnicity, FSM, SEN/EHCP and persistent
+  absence. An aggregate of one is an individual record wearing a percentage sign, and in a
+  primary where staff know every child it is re-identifiable by anyone who can do the
+  arithmetic. §7's small-number suppression (cohorts under 5) is therefore a live
+  requirement now, not a later refinement. (The school and the figures are deliberately not
+  recorded — see §7; a repo is the wrong place to keep them.) **"Show as table"
+  and the drillthroughs have still not been tried by anyone** — that is the half of §4.6
+  that reaches underneath the aggregates, and it remains undone.
 - **There is still no CSP**, so the `EMBED_URL_PREFIX` startswith-check in `powerbi.py` is
   the only thing stopping a mistyped App Setting framing an arbitrary site. `frame-src`
   belongs in its own passage; until then, do not remove that check.
+- **The panel needs a relaxed `Cross-Origin-Opener-Policy`, set on the view response and
+  nowhere else.** Power BI's in-frame "Sign in" opens a blank popup and then navigates it
+  to `login.microsoftonline.com`. Django's default `SECURE_CROSS_ORIGIN_OPENER_POLICY =
+  "same-origin"` — which `SecurityMiddleware` stamps on every response, in dev and
+  production alike, and which **this project never chose** — severs that popup from its
+  opener, so the navigation is a silent no-op. `context_dashboard` sets
+  `same-origin-allow-popups` on its own response when (and only when) a frame was built.
+  It works because `SecurityMiddleware` uses `response.setdefault(...)`, so a header the
+  view already set survives the middleware.
+  **Do not promote this to `SECURE_CROSS_ORIGIN_OPENER_POLICY` in `settings.py`** — that
+  relaxes the login page, the admin and every school's data to fix a popup that exists on
+  one page. `ContextDashboardOpenerPolicyTests` guards both halves: removing the header
+  reddens 1 test, promoting it to a global setting reddens **7**.
+  Three things about the diagnosis, because it cost a day: the failure is **silent** —
+  popup opens and strands on `about:blank`, console logs nothing, **zero** requests reach
+  Microsoft — so there is no error to search for. It **cannot be reproduced locally**, as
+  COOP is ignored on insecure origins. And the obvious console check
+  (`w = open(); w.location = "…"`) **does not reproduce it and is misleading**: a URL-less
+  `open()` inherits OSED's own origin, and COOP `same-origin` does not sever a same-origin
+  popup. Power BI's case differs because its popup is opened from inside the cross-origin
+  iframe. That test said "not COOP"; COOP it was.
+- **The frame is shaped to the report, and one CSS line in it is load-bearing.**
+  `.bi-frame-wrap` is `aspect-ratio: 16 / 9.5` — the canvas is authored 16:9, and the extra
+  height is for Power BI's own page-tab strip, which it draws *inside* the frame at a fixed
+  height whatever the width. At exactly 16/9 the strip eats into the canvas and Power BI
+  answers with a scrollbar. It is a fitted number, not a derived one: scrollbar means go
+  taller, empty band means go shorter.
+  Separately, `.bi-frame`'s `position: relative` looks redundant beside `display: block;
+  width: 100%` and **is not**. `.bi-frame-loading` above it is a full-size
+  `position: absolute; inset: 0` element with no background; both are `z-index: auto` and
+  paint in tree order, so that one property is the only thing putting the iframe last and
+  letting it take the clicks. Remove it as a tidy and every click inside the report quietly
+  stops working, for everyone, with nothing on screen to show for it.
 
 If the embedded report would duplicate the Trust Dashboard, do not build on it — that
 summary is generated from tile data specifically so it cannot drift, and it goes into board
