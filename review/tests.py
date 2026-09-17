@@ -998,6 +998,123 @@ class InDepthJudgementAreaFlowTests(TestCase):
 			for row in block["rows"]
 		}
 		self.assertEqual(shown, {self.js1.id})
+		self.assertNotContains(resp, "Kept because commentary was written here")
+
+	def test_commentary_written_under_one_grade_stays_on_screen_after_the_grade_moves_rung(self):
+		# 16 Sept 2026: one rating change dropped two Bacton reviews from Strong
+		# to Expected, and 18,463 characters written against the Strong
+		# statements fell off the commentary page. Reported as lost, deadline
+		# the next day; nothing had been deleted. The band decides what the
+		# page ASKS for -- it must never hide what has already been written.
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "strong_standard")
+		self._commentary_post([(self.js1, "Written while the grade was Strong.", "Keep it up.")])
+		# One Expected statement slips to amber: the ladder now concludes Expected.
+		self._rag_post([(self.je1, "green"), (self.je2, "amber"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "expected_standard")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.get(url)
+		shown = {row["ja"].id for block in resp.context["rich_blocks"] for row in block["rows"]}
+		self.assertIn(self.js1.id, shown)
+		self.assertContains(resp, "Written while the grade was Strong.")
+		# The band's own statements are still asked for alongside it.
+		self.assertIn(self.je1.id, shown)
+		self.assertIn(self.je2.id, shown)
+		# And the page says WHY a Strong block sits under an Expected grade --
+		# only on that block, never on the band's own.
+		kept = {b["key"]: b["kept_for_text"] for b in resp.context["rich_blocks"]}
+		self.assertEqual(kept, {"expected_standard": False, "strong_standard": True})
+		self.assertContains(resp, "Kept because commentary was written here")
+		self.assertContains(resp, "part of your current grade")
+
+	def test_commentary_whose_rating_was_cleared_stays_on_screen(self):
+		# A blank rating keeps the row when it holds a write-up, but the page
+		# then filtered it out as "not rated". Same words, same invisibility.
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")])
+		self._commentary_post([(self.js1, "Still here after the rating goes.", "")])
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "")])
+		r = InDepthResponse.objects.get(review=self._review(), judgement_area=self.js1)
+		self.assertEqual(r.rag, "")
+		self.assertEqual(r.evidence_text, "Still here after the rating goes.")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.get(url)
+		shown = {row["ja"].id for block in resp.context["rich_blocks"] for row in block["rows"]}
+		self.assertIn(self.js1.id, shown)
+		self.assertContains(resp, "Still here after the rating goes.")
+
+	# Surfacing a write-up from another rung must not touch it: a page that
+	# re-posts every row as rendered has to leave the surfaced text (newline and
+	# em-dash included) and its rating exactly as they were.
+	def test_surfaced_commentary_survives_a_resave_of_the_page_byte_for_byte(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "strong_standard")
+		commentary = "Outcomes at KS4 — strong across three years.\nKS5 is narrower — two subjects carry it."
+		next_steps = "Broaden KS5 — add a third strong subject.\nRevisit in Spring 1."
+		self._commentary_post([(self.js1, commentary, next_steps)])
+		self._rag_post([(self.je1, "green"), (self.je2, "amber"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "expected_standard")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.get(url)
+		rows = [row for block in resp.context["rich_blocks"] for row in block["rows"]]
+		self.assertEqual(
+			{row["ja"].id for row in rows}, {self.je1.id, self.je2.id, self.js1.id}
+		)
+		# Post back exactly what the page rendered, for every row it showed.
+		resp = self._commentary_post([
+			(
+				row["ja"],
+				row["form"]["commentary"].value() or "",
+				row["form"]["next_steps"].value() or "",
+			)
+			for row in rows
+		])
+		self.assertEqual(resp.status_code, 302)
+		r = InDepthResponse.objects.get(review=self._review(), judgement_area=self.js1)
+		self.assertEqual(r.evidence_text, commentary)
+		self.assertEqual(r.next_steps, next_steps)
+		self.assertEqual(r.rag, "amber")
+
+	# The write-up filter belongs to the commentary page only. The ratings page
+	# must keep showing every rateable statement in the area, whatever the grade
+	# and whether or not anything has been written.
+	def test_rag_page_still_lists_every_rateable_statement_after_the_grade_moves_rung(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")])
+		self._commentary_post([(self.js1, "Written while the grade was Strong.", "")])
+		self._rag_post([(self.je1, "green"), (self.je2, "amber"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "expected_standard")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=rag"
+		resp = self.client.get(url)
+		self.assertEqual(resp.status_code, 200)
+		shown = {row["ja"].id for block in resp.context["rich_blocks"] for row in block["rows"]}
+		# Every statement on the three RAG-able rungs (_RICH_KEYS_DEFAULT) --
+		# Urgent Improvement is not rated and flat bullets never are.
+		self.assertEqual(shown, {self.je1.id, self.je2.id, self.js1.id, self.jx1.id})
+		self.assertNotIn(self.ju1.id, shown)
+		self.assertNotIn(self.jna1.id, shown)
+
+	# A write-up surfaced from a higher rung must sit under that rung's heading.
+	# Filing a Strong statement under "Expected Standard" would misattribute the
+	# evidence in the one place a leader reads it back.
+	def test_surfaced_commentary_is_grouped_under_its_own_rung_not_the_awarded_one(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "green"), (self.js1, "amber")])
+		self._commentary_post([(self.js1, "Written while the grade was Strong.", "")])
+		self._rag_post([(self.je1, "green"), (self.je2, "amber"), (self.js1, "amber")])
+		self.assertEqual(self._review().overall_grade, "expected_standard")
+		url = f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+		resp = self.client.get(url)
+		key_by_ja = {
+			row["ja"].id: block["key"]
+			for block in resp.context["rich_blocks"]
+			for row in block["rows"]
+		}
+		self.assertEqual(key_by_ja[self.js1.id], "strong_standard")
+		self.assertEqual(key_by_ja[self.je1.id], "expected_standard")
+		self.assertEqual(key_by_ja[self.je2.id], "expected_standard")
 
 	def test_needs_attention_commentary_shows_expected_statements_and_na_bullets(self):
 		# A red at Expected concludes Needs Attention; the commentary page then

@@ -191,6 +191,55 @@ Three things about it that are not obvious and have already mattered:
   text was *written*, not when it was destroyed — so switching it on mid-incident deletes
   the pre-clobber versions you are trying to read.
 
+### Before you believe a reported loss, count the cargo (17 Sept 2026)
+
+A client reported in-depth work missing at Bacton and Mendlesham, "definitely there Monday",
+deadline the next day. **Nothing had been deleted — and the client was right.** Two
+write-ups (12,686 and 5,777 characters) had been written on 10 Sept against Strong Standard
+statements; on 16 Sept a rating change moved each review's concluded grade down to Expected,
+and the commentary page — which filtered statements to the grade's rung — stopped rendering
+them. "There Monday, gone Wednesday" was exactly accurate. The third area named, Inclusion,
+had never held text on any date history covers.
+
+The first census reported `hidden=0` and the wrong-school explanation was sent to the client.
+It was wrong: the census defined "hidden" as text-without-a-rating and never asked about
+text-on-a-rung-the-page-does-not-render. The Surgeon had named that mechanism as its leading
+hypothesis and was overridden on the strength of a count that could not see it. Fixed the
+same day: `views.py` now renders any statement that already holds a write-up, whatever rung
+it sits on and whether or not it is still rated, and a block shown only for that reason
+carries `kept_for_text` so the template can say why it is there (a "Strong Standard" heading
+under an "Expected Standard" grade otherwise reads as "OSED still thinks I'm at Strong" —
+the client's own words). Guarded by five tests in `InDepthJudgementAreaFlowTests`; removing
+the `written` union reddens three of them.
+
+The lesson is the order of operations, because the instinct is to reach for a restore:
+
+1. **Establish gone-versus-hidden before anything else.** They present identically on screen
+   and need opposite responses. `history_type` settles it: `+` created, `~` changed,
+   `-` deleted. **No `-` rows means nothing was deleted, full stop.**
+   **"Hidden" has more than one shape**, and a census must ask the page's own filter, not a
+   proxy for it: text with no rating, text on a rung the page does not render, text on a
+   deactivated `Category`. If a view decides what to show, reproduce that decision in the
+   query or render the page — a count that checks one shape will report `hidden=0` while
+   thousands of characters sit unrendered.
+2. **Check whether the text ever existed**, not just whether it exists now — the longest
+   `evidence_text` across *all* history rows for that review. "Never written" and "written
+   and destroyed" look the same in a live table and completely different in history.
+3. **A school-and-area-specific pattern is not what deletion looks like.** A catalogue purge
+   cascades across every school equally. Selective loss points at scoping, a render filter,
+   or perception — and "the client is confused" is the explanation to reach for **last**.
+4. **Know what the app cannot do.** There are exactly two `.delete()` calls in `views.py`,
+   both on `InDepthResponse`, and **no code path anywhere deletes an `Evaluation`** — so
+   "all our ratings have gone" can never be a user's doing.
+5. **Say what the history floor is.** It proves nothing before migration `0034`, 9 Sept 2026
+   — and the original incident was destroying written work right up to that date. "It was
+   there Monday" can be a misremembered date rather than a wrong claim, and that is the one
+   case that cannot be disproved. Do not let a clean history report harden into "they
+   imagined it".
+
+The read-only census used is in the incident scratchpad rather than the repo; it is twenty
+lines of ORM and is quicker to rewrite than to find.
+
 ## Security model (do not weaken)
 
 - **Authentication** = Microsoft SSO **or** email + password. The login page offers the
@@ -343,8 +392,10 @@ school**, because every fallback lands you back where you started.
 - Effective access is the m2m **union** the FK (`_get_allowed_schools`), so a profile with
   `m2m=[B]` and `FK=A` holds **two** schools. Counting `schools` alone under-reports who is
   exposed to a multi-school defect.
-- Where a user lands when a school is not supplied is `SchoolProfile.school`, else
-  `allowed_schools[0]` — **name-ordered**. Both fallbacks are silent.
+- Where a user lands when a school is not supplied **used to be** `SchoolProfile.school`,
+  else `allowed_schools[0]` — name-ordered, and both fallbacks silent. **Since 16 Sept 2026
+  there is no fallback for a multi-school user**: they are asked. A single-school user still
+  lands on their one school, which is not a guess. See "Ask, don't guess" below.
 - **Fixtures matter.** Every `SchoolProfile` in the suite was single-school for months,
   which is exactly why the loop shipped. When testing anything school-scoped, give the user
   two schools, make the FK school sort **first** alphabetically, and assert against the
@@ -352,6 +403,31 @@ school**, because every fallback lands you back where you started.
 - Superusers cannot reproduce any of this: they keep `?school=` on paths where
   non-superusers once lost it. **Reproduce as a non-superuser with two schools, or you have
   not reproduced it.**
+
+### Ask, don't guess (16 Sept 2026)
+
+`_resolve_school_selection` used to end `school_profile.school or allowed_schools[0]`, so a
+page opened without a school silently picked one. That is gone.
+
+- **A user holding more than one school who has not named one gets a chooser and no data.**
+  It is returned through the third slot of `_resolve_school_selection`, which every scoped
+  view already returns unexamined — so no view runs a query, builds a formset or saves while
+  no school is chosen. **Superusers get it too**: the school they would otherwise land on is
+  the first of every school in the Trust.
+- **Single-school users are untouched.** Being shown a list of one is friction with nothing
+  behind it. The Trust Dashboard is untouched too — it is trust-wide on purpose.
+- **On POST it is a 409 refusal, not a redirect.** A save whose `school_id` is missing,
+  malformed or naming a school outside the user's own set is refused rather than falling
+  through to their default school — `reflection` in particular writes every area
+  unconditionally, so that fallback could put one school's words onto another's. It renders
+  rather than redirects so the posted body is not discarded, and offers no forward button:
+  that would reload the form from the database and bury the unsaved text two steps back.
+- **`_select_from_allowed` is the shared rule**, split out because `overview` builds its own
+  phase-filtered candidate list. Resolution is by **list membership**, never a database
+  lookup on the raw id. Two copies of "which school are we on" is how one ends up a term
+  behind the other.
+- The nav carries `school=` via `nav_school_param`, read from the query string rather than
+  the database so it costs no query. **Home stays bare deliberately** — it is not scoped.
 
 ## Conventions
 
@@ -647,20 +723,11 @@ packs.
   An `is_staff` account holding `change_indepthresponse` (which OSED Staff grants) reads every
   school's evidence text there. Bounded by `is_staff`, which only superusers can set. Flagged
   8 Sept 2026; fix is five lines matching `InDepthReviewAdmin`; awaiting a decision.
-- **The left-hand nav drops the working school.** Every tab in `base.html` is a bare path
-  with no `school=`, so a multi-school user who moves from one tab to another is returned to
-  their default school. Same silent switch as the 10 Sept ticket, different trigger; the
-  "Working on <School>" banner is currently the only thing that surfaces it. Left as-is
-  deliberately — making `_resolve_school_selection` session-sticky would hide the defect
-  behind state and break the superuser workflow, so carrying `?school=` through the nav is a
-  design decision awaiting a call. **Governors sharpen this considerably** (Lookout, Sept
-  2026): a two-school governor logs in three times a year to *read*, crosses the Trust
-  Dashboard which has no "Working on" banner at all, and lands on the wrong school with
-  nothing on screen that felt like a change — the failure is not "gets stuck", it is
-  "quotes the wrong school's judgements in a governors' meeting". `not_permitted.html` was
-  given `school_param` so at least the recovery page does not itself switch school; the nav
-  is still bare. **This is now the strongest argument for carrying `?school=` through the
-  nav** and should be decided rather than left.
+- ~~**The left-hand nav drops the working school.**~~ **Resolved 16 Sept 2026** — see
+  "Ask, don't guess" below. The nav now carries `school=` (`272bb86`) and the silent
+  fallback is gone (`2dd979f`). Kept here only as a pointer: the governor case that
+  sharpened it — "quotes the wrong school's judgements in a governors' meeting" — is the
+  reason the fix is worth defending if anyone proposes reinstating a default.
 - **`word_limit.js` trims stored text on page load, and the next Save persists the trim.**
   `enforce(el, maxWords)` runs at init, before the user touches anything, and
   `trimToMaxWords` both drops the tail and collapses newlines into single spaces. Reachable

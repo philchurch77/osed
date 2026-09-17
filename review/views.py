@@ -1393,15 +1393,28 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	na_comment = ""
 	if page == "commentary":
 		rated = [ja for ja in all_jas if ja.id in existing and existing[ja.id].rag]
+		# A statement that already holds a write-up is shown whatever rung it
+		# sits on, and whether or not it is still rated. The band below decides
+		# what the page ASKS for; it must never hide what has been written.
+		# 16 Sept 2026: one rating change moved two Bacton reviews down a rung
+		# and 18,463 characters written against the old rung fell off this
+		# page -- reported as lost, deadline the next day, nothing deleted.
+		written = {
+			ja.id for ja in all_jas
+			if ja.id in existing
+			and (existing[ja.id].evidence_text or existing[ja.id].next_steps)
+		}
 		ja_rung_key = {ja.id: s.key for s, jas in rung_jas for ja in jas}
 		band_key = _GRADE_TO_COMMENTARY_RUNG.get(review.overall_grade if review else "")
 		if band_key:
 			band_jas = [ja for ja in rated if ja_rung_key.get(ja.id) == band_key]
 			# Fall back to every rated statement if the band has none, so the page
 			# is never inexplicably blank.
-			page_jas = band_jas or rated
+			asked = band_jas or rated
 		else:
-			page_jas = rated
+			asked = rated
+		asked_ids = {ja.id for ja in asked}
+		page_jas = [ja for ja in all_jas if ja.id in asked_ids or ja.id in written]
 		# On a Needs Attention grade, offer the flat Needs Attention statements as
 		# a prompt: "in addition, does one or more of the following apply?".
 		if review and review.overall_grade == "needs_attention":
@@ -1415,6 +1428,7 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			na_comment = review.needs_attention_comment
 	else:
 		page_jas = all_jas
+		asked_ids = None  # the RAG page asks for everything; nothing is "kept"
 
 	FormSetClass = formset_factory(InDepthJudgementAreaForm, extra=0)
 	formset = None
@@ -1550,6 +1564,11 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"label": s.get_key_display(),
 			"focus": s.focus,
 			"rows": rows,
+			# On the commentary page, a rung the grade did not ask for is on
+			# screen only because something was written against it. Say so:
+			# without a word it reads as "OSED still thinks I'm at Strong".
+			"kept_for_text": asked_ids is not None
+			and not any(row["ja"].id in asked_ids for row in rows),
 		})
 
 	overall_grade = review.overall_grade if review else ""

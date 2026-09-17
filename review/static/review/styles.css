@@ -1955,6 +1955,15 @@ details[open] .indepth-criteria-summary::before {
   margin: 6px 0 0;
 }
 
+/* A rung shown on the commentary page only because a write-up exists on it
+   (the grade moved after it was written). One line under the heading, so it
+   never reads as "OSED still thinks I'm at Strong". */
+.indepth-standard-kept {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--colour-muted);
+}
+
 /* ── Judgement-area card ───────────────────────────────────────────────────── */
 
 .indepth-judgement {

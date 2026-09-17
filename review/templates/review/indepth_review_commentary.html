@@ -79,6 +79,9 @@
           <section class="indepth-standard indepth-standard--{{ block.key }}">
             <header class="indepth-standard-header">
               <h2 class="indepth-standard-title">{{ block.label }}</h2>
+              {% if block.kept_for_text %}
+                <p class="indepth-standard-kept">Kept because commentary was written here — it isn't part of your current grade, and nothing more is needed.</p>
+              {% endif %}
             </header>
 
             {% for row in block.rows %}
