@@ -2595,7 +2595,7 @@ def context_dashboard(request: HttpRequest) -> HttpResponse:
 			school.id,
 		)
 
-	return render(
+	response = render(
 		request,
 		"review/context_dashboard.html",
 		{
@@ -2609,3 +2609,33 @@ def context_dashboard(request: HttpRequest) -> HttpResponse:
 			"filter_notice": powerbi.FILTER_NOTICE,
 		},
 	)
+
+	if embed_url:
+		# Power BI's in-frame "Sign in" opens a popup and then navigates it to
+		# login.microsoftonline.com. Under Django's default
+		# `Cross-Origin-Opener-Policy: same-origin` -- which SecurityMiddleware
+		# applies to every response, in dev and production alike, and which
+		# nobody in this project ever chose -- that popup is severed from its
+		# opener: `window.open` returns a disowned handle, and the navigation
+		# that should follow silently does nothing. Diagnosed live on
+		# 17 Sept 2026, where all three symptoms were observed together: the
+		# popup opened and sat on about:blank for ever, the console logged
+		# nothing at all, and not one request reached login.microsoftonline.com.
+		#
+		# `same-origin-allow-popups` still isolates OSED from any page that
+		# opens IT -- that half of COOP is what protects the session here, and
+		# it is untouched. What it restores is the opener link for a popup this
+		# page itself opened.
+		#
+		# Set on the response rather than in settings.py deliberately.
+		# SecurityMiddleware uses `response.setdefault(...)`, so a header the
+		# view has already set survives it. That confines the relaxation to
+		# this one response, on the one page that frames Power BI, and only
+		# when a frame was actually built -- the unavailable states never open
+		# a popup, so they keep the strict default like everything else.
+		# Reaching for SECURE_CROSS_ORIGIN_OPENER_POLICY instead would relax
+		# the login page, the admin and every school's data along with it, to
+		# fix a popup that exists only here. Do not move it.
+		response["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+
+	return response

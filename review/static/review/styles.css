@@ -3163,6 +3163,13 @@ summary:focus-visible {
 }
 
 .bi-frame {
+  /* Load-bearing, and it does not look it. `.bi-frame-loading` above is a
+     full-size `position: absolute; inset: 0` element with no background, so
+     it covers the whole panel invisibly. Both elements are `z-index: auto`
+     and therefore paint in tree order; this `position: relative` is the only
+     thing putting the iframe last and letting it take the clicks. Remove it
+     as a tidy and every click inside the Power BI report quietly stops
+     working, for everyone, with nothing on screen to show for it. */
   position: relative;
   display: block;
   width: 100%;

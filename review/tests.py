@@ -5955,6 +5955,176 @@ class ContextDashboardSchoolScopingTests(TestCase):
 		self.assertNotIn("Woolpit High School", body)
 
 
+@_powerbi_live
+class ContextDashboardOpenerPolicyTests(TestCase):
+	"""The one relaxed header, and the fact that it is relaxed in one place.
+
+	Django's SecurityMiddleware stamps `Cross-Origin-Opener-Policy: same-origin`
+	on every response in this project -- nobody chose it, it is the framework
+	default -- and that severs Power BI's in-frame "Sign in" popup from its
+	opener, so the popup never navigates and sits on about:blank. The view
+	relaxes it to `same-origin-allow-popups` on the ONE response that frames a
+	report.
+
+	The half of this that matters is the scoping. A relaxation that leaked into
+	settings.py would look identical on the Context Dashboard and be invisible
+	everywhere else, so the tests below spend most of their effort on the pages
+	that must NOT have it.
+	"""
+
+	STRICT = "same-origin"
+	RELAXED = "same-origin-allow-popups"
+
+	def setUp(self):
+		self.school = School.objects.create(
+			name="Mendlesham Primary School",
+			powerbi_school_name="Mendlesham Village Primary",
+		)
+		self.unmapped = School.objects.create(name="Woolpit High School")
+		Category.objects.create(name="Leadership", order=1, is_active=True)
+
+		self.principal = User.objects.create_user("coop_head", "coop@example.com")
+		SchoolProfile.objects.create(user=self.principal, school=self.school)
+
+		self.unmapped_head = User.objects.create_user(
+			"coop_unmapped", "coop_unmapped@example.com"
+		)
+		SchoolProfile.objects.create(user=self.unmapped_head, school=self.unmapped)
+
+		self.url = reverse("review:context_dashboard")
+
+	# Catches: the header being dropped from the view, which returns the page
+	# to the state diagnosed live on 17 Sept 2026 -- the popup opens, never
+	# navigates, logs nothing, and the user reports that OSED's Power BI tab is
+	# broken with nothing in the console to say why.
+	def test_a_framed_report_relaxes_the_opener_policy_for_the_sign_in_popup(self):
+		self.client.force_login(self.principal)
+
+		response = self.client.get(self.url)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTrue(response.context["embed_url"], "expected a framed report here")
+		self.assertEqual(
+			response["Cross-Origin-Opener-Policy"],
+			self.RELAXED,
+			"the Power BI sign-in popup is severed from its opener again",
+		)
+
+	# Catches: the relaxation being hoisted out of the `if embed_url` branch to
+	# the top of the view, or into a decorator on it. Neither unavailable state
+	# opens a popup, so neither has any reason to give one up -- and asserting
+	# the strict value explicitly (rather than merely that the relaxed one is
+	# absent) is what makes this fail on a missing header too.
+	def test_a_page_with_no_frame_keeps_the_strict_opener_policy(self):
+		with self.subTest(case="school not mapped"):
+			self.client.force_login(self.unmapped_head)
+			response = self.client.get(self.url)
+			self.assertEqual(response.status_code, 200)
+			self.assertEqual(response.context["embed_url"], "")
+			self.assertEqual(
+				response["Cross-Origin-Opener-Policy"],
+				self.STRICT,
+				"an unmapped school gave up COOP for a popup it never opens",
+			)
+
+		with self.subTest(case="feature not configured"):
+			self.client.force_login(self.principal)
+			with override_settings(POWERBI_ENABLED=False):
+				response = self.client.get(self.url)
+			self.assertEqual(response.status_code, 200)
+			self.assertEqual(response.context["embed_url"], "")
+			self.assertEqual(
+				response["Cross-Origin-Opener-Policy"],
+				self.STRICT,
+				"a switched-off feature gave up COOP on every visit to the page",
+			)
+
+	# Catches: the "tidy" the view's own comment warns against -- moving the
+	# header into SECURE_CROSS_ORIGIN_OPENER_POLICY in settings.py. That reads
+	# as the same fix and is not: it relaxes the login page, the admin, and
+	# every page holding a school's judgements, to solve a popup that exists on
+	# exactly one route. Nothing else in the suite would notice.
+	def test_every_other_page_keeps_the_strict_opener_policy(self):
+		self.client.force_login(self.principal)
+		signed_in_pages = (
+			("dashboard", reverse("review:dashboard"), {"year": "2026-2027"}),
+			(
+				"evaluation",
+				reverse("review:evaluation"),
+				{"year": "2026-2027", "round": "1"},
+			),
+			("board", reverse("review:board"), {"year": "2026-2027", "round": "1"}),
+		)
+		for name, url, params in signed_in_pages:
+			with self.subTest(page=name):
+				response = self.client.get(url, params)
+				self.assertEqual(response.status_code, 200)
+				self.assertEqual(
+					response["Cross-Origin-Opener-Policy"],
+					self.STRICT,
+					f"{name} lost COOP -- the Power BI header has almost "
+					f"certainly been moved into SECURE_CROSS_ORIGIN_OPENER_POLICY "
+					f"in settings.py, which relaxes it site-wide",
+				)
+
+		# The login page carries the password form, so it is the page with the
+		# most to lose from a site-wide relaxation, and it is reached signed out
+		# -- a settings-level change would show up here even if every view above
+		# were rewritten.
+		self.client.logout()
+		response = self.client.get("/accounts/login/")
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(
+			response["Cross-Origin-Opener-Policy"],
+			self.STRICT,
+			"the login page lost COOP -- the Power BI header has almost "
+			"certainly been moved into SECURE_CROSS_ORIGIN_OPENER_POLICY in "
+			"settings.py, which relaxes it site-wide",
+		)
+
+	# Catches: a Django upgrade replacing SecurityMiddleware's `setdefault`
+	# with an unconditional assignment. The whole fix rests on that one word:
+	# if it changes, the view keeps setting the header, the middleware quietly
+	# overwrites it, the popup stops working again and NOTHING else in this
+	# suite goes red -- the page still renders, the frame is still built, and
+	# only a human clicking "Sign in" would ever find out.
+	def test_security_middleware_leaves_a_header_the_view_already_set(self):
+		from django.conf import settings as django_settings
+		from django.http import HttpResponse
+		from django.middleware.security import SecurityMiddleware
+
+		# The project never sets this; the value under test is the framework
+		# default, and it is the strict one the view has to work around.
+		self.assertEqual(
+			django_settings.SECURE_CROSS_ORIGIN_OPENER_POLICY, self.STRICT
+		)
+
+		view_set = HttpResponse()
+		view_set["Cross-Origin-Opener-Policy"] = self.RELAXED
+		untouched = HttpResponse()
+
+		request = RequestFactory().get("/review/context/")
+		middleware = SecurityMiddleware(lambda _request: view_set)
+
+		self.assertEqual(
+			middleware.process_response(request, view_set)[
+				"Cross-Origin-Opener-Policy"
+			],
+			self.RELAXED,
+			"SecurityMiddleware now overwrites a view-set COOP header -- the "
+			"Context Dashboard fix is silently dead",
+		)
+		# ...and still applies the strict default to a response that said
+		# nothing, so the assertion above is about deference and not about the
+		# middleware having stopped setting the header at all.
+		self.assertEqual(
+			middleware.process_response(request, untouched)[
+				"Cross-Origin-Opener-Policy"
+			],
+			self.STRICT,
+		)
+
+
 class SchoolPowerBiNameConstraintTests(TestCase):
 	"""The partial unique constraint on School.powerbi_school_name.
 
