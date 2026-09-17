@@ -11,7 +11,8 @@ from pathlib import Path
 from django.contrib import admin as django_admin
 from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
-from django.test import RequestFactory, TestCase
+from django.db import IntegrityError, transaction
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import resolve, reverse
 from django.utils.html import escape
 from django.utils import timezone
@@ -69,6 +70,7 @@ from .operations import (
 	statutory_rag,
 )
 from . import permissions as review_permissions
+from . import powerbi
 from . import urls as review_urls
 from .permissions import user_can_edit, user_can_qa_risk, user_is_governor
 from .risk import rag_for, trend_for
@@ -226,6 +228,11 @@ class GovernorAccessTests(TestCase):
 		"operations",
 		"risk_register",
 		"risk_qa",
+		# The Context Dashboard frames a Power BI report whose own slicer the
+		# viewer can change, so a governor reaching it would be a governor
+		# reading whatever that report holds -- decided closed, like the risk
+		# register.
+		"context_dashboard",
 	)
 
 	def setUp(self):
@@ -5189,6 +5196,11 @@ class MultiSchoolPrincipalTests(TestCase):
 			(reverse("review:evaluation"), {"round": "1"}),
 			(reverse("review:reflection"), {}),
 			(reverse("review:overview"), {}),
+			# Seventh page. It says "Opening the report at <School>" rather
+			# than "Working on <School>" -- deliberately, because OSED does
+			# not enforce the scoping on that page -- and this test asserts
+			# the block and the name, not the wording, so it belongs here.
+			(reverse("review:context_dashboard"), {}),
 		]
 		for url, extra in pages:
 			with self.subTest(url=url, **extra):
@@ -5476,3 +5488,523 @@ class MultiSchoolPrincipalTests(TestCase):
 		self.assertTemplateUsed(response, "review/choose_school.html")
 		self.assertNotIn("school", response.context)
 		self.assertNotIn(self.school_b.name, self._outside_the_selector(response))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Context Dashboard (Power BI embed)
+#
+# The whole feature is one promise: OSED either frames a report filtered to one
+# named school, or it frames nothing at all. There is no third state, and no
+# path that reaches an unfiltered report. Everything below is that promise.
+#
+# Nothing here makes an outbound call. The embed is a URL rendered into an
+# iframe `src`; the browser fetches it, the test client never does.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# A real embed string of the shape the report author supplies, pasted whole.
+_POWERBI_URL = (
+	"https://app.powerbi.com/reportEmbed"
+	"?reportId=43d022f7-3cb6-40c4-b9ef-695137080217"
+	"&autoAuth=true"
+	"&ctid=f49c13a4-34b3-4f43-869d-36e190c2273a"
+)
+
+_powerbi_live = override_settings(
+	POWERBI_ENABLED=True,
+	POWERBI_REPORT_URL=_POWERBI_URL,
+	POWERBI_FILTER_TARGET="Schools/School",
+	POWERBI_REPORT_TITLE="Oxlip Context Dashboard",
+)
+
+
+@_powerbi_live
+class PowerBiFailsClosedTests(TestCase):
+	"""resolve_embed() must never return a URL that is not filtered.
+
+	Every case here is a misconfiguration or a gap in the data, and every one
+	of them has the same correct answer: no URL. The failure this class exists
+	to catch is the plausible-looking "degrade gracefully" edit -- fall back to
+	the bare report when something is missing -- which would hand whoever
+	happened to open the page a view of every school in the Trust, with nothing
+	on screen to say so and no way to see it from this end.
+	"""
+
+	def setUp(self):
+		self.school = School.objects.create(
+			name="Mendlesham Primary School",
+			powerbi_school_name="Mendlesham",
+		)
+
+	# Catches: the feature shipping switched on by an unset environment
+	# variable, or is_configured() being loosened to ignore POWERBI_ENABLED.
+	@override_settings(POWERBI_ENABLED=False)
+	def test_a_disabled_feature_produces_no_embed_url(self):
+		self.assertFalse(powerbi.is_configured())
+		self.assertEqual(
+			powerbi.resolve_embed(self.school),
+			("", powerbi.UNAVAILABLE_NOT_CONFIGURED),
+		)
+
+	# Catches: the prefix check being relaxed to a substring or a "contains
+	# powerbi.com" test. With no CSP in this project the prefix is the only
+	# thing stopping a mistyped App Setting framing an arbitrary site inside a
+	# signed-in OSED page. The last two URLs are the userinfo trick the
+	# trailing "?" defeats: everything before the "@" is credentials, and the
+	# real host is evil.example.com.
+	def test_a_report_url_on_another_host_is_refused(self):
+		for bad_url in (
+			"https://evil.example.com/reportEmbed?reportId=1",
+			"http://app.powerbi.com/reportEmbed?reportId=1",
+			"https://app.powerbi.com.evil.example.com/reportEmbed?reportId=1",
+			"https://app.powerbi.com/reportEmbed@evil.example.com/?reportId=1",
+			"https://app.powerbi.com@evil.example.com/reportEmbed?reportId=1",
+		):
+			with self.subTest(url=bad_url):
+				with override_settings(POWERBI_REPORT_URL=bad_url):
+					self.assertFalse(powerbi.is_configured())
+					self.assertEqual(
+						powerbi.resolve_embed(self.school),
+						("", powerbi.UNAVAILABLE_NOT_CONFIGURED),
+					)
+
+	# Catches: the one-line assertion that pins the host. Drop the trailing "?"
+	# and "https://app.powerbi.com/reportEmbed@evil.example.com/" starts with
+	# the prefix -- a URL whose authority is evil.example.com, framed by OSED.
+	def test_the_embed_url_prefix_still_pins_the_authority(self):
+		self.assertTrue(powerbi.EMBED_URL_PREFIX.endswith("?"))
+		self.assertEqual(
+			powerbi.EMBED_URL_PREFIX, "https://app.powerbi.com/reportEmbed?"
+		)
+
+	# Catches: a filter target containing a space being accepted and sent
+	# anyway. Power BI cannot address "School Context/School" by URL at all --
+	# there is no escaping that works -- so the filter is silently ignored and
+	# the report opens on every school.
+	@override_settings(POWERBI_FILTER_TARGET="School Context/School")
+	def test_a_filter_target_with_a_space_is_refused(self):
+		self.assertFalse(powerbi.is_configured())
+		self.assertEqual(
+			powerbi.resolve_embed(self.school),
+			("", powerbi.UNAVAILABLE_NOT_CONFIGURED),
+		)
+
+	# Catches: a blank or unusable filter target degrading to an unfiltered
+	# embed rather than to an explanatory panel.
+	def test_an_unusable_filter_target_is_refused(self):
+		for target in ("", "   ", "Schools", "Schools/", "/School", "Schools/School/Name"):
+			with self.subTest(target=repr(target)):
+				with override_settings(POWERBI_FILTER_TARGET=target):
+					self.assertFalse(powerbi.is_configured())
+					self.assertEqual(
+						powerbi.resolve_embed(self.school),
+						("", powerbi.UNAVAILABLE_NOT_CONFIGURED),
+					)
+
+	# Catches: an unmapped school falling through to the bare report URL. A
+	# blank mapping is the DEFAULT state of every school in the database, so
+	# this is the branch a new school takes on the day it is created.
+	def test_a_school_with_no_mapped_name_gets_no_report_at_all(self):
+		for mapped in ("", "   ", "\t\n"):
+			with self.subTest(mapped=repr(mapped)):
+				school = School.objects.create(
+					name=f"Unmapped {len(mapped)}", powerbi_school_name=mapped
+				)
+				embed_url, reason = powerbi.resolve_embed(school)
+				self.assertEqual(embed_url, "")
+				self.assertEqual(reason, powerbi.UNAVAILABLE_SCHOOL_NOT_MAPPED)
+
+	# Catches: the two return slots both being filled, or both empty -- the
+	# caller renders a frame on the first and an explanation on the second, so
+	# either shape puts the page in a state the template cannot express.
+	def test_exactly_one_of_the_two_slots_is_ever_set(self):
+		embed_url, reason = powerbi.resolve_embed(self.school)
+		self.assertTrue(embed_url)
+		self.assertEqual(reason, "")
+
+		embed_url, reason = powerbi.resolve_embed(
+			School.objects.create(name="Blank Mapping School")
+		)
+		self.assertEqual(embed_url, "")
+		self.assertTrue(reason)
+
+
+@_powerbi_live
+class PowerBiFilterStringTests(TestCase):
+	"""What the built URL actually says.
+
+	A filter that is malformed, truncated or escapable is not a weaker filter;
+	Power BI discards it and shows everything. These are the three shapes of
+	school name that break it.
+	"""
+
+	# Catches: urlencode's default quote_plus turning the spaces in a school
+	# name into "+", which Power BI reads as a literal plus inside the string
+	# literal -- the filter then matches nothing, or is dropped. Also catches
+	# the "Table/Column" separator being percent-encoded to %2F, a shape
+	# nobody has tested against the live report.
+	def test_the_mapped_name_is_percent_encoded_with_spaces_not_plus(self):
+		school = School.objects.create(
+			name="Mendlesham Primary School",
+			powerbi_school_name="Mendlesham Village Primary",
+		)
+
+		embed_url, reason = powerbi.resolve_embed(school)
+
+		self.assertEqual(reason, "")
+		self.assertTrue(embed_url.startswith(powerbi.EMBED_URL_PREFIX))
+		self.assertIn(
+			"&filter=Schools/School%20eq%20%27Mendlesham%20Village%20Primary%27",
+			embed_url,
+		)
+		self.assertNotIn("+", embed_url)
+		self.assertNotIn("%2F", embed_url)
+
+	# Catches: _escape_filter_value being dropped or replaced with a strip.
+	# An unescaped apostrophe terminates the OData literal early, and Power BI
+	# falls back to the unfiltered report -- the exact failure this module
+	# exists to prevent, triggered by a school name the Trust plausibly holds.
+	def test_an_apostrophe_in_a_school_name_is_doubled_not_dropped(self):
+		self.assertEqual(powerbi._escape_filter_value("St Mary's"), "St Mary''s")
+
+		school = School.objects.create(
+			name="St Mary's CofE Primary School",
+			powerbi_school_name="St Mary's",
+		)
+		embed_url, _ = powerbi.resolve_embed(school)
+
+		# %27%27 is the doubled quote; the value is still inside its literal.
+		self.assertIn("%27St%20Mary%27%27s%27", embed_url)
+		self.assertNotIn("St Mary's", embed_url)
+
+	# Catches: the mapped value being interpolated raw, so a name holding "&"
+	# closes the filter parameter and opens a new one -- an admin typing a
+	# school name would then be editing the report's query string.
+	def test_a_mapped_name_cannot_append_a_second_query_parameter(self):
+		school = School.objects.create(
+			name="Acme & Co Academy",
+			powerbi_school_name="Acme & Co #2 = ?x",
+		)
+
+		embed_url, _ = powerbi.resolve_embed(school)
+
+		self.assertTrue(embed_url.startswith(_POWERBI_URL + "&filter="))
+		tail = embed_url.split("&filter=", 1)[1]
+		for injected in ("&", "#", "=", "?"):
+			with self.subTest(character=injected):
+				self.assertNotIn(
+					injected,
+					tail,
+					"a school name added a parameter to the report URL",
+				)
+
+
+@_powerbi_live
+class ContextDashboardPageTests(TestCase):
+	"""The page itself: what it renders, who reaches it, and how."""
+
+	def setUp(self):
+		self.school = School.objects.create(
+			name="Mendlesham Primary School",
+			powerbi_school_name="Mendlesham Village Primary",
+		)
+		self.unmapped = School.objects.create(name="Woolpit High School")
+
+		self.principal = User.objects.create_user("principal", "principal@example.com")
+		SchoolProfile.objects.create(user=self.principal, school=self.school)
+
+		self.url = reverse("review:context_dashboard")
+
+	# Catches: an unmapped school being handed the bare report URL rather than
+	# the explanatory panel. Asserted against the whole body, not the context,
+	# because a fallback could arrive through the template as easily as
+	# through the view -- and the harm is the same either way.
+	def test_an_unmapped_school_renders_no_frame_and_no_power_bi_url(self):
+		head = User.objects.create_user("unmapped_head", "unmapped@example.com")
+		SchoolProfile.objects.create(user=head, school=self.unmapped)
+		self.client.force_login(head)
+
+		response = self.client.get(self.url)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/context_dashboard.html")
+		self.assertEqual(response.context["embed_url"], "")
+		self.assertEqual(
+			response.context["unavailable_reason"],
+			powerbi.UNAVAILABLE_SCHOOL_NOT_MAPPED,
+		)
+
+		body = response.content.decode()
+		self.assertNotIn("<iframe", body)
+		self.assertNotIn("app.powerbi.com", body)
+		self.assertContains(response, "No report for this school yet")
+
+	# Catches: the standing text and the filter notice being paraphrased,
+	# shortened or dropped. Both are load-bearing sentences, not decoration:
+	# the first is the only warning a viewer gets that a blank panel is Power
+	# BI's doing and not OSED's, and the second is the condition on which a
+	# user-owns-data embed shipped at all -- it says in as many words that
+	# what you can see is decided by Power BI and not by this application.
+	# POWERBI_EMBED_PLAN.md section 3 rejected this embed mode without it.
+	#
+	# escape() because Django escapes the apostrophe in "report's" on the way
+	# out; the sentence a reader sees is byte-for-byte the constant.
+	def test_both_standing_texts_are_rendered_verbatim(self):
+		self.client.force_login(self.principal)
+
+		response = self.client.get(self.url)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTrue(response.context["embed_url"], "expected a framed report here")
+		self.assertContains(response, escape(powerbi.EMBED_STANDING_TEXT))
+		self.assertContains(response, escape(powerbi.FILTER_NOTICE))
+
+		# Pinned literally as well as rendered. Asserting only that the page
+		# contains the constant proves the template did not drop it, but that
+		# assertion moves with the constant, so softening the sentence in
+		# powerbi.py would still pass. These are the sentences themselves.
+		self.assertEqual(
+			powerbi.FILTER_NOTICE,
+			"This page opens the report at the school named above. The report's "
+			"own school filter can be changed inside the panel. What you are able "
+			"to see is controlled by Power BI, not by OSED.",
+		)
+		self.assertEqual(
+			powerbi.EMBED_STANDING_TEXT,
+			"This report is provided by Power BI and opens with your own "
+			"Microsoft account, not your OSED sign-in. OSED cannot see whether "
+			"your account has been given access to it.",
+		)
+		# Rendered only where there IS a panel, and pinned for its last clause:
+		# a mapped school whose name does not match the report's own slicer
+		# value filters to nothing and renders every chart empty. OSED cannot
+		# detect that, so this sentence is the only thing standing between it
+		# and "the Trust holds no data for my school".
+		self.assertContains(response, escape(powerbi.PANEL_FAILURE_TEXT))
+		self.assertIn(
+			"the school name OSED is sending may not match the report's own",
+			powerbi.PANEL_FAILURE_TEXT,
+		)
+
+	# Catches: the standing text moving inside the embed_url branch, so the one
+	# page that has no report -- the page most likely to be read as OSED being
+	# broken -- is the one page that does not explain itself.
+	def test_the_standing_text_survives_a_page_with_no_report(self):
+		head = User.objects.create_user("unmapped_head2", "unmapped2@example.com")
+		SchoolProfile.objects.create(user=head, school=self.unmapped)
+		self.client.force_login(head)
+
+		response = self.client.get(self.url)
+
+		self.assertContains(response, escape(powerbi.EMBED_STANDING_TEXT))
+		# ...and does not describe a panel that is not on the page. A page
+		# reading "Opening the report at X" above "Not set up yet" is how an
+		# account that is working perfectly ends up reported as broken.
+		self.assertNotContains(response, escape(powerbi.PANEL_FAILURE_TEXT))
+		self.assertNotContains(response, "Opening the report at")
+		self.assertContains(response, "This page would open at")
+
+	# Catches: @governor_denied being dropped from the newest view. The
+	# deny-list fails open, so a route added without the decorator is a route
+	# a governor can read.
+	def test_a_governor_is_refused_the_context_dashboard(self):
+		governor = User.objects.create_user("gov", "gov@example.com")
+		SchoolProfile.objects.create(
+			user=governor, school=self.school, role=SchoolProfile.Role.GOVERNOR
+		)
+		self.client.force_login(governor)
+
+		response = self.client.get(self.url)
+
+		self.assertEqual(response.status_code, 403)
+		self.assertTemplateUsed(response, "review/not_permitted.html")
+		self.assertNotIn("app.powerbi.com", response.content.decode())
+
+	# Catches: the nav advertising a tab whose every page says "not set up
+	# yet", and the nav offering a governor a link to a 403.
+	def test_the_nav_link_appears_only_when_it_leads_somewhere(self):
+		governor = User.objects.create_user("gov2", "gov2@example.com")
+		SchoolProfile.objects.create(
+			user=governor, school=self.school, role=SchoolProfile.Role.GOVERNOR
+		)
+		dashboard = reverse("review:dashboard")
+
+		with self.subTest(case="configured, full account"):
+			self.client.force_login(self.principal)
+			response = self.client.get(dashboard, {"year": "2026-2027"})
+			self.assertTrue(response.context["show_context_dashboard_tab"])
+			self.assertContains(response, "/review/context/")
+
+		with self.subTest(case="configured, governor"):
+			self.client.force_login(governor)
+			response = self.client.get(dashboard, {"year": "2026-2027"})
+			self.assertNotContains(response, "/review/context/")
+
+		with self.subTest(case="not configured, full account"):
+			self.client.force_login(self.principal)
+			with override_settings(POWERBI_ENABLED=False):
+				response = self.client.get(dashboard, {"year": "2026-2027"})
+				self.assertFalse(response.context["show_context_dashboard_tab"])
+				self.assertNotContains(response, "/review/context/")
+
+	# Catches: a POST branch appearing on a page that has nothing to save. The
+	# refusal must come from the method check, not from a view that quietly
+	# accepts the request and does nothing with it.
+	def test_a_post_is_refused_by_method(self):
+		self.client.force_login(self.principal)
+
+		response = self.client.post(self.url, {"school_id": str(self.school.id)})
+
+		self.assertEqual(response.status_code, 405)
+
+	# Catches: @login_required being lost, which would put a Trust report URL
+	# on a page reachable without signing in to OSED at all.
+	def test_an_anonymous_visitor_is_sent_to_the_login_page(self):
+		response = self.client.get(self.url)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertTrue(response["Location"].startswith("/accounts/login/"))
+		self.assertNotIn("app.powerbi.com", response["Location"])
+
+
+@_powerbi_live
+class ContextDashboardSchoolScopingTests(TestCase):
+	"""The two-school fixture, per CLAUDE.md.
+
+	School A is the profile's FK school and sorts FIRST alphabetically, so
+	both silent fallbacks (`school_profile.school` and `allowed_schools[0]`)
+	resolve to A. Every assertion is made against B, so a fallback cannot pass
+	by accident. School C is outside the user's set entirely.
+
+	The mapped names are deliberately NOT substrings of the school names: an
+	absence assertion against "Ashfield" would be satisfied by the selector's
+	own option list and prove nothing.
+	"""
+
+	def setUp(self):
+		self.school_a = School.objects.create(
+			name="Ashfield Primary School",
+			powerbi_school_name="Trust Report Name A",
+		)
+		self.school_b = School.objects.create(
+			name="Mendlesham Primary School",
+			powerbi_school_name="Trust Report Name B",
+		)
+		self.school_c = School.objects.create(
+			name="Woolpit High School",
+			powerbi_school_name="Trust Report Name C",
+		)
+
+		self.principal = User.objects.create_user("two_schools", "two@example.com")
+		profile = SchoolProfile.objects.create(user=self.principal, school=self.school_a)
+		profile.schools.add(self.school_a, self.school_b)
+		self.client.force_login(self.principal)
+
+		self.url = reverse("review:context_dashboard")
+
+	# Catches: the page opening a report before the user has said which school
+	# this is. Whichever school sorts first would be on screen, in a frame, in
+	# front of whoever is in the room.
+	def test_a_two_school_user_sees_no_report_until_they_choose(self):
+		response = self.client.get(self.url)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+
+		body = response.content.decode()
+		self.assertNotIn("<iframe", body)
+		self.assertNotIn("app.powerbi.com", body)
+		self.assertNotIn("Trust Report Name A", body)
+		self.assertNotIn("Trust Report Name B", body)
+
+	# Catches: the chosen school being resolved for the page heading but the
+	# embed being built from the profile's default -- a report opened at
+	# Ashfield under a heading that says Mendlesham, which is the quietest
+	# wrong-school failure this codebase can produce.
+	def test_the_report_opens_at_the_chosen_school_not_the_default_one(self):
+		response = self.client.get(self.url, {"school": str(self.school_b.id)})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.context["school"], self.school_b)
+
+		embed_url = response.context["embed_url"]
+		self.assertIn("Trust%20Report%20Name%20B", embed_url)
+		self.assertNotIn("Trust%20Report%20Name%20A", embed_url)
+
+		body = response.content.decode()
+		self.assertIn("<iframe", body)
+		self.assertIn("Trust%20Report%20Name%20B", body)
+		self.assertNotIn("Trust%20Report%20Name%20A", body)
+		self.assertNotIn("Trust Report Name A", body)
+
+	# Catches: request.GET["school"] being read directly in this view rather
+	# than through _resolve_school_selection. A hand-edited id would then mint
+	# a filter for a school the user has no link to -- and unlike a rendered
+	# page, that URL keeps working in a new tab after they leave OSED.
+	def test_a_forged_school_id_cannot_open_the_report_at_that_school(self):
+		response = self.client.get(self.url, {"school": str(self.school_c.id)})
+
+		self.assertEqual(response.status_code, 200)
+		self.assertTemplateUsed(response, "review/choose_school.html")
+		self.assertNotIn("school", response.context)
+
+		body = response.content.decode()
+		self.assertNotIn("<iframe", body)
+		self.assertNotIn("Trust Report Name C", body)
+		self.assertNotIn("Trust%20Report%20Name%20C", body)
+		self.assertNotIn("Woolpit High School", body)
+
+
+class SchoolPowerBiNameConstraintTests(TestCase):
+	"""The partial unique constraint on School.powerbi_school_name.
+
+	Done as a plain `unique=True` this passes every test on SQLite and fails
+	on the deploy that seeds a fresh Postgres database, because `default=""`
+	collides on the second unconfigured school -- i.e. on school number two.
+	"""
+
+	# Catches: the condition on the constraint being dropped, which makes the
+	# blank default collide with itself and blocks creating any second school.
+	def test_two_schools_may_both_have_no_power_bi_name(self):
+		School.objects.create(name="Ashfield Primary School")
+		School.objects.create(name="Mendlesham Primary School")
+
+		self.assertEqual(School.objects.filter(powerbi_school_name="").count(), 2)
+
+	# Catches: the constraint being dropped entirely. Two schools pointing at
+	# one slicer value means one school's leaders reading another school's
+	# data with the right name printed above it.
+	def test_two_schools_cannot_share_one_power_bi_name(self):
+		School.objects.create(
+			name="Ashfield Primary School", powerbi_school_name="Ashfield"
+		)
+
+		with self.assertRaises(IntegrityError):
+			with transaction.atomic():
+				School.objects.create(
+					name="Ashfield Nursery", powerbi_school_name="Ashfield"
+				)
+
+	# Catches: clean() losing the strip. The constraint's condition excludes
+	# only the exact empty string, so a pasted trailing space is indexed as a
+	# real value while resolve_embed() strips it and calls the school unmapped
+	# -- two readings of one field that disagree, and the report silently off.
+	def test_clean_strips_whitespace_from_the_power_bi_name(self):
+		school = School(
+			name="Mendlesham Primary School", powerbi_school_name="  Mendlesham \n"
+		)
+
+		school.full_clean()
+
+		self.assertEqual(school.powerbi_school_name, "Mendlesham")
+
+		school.save()
+		with override_settings(
+			POWERBI_ENABLED=True,
+			POWERBI_REPORT_URL=_POWERBI_URL,
+			POWERBI_FILTER_TARGET="Schools/School",
+		):
+			embed_url, reason = powerbi.resolve_embed(School.objects.get(pk=school.pk))
+
+		self.assertEqual(reason, "")
+		self.assertIn("%27Mendlesham%27", embed_url)

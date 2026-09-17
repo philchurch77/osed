@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
@@ -13,6 +14,8 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.http import urlencode
+from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_GET
 
 from allauth.account.views import LoginView
 
@@ -69,10 +72,18 @@ from .operations import (
 	statutory_rag,
 	summarise as ops_summarise,
 )
+from . import powerbi
 
 # The three band statements a Principal can pick between; Blue is a computed
 # state, never a choice.
 OPS_BAND_CHOICES = [c for c in OPS_RAG_CHOICES if c[0] != OPS_BLUE]
+
+
+# The first logging call in review/. The Context Dashboard is the one page
+# whose failure is invisible from the browser -- a blank cross-origin frame
+# looks identical to a school nobody has mapped -- so the unmapped case says so
+# server-side. School names only; nothing personal reaches the log.
+logger = logging.getLogger(__name__)
 from .permissions import (
 	governor_denied,
 	user_can_edit,
@@ -224,6 +235,7 @@ _CHOOSE_SCHOOL_PAGE_LABELS = {
 	"overview": "School Progress",
 	"risk_register": "Risk",
 	"operations": "Operations & Resources",
+	"context_dashboard": "Context Dashboard",
 }
 
 
@@ -2531,3 +2543,69 @@ def _save_operations(request: HttpRequest, *, school, period, year: int) -> None
 			note.save()
 
 	messages.success(request, f"Operations & Resources saved for {school.name}.")
+
+
+@login_required
+@governor_denied
+@require_GET
+@never_cache
+def context_dashboard(request: HttpRequest) -> HttpResponse:
+	"""Frame the Trust's Power BI Context Dashboard, opened at one school.
+
+	Read-only and GET-only: there is nothing on this page to save, so there is
+	no POST branch and no _readonly_redirect. A read-only or QA account reaches
+	it on the same terms as anyone else.
+
+	The school is whatever _resolve_school_selection already resolved, and its
+	third slot is returned unexamined like every other scoped view -- that slot
+	is the 403, the redirect, or the chooser, and the chooser is what a
+	two-school user gets before any frame is built. `request.GET["school"]` is
+	never read here: an id outside the user's own set fails list membership in
+	the helper and the user is asked rather than quietly given something else.
+
+	Note what this view does NOT do. The filter it builds decides which school
+	the report OPENS at; it is not an access control, and the viewer can change
+	the report's own slicer inside the panel. That is a property of the
+	user-owns-data embed the Trust supplied, and the page says so verbatim via
+	powerbi.FILTER_NOTICE. Do not describe this page as restricting a user to
+	their own school.
+	"""
+	school, schools, error = _resolve_school_selection(request)
+	if error is not None:
+		return error
+
+	embed_url, unavailable_reason = powerbi.resolve_embed(school)
+	if unavailable_reason == powerbi.UNAVAILABLE_SCHOOL_NOT_MAPPED:
+		logger.warning(
+			"Context Dashboard: no Power BI school name set for %s (id %s).",
+			school.name,
+			school.id,
+		)
+	elif embed_url:
+		# OSED cannot record what was READ -- it never brokers the request, and
+		# Power BI logs the viewer's own Microsoft identity in a different
+		# system with a different read audience. It can record that the page was
+		# opened, for which school, by whom, and that is worth having: without
+		# it a subject access request or a concern gets the answer "we know
+		# nothing". User pk rather than email, so the log holds no personal data.
+		logger.info(
+			"Context Dashboard opened: user %s, school %s (id %s).",
+			request.user.pk,
+			school.name,
+			school.id,
+		)
+
+	return render(
+		request,
+		"review/context_dashboard.html",
+		{
+			"school": school,
+			"schools": schools,
+			"embed_url": embed_url,
+			"unavailable_reason": unavailable_reason,
+			"report_title": powerbi.report_title(),
+			"embed_standing_text": powerbi.EMBED_STANDING_TEXT,
+			"panel_failure_text": powerbi.PANEL_FAILURE_TEXT,
+			"filter_notice": powerbi.FILTER_NOTICE,
+		},
+	)

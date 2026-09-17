@@ -1,0 +1,118 @@
+{% extends "review/base.html" %}
+
+{% block title %}Context Dashboard{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <h1 class="page-title">Context Dashboard</h1>
+
+    {% comment %}
+      Two wordings, because there are two situations. "Opening the report at"
+      is deliberately not the usual "Working on": same block and same class, so
+      this page still names its school the way every scoped page must, but
+      "Working on" is the phrasing of six pages where OSED enforces the scoping
+      itself, and this is the one page where that promise is not OSED's to
+      make. Borrowing the wording would borrow the assurance with it.
+
+      When there is no report, the subtitle says so in the conditional. A page
+      that announces "Opening the report at Bacton" above a panel reading "Not
+      set up yet" reads as half-broken, which is how a working account ends up
+      filing a ticket.
+    {% endcomment %}
+    <p class="page-subtitle page-subtitle--school">
+      {% if embed_url %}
+        <span class="page-subtitle-label">Opening the report at</span>
+      {% else %}
+        <span class="page-subtitle-label">This page would open at</span>
+      {% endif %}
+      <strong>{{ school.name }}</strong>
+    </p>
+    {% if user.is_superuser or schools %}
+      {% comment %}
+        No year field: the Power BI report carries its own time controls, and a
+        year selector OSED could not apply would be a control that does nothing.
+      {% endcomment %}
+      <form method="get" class="school-select">
+        {% include "review/includes/filter_school_field.html" %}
+        {% include "review/includes/filter_actions.html" %}
+      </form>
+    {% endif %}
+  </header>
+
+  {% if messages %}
+    <ul class="messages">
+      {% for message in messages %}
+        <li class="{{ message.tags }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% comment %}
+    Rendered whether or not a frame is built, so it says nothing about a panel.
+    The embed signs the viewer in to Power BI with their own Microsoft account
+    and the failure is cross-origin, so neither this page nor the server can
+    detect it -- saying in advance what that means is the only honest option.
+  {% endcomment %}
+  <p class="bi-standing-line">{{ embed_standing_text }}</p>
+
+  {% if embed_url %}
+    <p class="bi-notice">{{ filter_notice }}</p>
+    <p class="bi-standing-line">{{ panel_failure_text }}</p>
+
+    {% comment %}
+      Shown below 1024px, where the frame is hidden. A Power BI report squeezed
+      into a phone-width column is not a smaller version of this page, it is a
+      support ticket saying the dashboard is broken -- so say so and hand over
+      the link instead. A tablet in portrait gets this; the same tablet turned
+      sideways gets the frame, which is why rotating is offered first.
+    {% endcomment %}
+    <div class="bi-narrow-note">
+      This report needs a wider screen than this one. Turn your tablet
+      sideways, open it in its own tab using the link below, or come back on a
+      laptop.
+    </div>
+
+    {% comment %}
+      "Loading" sits behind the iframe, which paints over it once Power BI
+      renders -- no JavaScript needed. Without it the loading state and the
+      no-access state are the same empty box, and the text above has just told
+      the user that an empty box means they have no access.
+    {% endcomment %}
+    <div class="bi-frame-wrap">
+      <p class="bi-frame-loading">Loading {{ report_title }}&hellip;</p>
+      <iframe
+        class="bi-frame"
+        title="{{ report_title }}"
+        src="{{ embed_url }}"
+        referrerpolicy="no-referrer"
+        allowfullscreen>
+      </iframe>
+    </div>
+
+    {% comment %}
+      The most useful control on the page, not an afterthought. A framed
+      autoAuth embed is the fragile part: third-party cookie blocking (Safari
+      ITP, Chrome's phase-out) breaks the frame while the identical URL still
+      works in a tab. The wording avoids naming the panel, because on a narrow
+      screen there is no panel and this is the only route there is.
+    {% endcomment %}
+    <p class="bi-fallback">
+      <a href="{{ embed_url }}" target="_blank" rel="noopener">Open {{ report_title }} in Power BI</a>
+    </p>
+  {% elif unavailable_reason == "school_not_mapped" %}
+    <div class="bi-unavailable">
+      <h2 class="bi-unavailable-title">No report for this school yet</h2>
+      <p>
+        <strong>{{ school.name }}</strong> has no <strong>Power BI school
+        name</strong> set, so OSED does not know what this school is called in
+        the report. Ask a Trust administrator to set it under
+        <strong>Admin &rarr; Schools</strong>.
+      </p>
+    </div>
+  {% else %}
+    <div class="bi-unavailable">
+      <h2 class="bi-unavailable-title">Not set up yet</h2>
+      <p>The Context Dashboard has not been set up for this Trust yet.</p>
+    </div>
+  {% endif %}
+{% endblock %}

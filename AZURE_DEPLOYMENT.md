@@ -189,6 +189,29 @@ Set these under **App Service → Settings → Environment variables → App set
 | `MICROSOFT_CLIENT_SECRET` | from Entra app registration | Microsoft SSO |
 | `MICROSOFT_TENANT` | `organizations` or a tenant GUID | Microsoft SSO |
 
+### Power BI Context Dashboard (optional — the page is off without these)
+
+**No secret is involved.** The supplied embed is a *user-owns-data* secure embed
+(`autoAuth=true`): the viewer signs in to Power BI with their own Microsoft account, so
+there is no service principal, no client secret and no outbound call from OSED. The
+trade-off is that the school filter is a **convenience, not an access control** — see
+`CLAUDE.md`, "Context Dashboard".
+
+All four must be right or the page shows "not set up yet" and the nav tab stays hidden.
+That is deliberate: a misconfiguration must never degrade to an unfiltered report.
+
+| Name | Value | Note |
+|------|-------|------|
+| `POWERBI_ENABLED` | `1` | Off by default |
+| `POWERBI_REPORT_URL` | the full `https://app.powerbi.com/reportEmbed?...` string, verbatim | Must start with `https://app.powerbi.com/reportEmbed?` or it is refused |
+| `POWERBI_FILTER_TARGET` | the report's `Table/Column` holding the school name, e.g. `Schools/School` | **Neither part may contain a space** — a Power BI URL filter cannot address one, and the report would need renaming |
+| `POWERBI_REPORT_TITLE` | e.g. `Oxlip Context Dashboard` | Optional; used as the iframe title |
+
+Each school also needs its **Power BI school name** set in the admin (Schools changelist) —
+the exact value it appears as in the report's School slicer, which matches the OSED name in
+none of the seven cases. `seed_schools` fills these in when blank; a school left blank shows
+an explanatory panel and no report.
+
 ### Media storage (only if you need persistent user uploads — e.g. school logos)
 
 App Service local disk under `/home` *is* persistent, but for production-grade media use

@@ -299,6 +299,30 @@ MICROSOFT_CLIENT_SECRET = os.getenv('MICROSOFT_CLIENT_SECRET', '')
 MICROSOFT_TENANT = os.getenv('MICROSOFT_TENANT', 'organizations')
 
 
+# --- Power BI Context Dashboard -------------------------------------------
+# The supplied embed is a user-owns-data "secure embed" (`autoAuth=true`): the
+# viewer signs in to Power BI with their own Microsoft account, and OSED chooses
+# only which school the report opens at. There is no secret here and no
+# service-to-service call -- deliberately a separate concern from
+# MICROSOFT_CLIENT_ID above, which is the delegated SSO app. The `ctid` inside
+# the embed URL is the report's tenant and is NOT the same question as
+# MICROSOFT_TENANT; do not try to reconcile them.
+#
+# No ImproperlyConfigured guard on purpose. Absent or wrong config must degrade
+# to an explanatory panel on one page, not refuse to boot the site.
+POWERBI_ENABLED = _env_bool("POWERBI_ENABLED", default=False)
+# The full embed string as supplied by the report author, pasted verbatim.
+# Stored whole rather than split into report id + tenant id and reassembled:
+# reassembling a vendor-supplied URL is a way to get it wrong.
+POWERBI_REPORT_URL = os.getenv("POWERBI_REPORT_URL", "").strip()
+# The report's own `Table/Column` holding the school name, e.g. "Schools/School".
+# Neither part may contain a space -- a Power BI URL filter cannot address one.
+# Blank or unusable means the page shows "not set up yet" rather than an
+# unfiltered report.
+POWERBI_FILTER_TARGET = os.getenv("POWERBI_FILTER_TARGET", "").strip()
+POWERBI_REPORT_TITLE = os.getenv("POWERBI_REPORT_TITLE", "Oxlip Context Dashboard").strip()
+
+
 SOCIALACCOUNT_PROVIDERS = {
     'microsoft': {
         'APPS': [
@@ -332,6 +356,16 @@ LOGGING = {
         "level": "WARNING",
     },
     "loggers": {
+        # The root is WARNING, which would swallow the Context Dashboard's
+        # access record -- who opened the report page, for which school. That is
+        # the only read-trail OSED can produce for this feature (Power BI logs
+        # the viewer's own identity, in a different system), so it is raised
+        # here rather than mislabelled as a WARNING to get past the root level.
+        "review": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "django": {
             "handlers": ["console"],
             "level": "ERROR",

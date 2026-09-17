@@ -3097,3 +3097,129 @@ summary:focus-visible {
 .school-select--choose .form-actions {
   justify-content: flex-start;
 }
+
+/* Context Dashboard (Power BI embed) ------------------------------------- */
+/* No new static file: one stylesheet, so nothing extra has to land in
+   staticfiles.json under CompressedManifestStaticFilesStorage. */
+
+/* Its own class rather than reusing .ops-standing-line. That selector belongs
+   to the Operations pilot's legend, and if it ever grows an --ops-* accent to
+   match the pilot's Blue-band language, this page would inherit it by
+   accident -- which is how the three colour scales get crossed. */
+.bi-standing-line {
+  margin: 0 0 16px;
+  font-style: italic;
+  font-size: 0.85rem;
+  color: var(--colour-muted);
+}
+
+/* Deliberately NOT small print. This carries FILTER_NOTICE -- the sentence
+   this feature shipped on, telling a Trust leader that Power BI and not OSED
+   decides what they can see. Muted 0.8rem grey is the treatment people skip,
+   and skipping this one is how it ends up misdescribed in a DPIA. Full body
+   colour, full size, and an accent border so it reads as a statement. */
+.bi-notice {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--colour-border);
+  border-left: 4px solid var(--colour-text);
+  border-radius: 8px;
+  background: var(--colour-surface);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--colour-text);
+}
+
+/* The supplied embed code was a fixed 1140x541.25. Holding the ratio and NOT
+   a min-height: the two fight, and the ratio only wins above a ~1391px
+   viewport (1320px max-width, less the 240px sidebar and 56px of main
+   padding). A min-height of 520px therefore turned every laptop into a
+   squeeze and a 375px phone into a 319x520 portrait box -- the worst
+   possible shape for a landscape BI report. Below 1024px the frame is hidden
+   outright in favour of .bi-narrow-note: a report too small to read is not a
+   degraded version of this page, it is a support ticket saying it is broken. */
+.bi-frame-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1140 / 541.25;
+  background: var(--colour-surface);
+  border: 1px solid var(--colour-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* Behind the iframe, which paints over it when Power BI renders. No JS:
+   we cannot observe a cross-origin load anyway, and a spinner that never
+   stops is worse than a word that quietly disappears. */
+.bi-frame-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--colour-muted);
+  font-size: 0.9rem;
+}
+
+.bi-frame {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.bi-narrow-note { display: none; }
+
+@media (max-width: 1023px) {
+  .bi-frame-wrap { display: none; }
+  .bi-narrow-note {
+    display: block;
+    padding: 24px;
+    background: var(--colour-surface);
+    border: 1px dashed var(--colour-border);
+    border-radius: 10px;
+    color: var(--colour-text);
+    line-height: 1.6;
+  }
+}
+
+/* A visible control, not a footnote. When the frame above is blank -- a
+   cross-origin failure OSED cannot detect, and the expected one -- this link
+   is the only way forward, so it has to be the thing the eye lands on. */
+.bi-fallback {
+  margin: 16px 0 0;
+  font-size: 0.9rem;
+  color: var(--colour-text);
+}
+
+.bi-fallback a {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--colour-border);
+  border-radius: 8px;
+  background: var(--colour-surface);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.bi-fallback a:hover,
+.bi-fallback a:focus {
+  border-color: var(--colour-text);
+}
+
+.bi-unavailable {
+  padding: 28px;
+  background: var(--colour-surface);
+  border: 1px dashed var(--colour-border);
+  border-radius: 10px;
+  color: var(--colour-muted);
+}
+
+.bi-unavailable-title {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--colour-text);
+}

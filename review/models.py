@@ -60,11 +60,65 @@ class School(models.Model):
         SECONDARY = "SECONDARY", "Secondary"
 
     name = models.CharField(max_length=200)
+    # The exact string this school appears as in the Power BI report's School
+    # slicer, which matches none of the seven names above ("Copleston", not
+    # "Copleston High School"). Blank means the Context Dashboard shows an
+    # explanatory panel for this school and no frame at all -- never an
+    # unfiltered report. See review/powerbi.py.
+    #
+    # This is a display-string match, not a stable warehouse key, and it is
+    # exactly as mutable as `name`. When the app-owns-data embed arrives it
+    # needs a DfE URN of its own (POWERBI_EMBED_PLAN.md section 4.1); do not let
+    # this slicer label become a join key.
+    powerbi_school_name = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        verbose_name="Power BI school name",
+        help_text=(
+            "The exact value this school appears as in the Power BI report's "
+            "School slicer. Leave blank to show no report for this school."
+        ),
+    )
     phase = models.CharField(max_length=20, choices=Phase.choices, blank=True, default="")
     # Needed to work out which ring-fenced grants a school must publish for:
     # the Inclusive Mainstream Fund is mainstream-only.
     is_mainstream = models.BooleanField(default=True)
     logo = models.ImageField(upload_to="school_logos/", blank=True, null=True)
+
+    class Meta:
+        # School's first Meta. `constraints` only -- deliberately no `ordering`:
+        # every caller in this codebase orders explicitly, and adding a default
+        # would be a silent behaviour change across every one of them.
+        #
+        # The condition is what makes this work on Postgres. A plain
+        # `unique=True` alongside `default=""` collides on the second
+        # unconfigured school; it would pass locally on SQLite and fail on the
+        # deploy that seeds a fresh database.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["powerbi_school_name"],
+                condition=~models.Q(powerbi_school_name=""),
+                name="unique_powerbi_school_name",
+                # Without this the admin shows 'Constraint
+                # "unique_powerbi_school_name" is violated', which names an
+                # index rather than a problem. The plausible next move for
+                # someone reading that is to clear the field -- which is the
+                # one edit that silently turns the report off for a school.
+                violation_error_message=(
+                    "Another school is already using that Power BI school name."
+                ),
+            )
+        ]
+
+    def clean(self):
+        # Strip before the unique constraint sees it. `~Q(...="")` excludes only
+        # the exact empty string, so a pasted stray space would be indexed as a
+        # real value -- two schools each holding " " would collide, while
+        # powerbi.resolve_embed strips and treats both as unmapped. Normalising
+        # here keeps those two views of the same field in agreement.
+        super().clean()
+        self.powerbi_school_name = (self.powerbi_school_name or "").strip()
 
     def __str__(self):
         return self.name

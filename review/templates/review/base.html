@@ -65,6 +65,9 @@
           {% if can_qa_risk %}
             <a href="/review/risk/qa/{{ nav_school_param }}" {% if '/review/risk/qa/' in request.path %}aria-current="page"{% endif %}>Risk QA</a>
           {% endif %}
+          {% if show_context_dashboard_tab and not is_governor %}
+            <a href="/review/context/{{ nav_school_param }}" {% if '/review/context/' in request.path %}aria-current="page"{% endif %}>Context Dashboard</a>
+          {% endif %}
         </nav>
 
         <div class="sidebar-ratings">

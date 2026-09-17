@@ -16,6 +16,9 @@ urlpatterns = [
     path("in-depth/", views.indepth_review, name="indepth_review"),
     path("reflection/", views.reflection, name="reflection"),
     path("operations/", views.operations, name="operations"),
+    # Not added to permissions.GOVERNOR_URL_NAMES: the view carries
+    # @governor_denied, which is what keeps GovernorUrlCoverageTests green.
+    path("context/", views.context_dashboard, name="context_dashboard"),
     path("risk/", views.risk_register, name="risk_register"),
     path("risk/qa/", views.risk_qa, name="risk_qa"),
 ]

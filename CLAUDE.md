@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**240 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**273 tests** in `review/tests.py`; the suite
   takes ~85–130s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -73,8 +73,11 @@ python manage.py runserver
   custom domain is added in one place. Production HTTPS hardening (HSTS, secure cookies,
   SSL redirect) is gated behind `if not DEBUG`.
 - **`review/views.py`** — function-based views (dashboard, overview, board, evaluation,
-  in-depth review, reflection, **risk_register, risk_qa, operations**). The in-depth grade
-  is derived from a RAG "ladder" by `conclude_indepth_grade`.
+  in-depth review, reflection, **risk_register, risk_qa, operations, context_dashboard**).
+  The in-depth grade is derived from a RAG "ladder" by `conclude_indepth_grade`.
+- **`review/powerbi.py`** — everything the app knows about the Power BI embed, in **one
+  place**: `resolve_embed(school)`, `is_configured()`, and the two verbatim standing texts.
+  It has no branch that yields an unfiltered report. See "Context Dashboard" below.
 - **`review/models.py`** — `School`, `Category`, `SchoolProfile`, `ReviewPeriod`,
   `Evaluation`, the in-depth models (`InDepthArea` → `InDepthStandard` →
   `InDepthJudgementArea`; `InDepthReview` → `InDepthResponse`), and the risk/operations
@@ -481,10 +484,15 @@ up by `import_indepth_workbooks`.
    does not classify. It is a label, not logic.
 6. **`School.is_mainstream` defaults to `True`.** Any non-mainstream school must be set in
    the admin, or the Inclusive Mainstream Fund will wrongly appear on its grant checklist.
-7. **The Power BI embed** (planned, not built) — see `POWERBI_EMBED_PLAN.md` §2 for the
-   eight questions the client must answer before it can be costed. The two that block
-   everything: whether the report holds pupil-level or aggregate data, and whether the
-   dataset exists at all.
+7. **The Power BI Context Dashboard shipped in the weak mode, by the client's choice.**
+   Three things are still open and must not be silently resolved: (a) **resolved
+   17 Sept 2026** — filter on the new school-level `Schools` table, not `(1) Oxlip Students`
+   (whose name cannot be URL-filtered anyway); the exact **column** in `Schools` still needs
+   confirming, and it is one App Setting, no deploy; (b) **who holds Power
+   BI access and under which licence** — staff without it see a Microsoft sign-in page
+   inside OSED's chrome; (c) whether to fund the app-owns-data upgrade in
+   `POWERBI_EMBED_PLAN.md` §3, which is the only version where `SchoolProfile` is the
+   single source of truth. Export/print policy and the absent read-access log go with it.
 8. **Is the Entra app registration single-tenant?** `MICROSOFT_TENANT` defaults to
    `organizations` (`settings.py`), `AZURE_DEPLOYMENT.md` documents either, and the adapter
    authorises on the email claim alone. Multi-tenant + `organizations` is the nOAuth pattern;
@@ -495,30 +503,80 @@ up by `import_indepth_workbooks`.
    Needs a mail service and the client's acceptance of that trade-off. Change-password
    (needs the current one) was built instead.
 
-## Proposed: Power BI embed (planned, NOT built)
+## Context Dashboard — the Power BI embed that shipped (Sept 2026)
 
-Full plan in **`POWERBI_EMBED_PLAN.md`**. Read it before starting any work on this — the
-detail is there, not here. The four things worth knowing without opening it:
+`/review/context/` frames the Trust's **Oxlip Context Dashboard** Power BI report, opened
+at the school `_resolve_school_selection` resolved. Off by default: the nav tab and the
+page both come from `powerbi.is_configured()`, which needs `POWERBI_ENABLED`, a
+`POWERBI_REPORT_URL` on `app.powerbi.com`, and a space-free `POWERBI_FILTER_TARGET`.
 
-- **Nothing is approved and no code exists.** The Django side is ~2–3 days; the feature is
-  weeks, and most of it is Azure tenant and semantic-model work outside this repo.
-- **`School` has no stable external key** — `name` is not even `unique=True`, and the pk
-  is meaningless outside this database. A DfE URN has to be added before any filtering can
-  be trusted, and a blank URN must **fail closed** (no token, no report), never fall back
-  to an unfiltered view.
-- **`_resolve_school_selection` fails closed but silently** (`views.py:194-197`): a forged
-  `?school=` id is discarded and the user's own school substituted. Right for rendering a
-  page, wrong for minting an access token — that path needs a 403. Wrap the helper, do not
-  change it.
-- **`is_superuser` must not become the trust-wide BI identity.** It would silently re-grade
-  every existing superuser from "sees all self-evaluations" to "sees every pupil in the
-  Trust". Use a separate permission shaped like `Risk QA`.
+**The one thing to understand before touching it: the filter is not an access control.**
+The client supplied a *user-owns-data* secure embed (`autoAuth=true`), so the viewer signs
+in to Power BI with their own Microsoft account and OSED cannot mint an identity for them.
+OSED chooses which school the report **opens at** — via a URL query-string filter the
+viewer can change inside the frame or in the address bar. Access is decided by Power BI
+workspace permissions and whatever RLS is on the dataset: a second access-control system
+this repo cannot see, cannot test and cannot keep in step with `SchoolProfile`.
+`POWERBI_EMBED_PLAN.md` §3 **rejected this mode**, and that rejection stands on its merits.
+It shipped anyway because the client chose it, in writing, on 17 Sept 2026, on the
+condition that the page says what it is — which is what `powerbi.FILTER_NOTICE` is for.
+It is rendered verbatim and asserted by a test. **Do not soften it, and never describe
+this page as restricting a user to their own school.**
 
-If the embedded report would duplicate the Trust Dashboard, do not build it — that summary
-is generated from tile data specifically so it cannot drift, and it goes into board packs.
+- **Everything Power BI knows lives in `review/powerbi.py`.** `resolve_embed(school)`
+  returns `(url, unavailable_reason)` with exactly one set, and has **no branch that
+  returns an unfiltered URL** — not configured, wrong host, malformed filter target or a
+  blank school mapping all yield an explanatory panel and no iframe. An all-schools view
+  handed to whoever opened the page would be invisible from this end.
+- **`School.powerbi_school_name` is the mapping**, because the report's slicer matches the
+  OSED name in **none** of the seven cases ("Copleston", not "Copleston High School").
+  `seed_schools` sets it **only when blank** and `--force` does not override it, so an
+  admin's correction survives the next deploy. It is a display-string match, **not** a
+  stable key — when app-owns-data arrives it still needs the DfE URN of §4.1.
+- **No trust-wide view was built.** When one is, it takes its own permission shaped like
+  `Risk QA` — never `is_superuser`, which would silently re-grade every existing superuser
+  (§4.4). `multi_school_filter_expression` is there for that day and is unreachable today.
+- **Governors are denied** (`@governor_denied`, hidden from the nav). `GOVERNOR_URL_NAMES`
+  is deliberately untouched — the decorator is what keeps `GovernorUrlCoverageTests` green.
+- **OSED records that the page was opened** — user pk, school, timestamp, at INFO on the
+  `review` logger (the root is WARNING, so `settings.LOGGING` raises it deliberately).
+  What it cannot record is what was **read** in Power BI: it never brokers that request,
+  and Power BI logs the viewer's own Microsoft identity in a different system with a
+  different read audience. §4.5's audit trail is therefore thinner here than under
+  app-owns-data — a real regression, and the client knows.
+- **Filter on the `Schools` table, never the student table.** The semantic model behind
+  this report contains `(1) Oxlip Students` — one row per child, carrying `forename`,
+  `Ethnicity`, `SEN`, `EHCP or SEN Support`, `FSM` and `in_lea_care`, i.e. **special
+  category data about children**. A school-level `Schools` table was added on 17 Sept 2026
+  to aggregate and filter against, and `POWERBI_FILTER_TARGET` points at that
+  (`Schools/<school-name column>`). The student table's own name could not be URL-filtered
+  anyway — a leading `(`, a digit and two spaces — and `FILTER_TARGET_RE` refuses it.
+- **§4.6's walkthrough is therefore not optional, and has not been done.** OSED's filter is
+  not a boundary, and RLS filters rows rather than pages: a visual bound to the student
+  table, a drillthrough, or "Show as table" on any chart reaches pupil rows regardless of
+  what OSED sends. Before `POWERBI_ENABLED=1`, someone with report access must walk every
+  page, every visual, the filter pane, every drillthrough and every "show as table" as a
+  single-school user and then as a two-school user, and record the result. If any pupil row
+  is reachable, this build is **not** adequate — `POWERBI_EMBED_PLAN.md` §7 applies in full
+  and it needs the DPO before it is switched on.
+- **There is still no CSP**, so the `EMBED_URL_PREFIX` startswith-check in `powerbi.py` is
+  the only thing stopping a mistyped App Setting framing an arbitrary site. `frame-src`
+  belongs in its own passage; until then, do not remove that check.
+
+If the embedded report would duplicate the Trust Dashboard, do not build on it — that
+summary is generated from tile data specifically so it cannot drift, and it goes into board
+packs.
 
 ## Known discrepancies (pre-existing, unresolved)
 
+- **`base.html` ships a developer note, and an unfinished one, in an HTML comment on every
+  page.** `review/templates/review/base.html:6-8` carries a Google Search Console note in
+  `<!-- -->`, so it is invisible on screen but readable in view-source site-wide — and the
+  `<meta name="google-site-verification">` below it still holds the literal
+  `REPLACE_WITH_META_TAG_TOKEN_FROM_SEARCH_CONSOLE`, so verification by the meta-tag method
+  was never completed. Use `{% comment %}` for the note (it never reaches the page) and
+  either finish or remove the meta tag. Found by the Lookout, 17 Sept 2026; pre-existing and
+  unrelated to the Context Dashboard, so left alone.
 - `startup.sh` runs `ensure_schema` **after** `migrate` (lines 27 and 30), while this file
   previously stated it must run before. Both have been left as they are — confirm the
   intended order before changing either.

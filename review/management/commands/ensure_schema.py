@@ -21,6 +21,22 @@ _REQUIRED_COLUMNS = [
         "purpose",
         "text NOT NULL DEFAULT ''",
     ),
+    # Migration 0036. Here because startup.sh swallows a failed `migrate` and
+    # boots gunicorn anyway, and this column is not feature-local: Django's
+    # default SELECT lists every column, so a model that has it against a
+    # database that does not turns EVERY query on School into a
+    # ProgrammingError -- login, home, the admin and every scoped page, not
+    # just the Context Dashboard. Same shape as the 0035 warning in CLAUDE.md,
+    # but School is read on effectively every authenticated request.
+    #
+    # This restores the column only. The partial unique index is left to the
+    # next successful migrate: keeping the site up is the urgent half, and an
+    # absent index refuses nothing.
+    (
+        "review_school",
+        "powerbi_school_name",
+        "varchar(200) NOT NULL DEFAULT ''",
+    ),
 ]
 
 

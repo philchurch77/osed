@@ -1,7 +1,36 @@
 # Power BI embed — feature plan (not built)
 
-**Status: planning only. No code has been written. Nothing here is approved.**
-Drafted 6 September 2026.
+**Status: SUPERSEDED IN PART — 17 September 2026.**
+Drafted 6 September 2026 as planning only.
+
+A **user-owns-data** embed shipped on 17 September 2026 as an interim: `/review/context/`,
+`review/powerbi.py`, `School.powerbi_school_name`. That is the mode §3 below **rejected**,
+and §3 is not retracted — it is the reason the shipped page carries `FILTER_NOTICE`
+verbatim, telling the user that Power BI and not OSED controls what they can see.
+
+What changed is the input, not the analysis. The client supplied only an `autoAuth=true`
+embed URL, with no capacity, service principal or workspace grant behind it, and on
+17 September chose "build it, labelled honestly" over waiting.
+
+**Correction, same day.** The semantic model behind this report does contain a pupil-level
+table — `(1) Oxlip Students`, one row per child, carrying `forename`, `Ethnicity`, `SEN`,
+`EHCP or SEN Support`, `FSM` and `in_lea_care`. A school-level `Schools` table was added to
+aggregate and filter against, and `POWERBI_FILTER_TARGET` points at that. **That settles how
+OSED filters; it does not settle what a viewer can reach.** §7 is therefore live rather than
+set aside, and §4.6's manual walkthrough is a precondition of switching the feature on, not
+a nicety: RLS filters rows and not pages, so a visual bound to the student table, a
+drillthrough, or "Show as table" reaches pupil rows whatever OSED sends. If any pupil row
+proves reachable from a report page, **this build is not adequate** and the DPO screens it
+before `POWERBI_ENABLED=1`.
+
+Read the rest of this document as the plan for the **app-owns-data upgrade**, which is
+still the only version where `SchoolProfile` is the single source of truth. Three of its
+protections are absent from what shipped and the client has been told so: **§4.1** (a stable
+DfE URN — a mutable display-string match is used instead), **§4.4** (a distinct trust-wide
+permission — no trust-wide view was built at all), and **§4.5** (a full read-access log — OSED
+records that the page was opened, but never what was read, since it does not broker the
+request). **§8's second paragraph
+describes app-owns-data and must not be sent to the client about this build.**
 
 The request: embed a Power BI summary page in OSED, filtered to the signed-in user's
 school, with a trust-wide view for superusers.
@@ -115,9 +144,13 @@ The client must not influence scope: report id, workspace id, dataset ids and ro
 are server-side config. The token endpoint accepts no `report`, `dataset` or `role`
 parameter.
 
-**A trap in the existing helper.** `_resolve_school_selection` fails closed but *silently*
-— `review/views.py:194-197` filters a forged `?school=` id against `allowed_schools` and
-falls back to the user's own school. Correct for rendering a dashboard; wrong for minting
+**A trap in the existing helper — FIXED, September 2026; do not act on this paragraph.**
+`_resolve_school_selection` no longer substitutes a school: commit `2dd979f` changed it to
+return the school chooser with `refused=True`, so a forged `?school=` is refused visibly
+rather than silently swapped. It fails closed **and says so**, and the wrap-the-helper
+instruction below is no longer needed. The original text, kept so the reasoning survives:
+`_resolve_school_selection` fails closed but *silently* — it filtered a forged `?school=`
+id against `allowed_schools` and fell back to the user's own school. Correct for rendering a dashboard; wrong for minting
 a token, where a malformed or unauthorised id must produce a 403 rather than quietly
 minting for whatever school sorted first. Wrap the helper for the embed view; do not
 change it.
@@ -336,8 +369,10 @@ Checked against the code during planning:
 - `RestrictMicrosoftLoginAdapter` fails closed on every branch — no email, no matching
   active user, or no `SchoolProfile` all deny. `ACCOUNT_ALLOW_SIGNUPS = False` and
   `SOCIALACCOUNT_AUTO_SIGNUP = False`.
-- The unauthorised-`?school=` path already fails closed (`review/views.py:194-197`) — the
-  forged id is never honoured. Pin this with a test asserting the *minted identity*.
+- The unauthorised-`?school=` path already fails closed — the forged id is never honoured,
+  and since commit `2dd979f` the user is shown the school chooser rather than quietly given
+  their own school. The line reference in this bullet is stale; see §4.2. Pin this with a
+  test asserting the *minted identity*.
 - Settings hygiene: `DEBUG` defaults False, production raises without `SECRET_KEY` or
   `DATABASE_URL`, no wildcard in `ALLOWED_HOSTS`, HSTS and secure cookies under
   `if not DEBUG`.

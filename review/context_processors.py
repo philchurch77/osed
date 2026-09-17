@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from . import powerbi
 from .models import Branding
 from .permissions import requested_school_param, user_can_qa_risk, user_is_governor
 
@@ -31,6 +32,11 @@ def nav_flags(request):
     user = getattr(request, "user", None)
     return {
         "show_operations_tab": True,
+        # Off until the Trust sets POWERBI_ENABLED and the report's filter
+        # target. Read through powerbi.is_configured() rather than the raw
+        # setting so the nav cannot advertise a tab whose every page would say
+        # "not set up yet".
+        "show_context_dashboard_tab": powerbi.is_configured(),
         "can_qa_risk": user_can_qa_risk(user),
         "is_governor": user_is_governor(user),
         "nav_school_param": requested_school_param(request),

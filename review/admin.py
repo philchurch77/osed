@@ -223,9 +223,11 @@ class CategoryAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 @admin.register(School)
 class SchoolAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
-	list_display = ("name", "phase", "is_mainstream", "logo")
+	# powerbi_school_name is on the changelist because it is how anyone answers
+	# "why does that school's Context Dashboard say it is not linked yet".
+	list_display = ("name", "powerbi_school_name", "phase", "is_mainstream", "logo")
 	list_filter = ("phase", "is_mainstream")
-	search_fields = ("name",)
+	search_fields = ("name", "powerbi_school_name")
 
 	def written_work_count(self, obj) -> int:
 		return (
