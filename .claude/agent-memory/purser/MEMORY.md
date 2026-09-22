@@ -1,0 +1,1 @@
+- [OSED client JS vs free text](osed-client-js-and-free-text.md) — which JS writes textarea values (only word_limit), print_export mirror safety, unsaved-note edge cases

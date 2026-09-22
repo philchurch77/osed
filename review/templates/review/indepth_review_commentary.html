@@ -10,6 +10,9 @@
       <span class="page-subtitle-label">Working on</span>
       <strong>{{ school.name }}</strong>
     </p>
+    {% if area %}
+      {% include "review/includes/export_pdf.html" with page_label="In-depth review – commentary" detail=area.name %}
+    {% endif %}
     {% if user.is_superuser or schools %}
       <form method="get" class="school-select">
         <input type="hidden" name="page" value="commentary" />
@@ -41,7 +44,7 @@
   {% endif %}
 
   {% if not can_edit %}
-    <p><strong>Read-only:</strong> you can view responses, but you cannot make changes.</p>
+    <p class="readonly-notice"><strong>Read-only:</strong> you can view responses, but you cannot make changes.</p>
   {% endif %}
 
   {% if area %}
@@ -168,6 +171,10 @@
                 </ul>
               </div>
             </details>
+            {# A closed details prints only its summary, so the PDF gets its own copy. #}
+            <ul class="print-only indepth-ja-list">
+              {% for b in na_bullets %}<li>{{ b.statement }}</li>{% endfor %}
+            </ul>
             <div class="indepth-field">
               <label class="indepth-field-label" for="id_needs_attention_comment">
                 Comment on whether, in addition, one or more of the above applies

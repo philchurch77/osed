@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**277 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**290 tests** in `review/tests.py`; the suite
   takes ~85–130s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -449,6 +449,14 @@ page opened without a school silently picked one. That is gone.
   commentary filter bar omitted its hidden `page` field, so using it dropped the user back
   to the ratings step — half of the loop above. Check the view's `request.GET.get(...)`
   calls against the form's fields when adding a filter.
+- **"Save as PDF" is the browser's print dialog, not a server render.** The button
+  (`includes/export_pdf.html`, on Evaluation and both in-depth pages) calls `window.print()`;
+  the `@media print` block at the end of `styles.css` strips the chrome, and
+  `print_export.js` swaps each textarea for a `div.print-mirror` of its full text on
+  `beforeprint` (a printed textarea clips to its box). It works for Ctrl+P on every page.
+  **The script only reads field state** — it never assigns `.value`/`.checked` or uses
+  `innerHTML`; `PrintExportTests` goes red if it does. No new route, so no governor or
+  scoping work. A saved PDF is outside OSED's access control once downloaded.
 - Academic year is stored as a start year (e.g. `2026`) but displayed as `2026-2027`;
   `MIN_ACADEMIC_YEAR_START = 2026`.
 - **Terms**: `ReviewPeriod.round` still stores `1`/`2`/`3`, but is labelled **Autumn /

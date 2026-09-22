@@ -1,0 +1,1 @@
+- [OSED project conventions](osed-conventions.md) — house JS style, script-loading pattern, and where the test-claim discipline lives.

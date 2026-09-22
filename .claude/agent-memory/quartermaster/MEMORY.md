@@ -1,0 +1,1 @@
+- [PDF export = client print](decision-pdf-export-is-client-print.md) — window.print + @media print, textarea mirror via beforeprint, no new route; why WeasyPrint was rejected

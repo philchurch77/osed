@@ -10,6 +10,9 @@
       <span class="page-subtitle-label">Working on</span>
       <strong>{{ school.name }}</strong>
     </p>
+    {% if area %}
+      {% include "review/includes/export_pdf.html" with page_label="In-depth review – ratings" detail=area.name %}
+    {% endif %}
     {% if user.is_superuser or schools %}
       <form method="get" class="school-select">
         {% include "review/includes/filter_school_field.html" %}
@@ -39,7 +42,7 @@
   {% endif %}
 
   {% if not can_edit %}
-    <p><strong>Read-only:</strong> you can view ratings, but you cannot make changes.</p>
+    <p class="readonly-notice"><strong>Read-only:</strong> you can view ratings, but you cannot make changes.</p>
   {% endif %}
 
   {% if area %}
@@ -102,6 +105,8 @@
             {% if block.focus %}
               <p class="indepth-standard-focus">{{ block.focus }}</p>
             {% endif %}
+            {# Shown only in print, and only on a rung the ladder has not opened. #}
+            <p class="indepth-rung-print-note">A rating is stored here from earlier — it isn't part of your current grade.</p>
           </header>
 
           {% for row in block.rows %}

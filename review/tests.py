@@ -6,10 +6,12 @@ import re
 
 from datetime import timedelta
 from decimal import Decimal
+from html import unescape
 from pathlib import Path
 
 from django.contrib import admin as django_admin
 from django.contrib.auth.models import Group, Permission, User
+from django.contrib.staticfiles import finders
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory, TestCase, override_settings
@@ -6295,3 +6297,256 @@ class SchoolPowerBiNameConstraintTests(TestCase):
 
 		self.assertEqual(reason, "")
 		self.assertIn("%27Mendlesham%27", embed_url)
+
+
+class PrintExportTests(TestCase):
+	"""The "Save as PDF" button on Evaluation and the two in-depth pages.
+
+	The PDF's file name comes from data-print-title, and a board pack filed under
+	the wrong school's name is a disclosure, so the fixture follows the two-school
+	rule: the FK school sorts FIRST alphabetically, and every assertion is made
+	against the OTHER one. The script is checked statically: it must only ever
+	read field state, never write it.
+	"""
+
+	TITLE_RE = re.compile(r'data-print-title="([^"]*)"')
+	BUTTON_RE = re.compile(r'<button\b[^>]*\bclass="export-pdf"[^>]*>')
+	POST_FORM_RE = re.compile(r'<form\b[^>]*\bmethod="post"[^>]*>.*?</form>', re.S | re.I)
+	# Any assignment (not comparison) to a field's state.
+	FIELD_WRITE_RE = re.compile(r'\.(value|checked|defaultValue|defaultChecked)\s*=(?!=)')
+
+	def setUp(self):
+		self.school_a = School.objects.create(name="Bacton Primary School")
+		self.school_b = School.objects.create(name="Mendlesham Primary School")
+
+		self.principal = User.objects.create_user("pdf_two_schools", "pdf.two@example.com")
+		profile = SchoolProfile.objects.create(user=self.principal, school=self.school_a)
+		profile.schools.add(self.school_a, self.school_b)
+		for codename in (
+			"add_evaluation",
+			"change_evaluation",
+			"add_indepthresponse",
+			"change_indepthresponse",
+		):
+			self.principal.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.category = Category.objects.create(name="Achievement", order=1, is_active=True)
+
+		self.area = InDepthArea.objects.create(name="Personal Development", order=5)
+		expected = InDepthStandard.objects.create(
+			area=self.area, key=InDepthStandard.Key.EXPECTED_STANDARD, order=3
+		)
+		self.ja = InDepthJudgementArea.objects.create(
+			standard=expected, statement="Pupils develop character.", order=1
+		)
+		# A rated statement at school B, so the commentary step renders its save
+		# form (with nothing rated it has no form, and test 5 would prove nothing).
+		review = InDepthReview.objects.create(
+			school=self.school_b, year=2026, area=self.area, overall_grade="expected_standard"
+		)
+		InDepthResponse.objects.create(review=review, judgement_area=self.ja, rag="green")
+
+		self.client.force_login(self.principal)
+
+	# ── helpers ──────────────────────────────────────────────────────────────
+
+	def _html(self, response):
+		return response.content.decode("utf-8")
+
+	def _title(self, response):
+		titles = self.TITLE_RE.findall(self._html(response))
+		self.assertEqual(len(titles), 1, "expected exactly one export button")
+		return unescape(titles[0])
+
+	def _get_evaluation(self, **extra):
+		params = {"school": str(self.school_b.id), "year": "2026-2027", "round": "2"}
+		params.update(extra)
+		return self.client.get(reverse("review:evaluation"), params)
+
+	def _get_indepth(self, page=None):
+		params = {
+			"school": str(self.school_b.id),
+			"year": "2026-2027",
+			"area": str(self.area.id),
+		}
+		if page:
+			params["page"] = page
+		return self.client.get(reverse("review:indepth_review"), params)
+
+	def _invalid_evaluation_post(self, typed):
+		return self.client.post(
+			reverse("review:evaluation"),
+			data={
+				"school_id": str(self.school_b.id),
+				"year": "2026-2027",
+				"round": "2",
+				"form-TOTAL_FORMS": "1",
+				"form-INITIAL_FORMS": "1",
+				"form-MIN_NUM_FORMS": "0",
+				"form-MAX_NUM_FORMS": "1000",
+				"form-0-category_id": str(self.category.id),
+				"form-0-rating": "3",
+				"form-0-judgement_evidence": typed,
+				"form-0-to_progress": "",
+			},
+		)
+
+	# ── 1. the PDF is named for the school on screen ─────────────────────────
+
+	# Catches: the PDF file name taking the user's FK/default school (or a term
+	# or year other than the one displayed), so one school's evaluation is filed
+	# in a board pack under another school's name.
+	def test_export_title_names_the_chosen_school_not_the_default(self):
+		response = self._get_evaluation()
+
+		self.assertEqual(response.status_code, 200)
+		title = self._title(response)
+		self.assertIn("Mendlesham Primary School", title)
+		self.assertIn("Evaluation", title)
+		self.assertIn("2026-2027", title)
+		self.assertIn("Spring", title)
+		self.assertNotIn("Bacton", title)
+		self.assertNotIn("Autumn", title)
+
+	# ── 2. governors keep the button on the page they may read ──────────────
+
+	# Catches: the export being gated on edit rights, so a governor -- the one
+	# role whose reason to be here is reading and sharing -- cannot export.
+	def test_governor_can_export_evaluation(self):
+		governor = User.objects.create_user("pdf_gov", "pdf.gov@example.com")
+		gov_profile = SchoolProfile.objects.create(
+			user=governor, school=self.school_a, role=SchoolProfile.Role.GOVERNOR
+		)
+		gov_profile.schools.add(self.school_b)
+		self.client.force_login(governor)
+
+		response = self._get_evaluation()
+
+		self.assertEqual(response.status_code, 200)
+		title = self._title(response)
+		self.assertIn("Mendlesham Primary School", title)
+		self.assertNotIn("Bacton", title)
+
+	# ── 3. in-depth pages name the step and the area ─────────────────────────
+
+	# Catches: the ratings and commentary PDFs carrying the same (or no) page
+	# label, or dropping the area, so two different documents save under one name.
+	def test_indepth_pages_export_names_the_area(self):
+		ratings = self._get_indepth()
+		commentary = self._get_indepth(page="commentary")
+
+		self.assertEqual(ratings.status_code, 200)
+		self.assertEqual(commentary.status_code, 200)
+		ratings_title = self._title(ratings)
+		commentary_title = self._title(commentary)
+		self.assertIn("In-depth review – ratings", ratings_title)
+		self.assertIn("In-depth review – commentary", commentary_title)
+		for title in (ratings_title, commentary_title):
+			self.assertIn("Personal Development", title)
+			self.assertIn("Mendlesham Primary School", title)
+			self.assertIn("2026-2027", title)
+			self.assertNotIn("Bacton", title)
+
+	# ── 4. no area, no button ────────────────────────────────────────────────
+
+	# Catches: a button on the "no criteria loaded" page that would print an
+	# empty document titled with a blank area.
+	def test_no_export_button_without_an_area(self):
+		InDepthArea.objects.all().delete()
+
+		response = self._get_indepth()
+
+		self.assertEqual(response.status_code, 200)
+		self.assertIsNone(response.context["area"])
+		self.assertNotContains(response, "export-pdf")
+
+	# ── 5. the button cannot submit or alter a save ──────────────────────────
+
+	# Catches: the export button landing inside a save form, where a missing
+	# type="button" or a name= would submit (or add a key to) the user's save.
+	def test_export_button_is_outside_every_post_form(self):
+		pages = {
+			"evaluation": self._get_evaluation(),
+			"evaluation (rejected save)": self._invalid_evaluation_post("word " * 301),
+			"in-depth ratings": self._get_indepth(),
+			"in-depth commentary": self._get_indepth(page="commentary"),
+		}
+		for label, response in pages.items():
+			with self.subTest(page=label):
+				self.assertEqual(response.status_code, 200)
+				html = self._html(response)
+				buttons = list(self.BUTTON_RE.finditer(html))
+				self.assertEqual(len(buttons), 1)
+				tag = buttons[0].group(0)
+				self.assertIn('type="button"', tag)
+				self.assertNotRegex(tag, r'\bname=')
+				post_forms = list(self.POST_FORM_RE.finditer(html))
+				self.assertTrue(post_forms, "fixture should render a save form")
+				position = buttons[0].start()
+				for form in post_forms:
+					self.assertFalse(
+						form.start() < position < form.end(),
+						f"export button sits inside a POST form on {label}",
+					)
+
+	# ── 6. a rejected save prints as unsaved ─────────────────────────────────
+
+	# Catches: a rejected save re-rendering the typed text as the form default,
+	# so the PDF looks like stored work when nothing was saved.
+	def test_rejected_save_marks_the_export_unsaved(self):
+		typed = "Réussite “kept” \U0001F4C8 " + ("word " * 301)
+
+		rejected = self._invalid_evaluation_post(typed)
+
+		self.assertEqual(rejected.status_code, 200)
+		self.assertFalse(rejected.context["formset"].is_valid())
+		self.assertRegex(self._html(rejected), r'class="export-pdf"[^>]*data-unsaved="1"')
+		# Nothing was stored, and what was typed is still on the page.
+		self.assertFalse(Evaluation.objects.filter(school=self.school_b).exists())
+		self.assertContains(rejected, escape("Réussite “kept” \U0001F4C8"))
+
+		fresh = self._get_evaluation()
+		self.assertEqual(fresh.status_code, 200)
+		self.assertNotContains(fresh, "data-unsaved")
+
+	# ── 7. the script only reads ─────────────────────────────────────────────
+
+	# Catches: print_export.js writing to a field (e.g. clearing a textarea when
+	# it builds the print mirror), which the next Save would persist, or putting
+	# typed text into innerHTML, where it would run as markup.
+	def test_print_script_never_writes_a_field_value(self):
+		# The guard itself must bite: these are the writes it exists to catch.
+		for bad in (
+			"areas[i].value = '';",
+			"box.checked=false;",
+			"el.defaultValue = text;",
+		):
+			self.assertRegex(bad, self.FIELD_WRITE_RE)
+		# ... and the reads the script does make must not trip it.
+		self.assertNotRegex(
+			"if (areas[i].value !== areas[i].defaultValue) return true;",
+			self.FIELD_WRITE_RE,
+		)
+
+		script = (
+			Path(__file__).resolve().parent / "static" / "review" / "print_export.js"
+		).read_text(encoding="utf-8")
+
+		self.assertEqual(self.FIELD_WRITE_RE.findall(script), [])
+		self.assertNotIn("innerHTML", script)
+
+	# ── 8. the script actually ships ─────────────────────────────────────────
+
+	# Catches: a script missing from static finders (which hard-fails the page
+	# under CompressedManifestStaticFilesStorage) or not loaded by base.html
+	# (which leaves the button hidden for everyone).
+	def test_print_script_is_findable_by_staticfiles(self):
+		self.assertIsNotNone(finders.find("review/print_export.js"))
+
+		response = self._get_evaluation()
+
+		self.assertRegex(
+			self._html(response), r'<script\b[^>]*\bsrc="[^"]*review/print_export\.js'
+		)

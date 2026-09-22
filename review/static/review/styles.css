@@ -3250,3 +3250,141 @@ summary:focus-visible {
   font-size: 1rem;
   color: var(--colour-text);
 }
+
+/* ── Save as PDF (print_export.js) ─────────────────────────────────────────
+
+   The button opens the browser's print dialog; everything below decides what
+   the PDF looks like. On screen, only the button bar shows. In print, the app
+   chrome goes, and each textarea is swapped for the div.print-mirror that
+   print_export.js builds beside it on beforeprint -- a printed textarea shows
+   only what fits in its box and cannot break across pages. The mirror only
+   ever reads the field; nothing stored is touched. */
+
+.export-pdf-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+}
+
+/* display:flex above would otherwise beat the hidden attribute. */
+.export-pdf-bar[hidden] {
+  display: none;
+}
+
+.export-pdf-hint {
+  font-size: 12px;
+  color: var(--colour-muted);
+}
+
+.print-only,
+.print-mirror,
+.indepth-rung-print-note {
+  display: none;
+}
+
+@media print {
+  @page { margin: 15mm; }
+
+  body { background: #fff; }
+
+  .sidebar,
+  .sidebar-backdrop,
+  .mobile-topbar,
+  .school-select,
+  .export-pdf-bar,
+  .sub-title,
+  .messages,
+  .readonly-notice,
+  .actions,
+  .unsaved-indicator,
+  .word-counter,
+  .indepth-steps,
+  .indepth-override-panel,
+  .indepth-guidance-box,
+  .indepth-criteria-details,
+  .rag-picker-panel {
+    display: none !important;
+  }
+
+  .app-shell { display: block; min-height: 0; }
+  .app-content { width: 100%; }
+  main { max-width: none; margin: 0; padding: 0; }
+  .page-header { margin-bottom: 12px; padding-bottom: 8px; }
+
+  .print-only { display: block; }
+  .print-context { margin: 0 0 4px; font-weight: 600; }
+  .print-unsaved { display: block; font-weight: 700; }
+  .print-unsaved:empty { display: none; }
+
+  /* A textarea prints as its full text instead -- but only once its mirror
+     exists. With no script, the clipped box is better than nothing. */
+  textarea:has(+ .print-mirror) { display: none !important; }
+  .print-mirror {
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    border: 1px solid #999;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 11pt;
+    line-height: 1.4;
+  }
+  .print-mirror--empty { color: #666; font-style: italic; }
+
+  /* Keep the band colours, which browsers drop by default. The band is also
+     printed as words, so a greyscale PDF still reads. */
+  .rag-current,
+  .indepth-rag-btn,
+  .indepth-rag-tag,
+  .review-outcome,
+  .review-outcome-badge,
+  .indepth-standard-header,
+  .board-cell {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Evaluation: no card shadows or spacing that wastes paper. */
+  .evaluation-table { border-spacing: 4px; margin-top: 8px; }
+  .evaluation-table td { background: #fff; }
+  .evaluation-table thead { display: table-header-group; }
+  .rag-picker .rag-current { min-height: 0; }
+  /* "Select rating" is an instruction; a saved copy should state the fact.
+     CSS, not markup: rag_toggle.js rewrites this chip's text. */
+  .rag-picker .rag-current--blank { font-size: 0; }
+  .rag-picker .rag-current--blank::after {
+    content: "Not rated";
+    font-size: 11pt;
+    font-style: italic;
+    font-weight: 400;
+  }
+  .review-outcome { box-shadow: none; }
+
+  /* In-depth ratings: print only the chosen answer, or say none was chosen. */
+  .indepth-rag-btn input[type="radio"] { display: none; }
+  .indepth-rag-btn:not(:has(input:checked)) { display: none; }
+  /* A rung the ladder has not opened on screen still prints if it holds a
+     stored rating: the PDF is the record, not the current view. */
+  .indepth-rung.is-hidden:has(input:checked) { display: block !important; }
+  .indepth-rung.is-hidden .indepth-rung-print-note {
+    display: block;
+    font-style: italic;
+    margin: 4px 0 0;
+  }
+  .indepth-rag-options:not(:has(input:checked))::before {
+    content: "Not rated";
+    font-style: italic;
+    color: #666;
+  }
+
+  /* Keep a heading or statement with what follows it, but let long write-ups
+     flow across pages: holding a whole judgement together leaves half-empty
+     pages wherever two 150-word texts do not fit. */
+  .indepth-judgement-statement,
+  .indepth-standard-header {
+    break-inside: avoid;
+    break-after: avoid;
+  }
+}

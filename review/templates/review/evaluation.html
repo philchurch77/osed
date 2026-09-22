@@ -10,6 +10,7 @@
       <span class="page-subtitle-label">Working on</span>
       <strong>{{ school.name }}</strong>
     </p>
+    {% include "review/includes/export_pdf.html" with page_label="Evaluation" detail=period.term_label %}
     {% if user.is_superuser or schools %}
       <form method="get" class="school-select">
         {% include "review/includes/filter_school_field.html" %}
@@ -35,7 +36,7 @@
   {% endif %}
 
   {% if not can_edit %}
-    <p><strong>Read-only:</strong> you can view entries, but you can’t make changes.</p>
+    <p class="readonly-notice"><strong>Read-only:</strong> you can view entries, but you can’t make changes.</p>
   {% endif %}
 
   {% if can_edit and override_rows %}
