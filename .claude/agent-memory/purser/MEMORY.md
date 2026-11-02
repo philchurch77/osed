@@ -1,1 +1,2 @@
+- [OSED migrations + in-depth sync](osed-migrations-and-indepth-sync.md) — 0038 read; criteria.json vs workbook churn each deploy; cascades into responses
 - [OSED client JS vs free text](osed-client-js-and-free-text.md) — which JS writes textarea values (only word_limit), print_export mirror safety, unsaved-note edge cases

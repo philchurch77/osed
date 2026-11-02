@@ -73,6 +73,7 @@ from .operations import (
 	summarise as ops_summarise,
 )
 from . import powerbi
+from .spelling import indepth_texts, spelling_warning
 
 # The three band statements a Principal can pick between; Blue is a computed
 # state, never a choice.
@@ -608,6 +609,16 @@ def overview(request: HttpRequest) -> HttpResponse:
 	)
 
 
+def _previous_period(year: int, round_: int) -> ReviewPeriod | None:
+	"""The term before (year, round), or None if it was never opened.
+
+	Autumn's predecessor is Summer of the prior academic year.
+	"""
+	if round_ == 1:
+		return ReviewPeriod.objects.filter(year=year - 1, round=3).first()
+	return ReviewPeriod.objects.filter(year=year, round=round_ - 1).first()
+
+
 @login_required
 def board_view(request: HttpRequest) -> HttpResponse:
 	"""Board view: schools as rows, categories as columns, for a single round."""
@@ -650,11 +661,7 @@ def board_view(request: HttpRequest) -> HttpResponse:
 	current_period = ReviewPeriod.objects.filter(year=year, round=selected_round).first()
 
 	# Determine the previous period for trend comparison.
-	# Autumn's predecessor is Summer of the prior academic year.
-	if selected_round == 1:
-		prev_period = ReviewPeriod.objects.filter(year=year - 1, round=3).first()
-	else:
-		prev_period = ReviewPeriod.objects.filter(year=year, round=selected_round - 1).first()
+	prev_period = _previous_period(year, selected_round)
 
 	# --- Bulk-fetch evaluations (2 queries total) ---
 	school_ids = [s.id for s in schools]
@@ -984,6 +991,19 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			for e in Evaluation.objects.filter(school=school, period=period_db, category__in=categories)
 		}
 
+	# Last term's commentary and next steps, shown beside each box to refer to
+	# or copy in. Shown, never pre-filled: the form posts all eight categories,
+	# so pre-filled boxes would store last term's words as this term's on the
+	# first Save, for areas nobody looked at. Ratings are not offered at all.
+	previous_period = _previous_period(selected_year, selected_round)
+	previous = {}
+	if previous_period is not None:
+		previous = {
+			e.category_id: e
+			for e in Evaluation.objects.filter(school=school, period=previous_period, category__in=categories)
+			if e.judgement_evidence.strip() or e.to_progress.strip()
+		}
+
 	# What is actually stored, so a rating outside a category's choice list still
 	# renders and round-trips rather than being silently written away as None.
 	stored_ratings = {key: row.rating for key, row in existing.items()}
@@ -1110,7 +1130,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 
 	rows = []
 	for category, form in zip(categories, formset.forms):
-		rows.append({"category": category, "form": form})
+		rows.append({"category": category, "form": form, "previous": previous.get(category.id)})
 
 	# Areas whose in-depth review concluded a grade that differs from the current
 	# evaluation rating — these are offered for over-write.
@@ -1142,6 +1162,7 @@ def evaluation(request: HttpRequest) -> HttpResponse:
 			"formset": formset,
 			"can_edit": can_edit,
 			"override_rows": override_rows,
+			"previous_period": previous_period,
 		},
 	)
 
@@ -1272,6 +1293,49 @@ def conclude_indepth_grade(rags_by_key, *, is_safeguarding: bool = False) -> str
 	return "strong_standard" if exc == "has_red" else "exceptional"
 
 
+def _unsaved_indepth_posts(posted, ja_ids, page_ids, area, existing) -> list:
+	"""Entries a save must refuse rather than drop, or [] if it can go ahead.
+
+	`posted` maps judgement-area id to cleaned form data; `existing` maps it to
+	this review's stored response. A save is refused only when text was written
+	against a statement no longer asked for (a deploy changed or withdrew it
+	while the page was open) and differs from what is stored: text posted back
+	unchanged is already safe. Every such entry that will not be on the rebuilt
+	page is returned, so it can be copied. A rating on such a statement is still
+	ignored, as before: it has nothing to attach to, and unlike a write-up it
+	takes a click to redo.
+	"""
+	def _norm(text):
+		return (text or "").replace("\r\n", "\n").strip()
+
+	def has_entry(ja_id, cd):
+		stored = existing.get(ja_id)
+		return any(
+			_norm(cd.get(field)) and _norm(cd.get(field)) != _norm(getattr(stored, attr, ""))
+			for field, attr in (("commentary", "evidence_text"), ("next_steps", "next_steps"))
+		)
+
+	if not any(ja_id not in ja_ids and has_entry(ja_id, cd) for ja_id, cd in posted.items()):
+		return []
+	off_page = {
+		ja_id: cd for ja_id, cd in posted.items()
+		if ja_id not in page_ids and has_entry(ja_id, cd)
+	}
+	statements = (
+		InDepthJudgementArea.objects.filter(standard__area=area)
+		.select_related("standard")
+		.in_bulk(list(off_page))
+	)
+	return [
+		{
+			"ja": statements.get(ja_id),
+			"commentary": cd.get("commentary") or "",
+			"next_steps": cd.get("next_steps") or "",
+		}
+		for ja_id, cd in off_page.items()
+	]
+
+
 @login_required
 @governor_denied
 def indepth_review(request: HttpRequest) -> HttpResponse:
@@ -1355,7 +1419,8 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	rung_jas = []  # [(standard, [ja, ...]), ...] — only rungs that have statements
 	ja_ids = set()
 	for s in rich_standards:
-		jas = [ja for ja in s.judgement_areas.all() if not ja.is_flat]
+		# A withdrawn statement (is_active=False) is neither asked for nor graded.
+		jas = [ja for ja in s.judgement_areas.all() if not ja.is_flat and ja.is_active]
 		if not jas:
 			continue
 		rung_jas.append((s, jas))
@@ -1365,7 +1430,9 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	review = InDepthReview.objects.filter(school=school, year=selected_year, area=area).first()
 	existing = {} if review is None else {
 		r.judgement_area_id: r
-		for r in InDepthResponse.objects.filter(review=review, judgement_area__isnull=False)
+		for r in InDepthResponse.objects.filter(
+			review=review, judgement_area__isnull=False
+		).select_related("judgement_area__standard")
 	}
 
 	def _build_params(target_page: str) -> str:
@@ -1391,7 +1458,18 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 	# rungs were RAGed to reach that grade but don't need their own commentary.)
 	na_bullets = []
 	na_comment = ""
+	withdrawn = []
 	if page == "commentary":
+		# Write-ups against a statement the Trust has since withdrawn. They are
+		# shown read-only: not a form, because the save loop skips any id outside
+		# ja_ids and an editable box would silently discard the edit.
+		withdrawn = sorted(
+			(
+				r for r in existing.values()
+				if not r.judgement_area.is_active and (r.evidence_text or r.next_steps)
+			),
+			key=lambda r: (r.judgement_area.standard.order, r.judgement_area.order),
+		)
 		rated = [ja for ja in all_jas if ja.id in existing and existing[ja.id].rag]
 		# A statement that already holds a write-up is shown whatever rung it
 		# sits on, and whether or not it is still rated. The band below decides
@@ -1423,7 +1501,8 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 					standard__area=area,
 					standard__key="needs_attention",
 					is_flat=True,
-				).order_by("order")
+					is_active=True,
+				).select_related("standard").order_by("order")
 			)
 			na_comment = review.needs_attention_comment
 	else:
@@ -1432,11 +1511,20 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 
 	FormSetClass = formset_factory(InDepthJudgementAreaForm, extra=0)
 	formset = None
+	posted = {}
+	unsaved_posts = []
 
 	# ── POST handler ────────────────────────────────────────────────────────────
 	if request.method == "POST" and can_edit:
 		formset = FormSetClass(request.POST)
 		if formset.is_valid():
+			# The save loop below skips any statement not in ja_ids. Entered text
+			# there used to vanish under an "In-depth review saved" message.
+			posted = {f.cleaned_data["judgement_area_id"]: f.cleaned_data for f in formset}
+			unsaved_posts = _unsaved_indepth_posts(
+				posted, ja_ids, {ja.id for ja in page_jas}, area, existing
+			)
+		if formset.is_valid() and not unsaved_posts:
 			with transaction.atomic():
 				if review is None:
 					review = InDepthReview.objects.create(
@@ -1510,21 +1598,48 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 				review.updated_by = request.user
 				review.save()
 			messages.success(request, f"In-depth review saved for {school.name}.")
+			if page == "commentary":
+				# A warning after the save, never a gate on it. The text is already
+				# stored, so a fault here must not turn a good save into an error page.
+				try:
+					warning = spelling_warning(indepth_texts(
+						formset,
+						{ja.id: ja for ja in all_jas},
+						review.needs_attention_comment
+						if "needs_attention_comment" in request.POST else None,
+					))
+				except Exception:
+					logger.exception("Spelling check failed after an in-depth save")
+					warning = ""
+				if warning:
+					messages.warning(request, warning)
 			# 'Save & continue' takes the user from the ladder to the write-up.
 			target = "commentary" if (page == "rag" and request.POST.get("save_continue")) else page
 			return redirect(f"{reverse('review:indepth_review')}{_build_params(target)}")
 
+	# A refused save rebuilds the form around the current statements, carrying
+	# what was posted; the bound formset cannot be reused, as it still counts the
+	# form for the statement that has gone.
+	if unsaved_posts:
+		formset = None
+		if "needs_attention_comment" in request.POST:
+			na_comment = request.POST.get("needs_attention_comment") or ""
+	page_fields = ("commentary", "next_steps") if page == "commentary" else ("rag",)
+
 	# ── Build formset for GET (or re-render after an invalid POST) ───────────────
 	if formset is None:
-		initial = [
-			{
+		initial = []
+		for ja in page_jas:
+			resp = existing.get(ja.id)
+			row = {
 				"judgement_area_id": ja.id,
-				"rag": existing[ja.id].rag if ja.id in existing else "",
-				"commentary": existing[ja.id].evidence_text if ja.id in existing else "",
-				"next_steps": existing[ja.id].next_steps if ja.id in existing else "",
+				"rag": resp.rag if resp else "",
+				"commentary": resp.evidence_text if resp else "",
+				"next_steps": resp.next_steps if resp else "",
 			}
-			for ja in page_jas
-		]
+			if ja.id in posted:
+				row.update({field: posted[ja.id].get(field) or "" for field in page_fields})
+			initial.append(row)
 		formset = FormSetClass(initial=initial)
 
 	if not can_edit:
@@ -1599,7 +1714,11 @@ def indepth_review(request: HttpRequest) -> HttpResponse:
 			"overall_grade_css": _GRADE_CSS.get(overall_grade, ""),
 			"na_bullets": na_bullets,
 			"na_comment": na_comment,
+			"withdrawn": withdrawn,
+			"unsaved_posts": unsaved_posts,
 		},
+		# 409: nothing was saved; the page carries what was typed.
+		status=409 if unsaved_posts else 200,
 	)
 
 

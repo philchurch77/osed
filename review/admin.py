@@ -457,8 +457,8 @@ class InDepthStandardAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
 
 @admin.register(InDepthJudgementArea)
 class InDepthJudgementAreaAdmin(ProtectsWrittenWorkMixin, admin.ModelAdmin):
-	list_display = ("standard", "order", "is_flat", "short_statement")
-	list_filter = ("is_flat", "standard__area", "standard__key")
+	list_display = ("standard", "order", "is_active", "is_flat", "short_statement")
+	list_filter = ("is_active", "is_flat", "standard__area", "standard__key")
 	ordering = ("standard__area__order", "standard__order", "order")
 	list_select_related = ("standard", "standard__area")
 	search_fields = ("statement",)

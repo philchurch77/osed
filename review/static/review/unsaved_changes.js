@@ -29,6 +29,9 @@
       if (indicator) indicator.classList.add('unsaved-indicator--visible');
     }
 
+    // A page re-rendered after a refused save carries text that is not stored.
+    if (formEl.hasAttribute('data-start-dirty')) markDirty();
+
     formEl.addEventListener('input', markDirty, true);
     formEl.addEventListener('change', markDirty, true);
 

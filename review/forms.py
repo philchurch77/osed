@@ -122,11 +122,17 @@ class InDepthJudgementAreaForm(forms.Form):
     )
     commentary = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4, "data-max-words": str(MAX_COMMENTARY_WORDS)}),
+        widget=forms.Textarea(attrs={
+            "rows": 4, "data-max-words": str(MAX_COMMENTARY_WORDS),
+            "spellcheck": "true", "lang": "en-GB",
+        }),
     )
     next_steps = forms.CharField(
         required=False,
-        widget=forms.Textarea(attrs={"rows": 3, "data-max-words": str(MAX_NEXT_STEPS_WORDS)}),
+        widget=forms.Textarea(attrs={
+            "rows": 3, "data-max-words": str(MAX_NEXT_STEPS_WORDS),
+            "spellcheck": "true", "lang": "en-GB",
+        }),
     )
 
     def clean_commentary(self) -> str:

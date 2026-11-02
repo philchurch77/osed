@@ -518,7 +518,15 @@ class InDepthJudgementArea(models.Model):
     # Attention, Exceptional, Not Met), where each row is a single statement
     # with no key questions / evidence / sources.
     is_flat = models.BooleanField(default=False)
+    # Stored 1-based position within its standard, set from the source row by
+    # _indepth_sync on every deploy. It is the number shown on screen ("Met 3"),
+    # so it must never be a position in a filtered list.
     order = models.PositiveIntegerField(default=0)
+    # False once the statement has left the source data but still holds a
+    # school's response, so it cannot be deleted. A withdrawn statement is not
+    # asked for and does not count towards the grade; any write-up against it
+    # stays on the commentary page, read-only.
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         verbose_name = "In-depth judgement area"
@@ -527,6 +535,11 @@ class InDepthJudgementArea(models.Model):
 
     def __str__(self):
         return f"{self.standard} — {self.statement[:60]}"
+
+    @property
+    def label(self) -> str:
+        """How a statement is quoted: "Met 3", "Strong Standard 4"."""
+        return f"{self.standard.get_key_display()} {self.order}"
 
 
 # ---------------------------------------------------------------------------

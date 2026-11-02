@@ -2259,6 +2259,88 @@ summary:focus-visible {
   vertical-align: middle;
 }
 
+/* Statement number, so a statement can be quoted ("Safeguarding, Met 3").
+   It is the stored order within the standard, not a position on the page. */
+.indepth-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  margin-right: 10px;
+  border-radius: 999px;
+  background: var(--colour-primary);
+  color: var(--colour-white);
+  font-size: 12px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.indepth-num--small {
+  min-width: 20px;
+  height: 20px;
+  font-size: 11px;
+  margin-right: 8px;
+}
+
+/* Browsers drop backgrounds when printing, which would leave a white number on
+   white paper in the PDF export. */
+@media print {
+  .indepth-num,
+  .indepth-judgement--withdrawn .indepth-num {
+    background: none;
+    color: #000;
+    border: 1px solid #000;
+  }
+}
+
+.indepth-ja-list--numbered {
+  list-style: none;
+  padding-left: 0;
+}
+
+/* Number chip beside its text, so a wrapped statement lines up under itself
+   rather than under the number. */
+.indepth-numbered {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.indepth-numbered .indepth-num {
+  flex: 0 0 auto;
+  margin-right: 0;
+}
+
+.indepth-unsaved {
+  margin: 0 0 20px;
+  padding: 16px 20px;
+  border: 1px solid #ef4444;
+  border-left-width: 4px;
+  border-radius: var(--radius-md);
+  background: #fef2f2;
+}
+
+.indepth-unsaved textarea {
+  width: 100%;
+}
+
+.indepth-judgement--withdrawn {
+  background: var(--colour-bg);
+}
+
+.indepth-judgement--withdrawn .indepth-num {
+  background: var(--colour-muted);
+}
+
+.indepth-withdrawn-text {
+  margin: 0 0 12px;
+  line-height: 1.5;
+  /* Keep the writer's line breaks and indents; display only. */
+  white-space: pre-line;
+}
+
 .indepth-rag-tag--red { background: var(--rag-red); color: var(--colour-white); }
 .indepth-rag-tag--amber { background: var(--rag-amber); color: #000; }
 .indepth-rag-tag--green { background: var(--rag-green); color: var(--colour-white); }
@@ -3076,6 +3158,36 @@ summary:focus-visible {
   color: var(--colour-muted);
 }
 
+/* Last term's text above each Evaluation box, to refer to or copy in.
+   Closed by default so a full Spring page is not doubled in length. */
+.evaluation-previous {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px dashed var(--colour-border);
+  border-radius: var(--radius-sm);
+  background: var(--colour-bg);
+  font-size: 0.85rem;
+}
+
+.evaluation-previous summary {
+  cursor: pointer;
+  color: var(--colour-muted);
+  font-weight: 500;
+}
+
+.evaluation-previous-text {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.evaluation-previous-text p { margin: 0 0 6px; }
+.evaluation-previous-text p:last-child { margin-bottom: 0; }
+
+.evaluation-previous-copy {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
 
 /* Choose-a-school: the deliberate blank state shown on a scoped page when the
    user holds more than one school and has not named one. A narrow column so
@@ -3302,6 +3414,7 @@ summary:focus-visible {
   .word-counter,
   .indepth-steps,
   .indepth-override-panel,
+  .evaluation-previous,
   .indepth-guidance-box,
   .indepth-criteria-details,
   .rag-picker-panel {
@@ -3315,6 +3428,7 @@ summary:focus-visible {
 
   .print-only { display: block; }
   .print-context { margin: 0 0 4px; font-weight: 600; }
+  .print-end { margin: 12px 0 0; font-style: italic; }
   .print-unsaved { display: block; font-weight: 700; }
   .print-unsaved:empty { display: none; }
 

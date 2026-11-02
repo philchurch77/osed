@@ -1,0 +1,62 @@
+# School and Trust words that are spelt correctly but are not in en_GB_words.txt.
+# One word per line, any case; lines starting with # are comments.
+# Words in capitals (EHCP) and capitalised words mid-sentence (Mendlesham) are
+# never flagged, so this list only needs a word when it is typed in lower case
+# or starts a sentence. Add to it freely; it is read once per process.
+cla
+coördinate
+cpoms
+cyberbullying
+ddsl
+dsl
+dsls
+dysregulate
+dysregulated
+ect
+ects
+edi
+ehcp
+ehcps
+eyfs
+focussed
+focussing
+fsm
+iep
+ieps
+kcsie
+lado
+learnings
+metacognition
+metacognitive
+multiagency
+myconcern
+naïve
+neurodivergence
+npq
+npqh
+npqs
+offsite
+ofsted
+onboarded
+onboarding
+onsite
+oracy
+ppg
+pshe
+rse
+rshe
+scaffolded
+senco
+sencos
+sendco
+sendcos
+slt
+trustwide
+tutee
+tutees
+upskill
+upskilled
+upskilling
+walkthrough
+walkthroughs
+wellbeing

@@ -43,6 +43,8 @@
     </ul>
   {% endif %}
 
+  {% include "review/includes/indepth_unsaved.html" %}
+
   {% if not can_edit %}
     <p class="readonly-notice"><strong>Read-only:</strong> you can view responses, but you cannot make changes.</p>
   {% endif %}
@@ -66,7 +68,7 @@
     {% endif %}
 
     {% if rich_blocks %}
-      <form method="post" id="indepth-review-form">
+      <form method="post" id="indepth-review-form"{% if unsaved_posts %} data-start-dirty{% endif %}>
         {% csrf_token %}
         <input type="hidden" name="school_id" value="{{ school.id }}" />
         <input type="hidden" name="year" value="{{ selected_year_value }}" />
@@ -91,11 +93,14 @@
               <div class="indepth-judgement" data-judgement>
                 {{ row.form.judgement_area_id }}
 
-                <div class="indepth-judgement-statement">
-                  {% if row.current_rag %}
-                    <span class="indepth-rag-tag indepth-rag-tag--{{ row.current_rag }}">{{ row.current_rag|capfirst }}</span>
-                  {% endif %}
-                  {{ row.ja.statement }}
+                <div class="indepth-judgement-statement indepth-numbered">
+                  {% include "review/includes/indepth_num.html" with ja=row.ja %}
+                  <span>
+                    {% if row.current_rag %}
+                      <span class="indepth-rag-tag indepth-rag-tag--{{ row.current_rag }}">{{ row.current_rag|capfirst }}</span>
+                    {% endif %}
+                    {{ row.ja.statement }}
+                  </span>
                 </div>
 
                 {% if row.ja.key_questions %}
@@ -166,21 +171,21 @@
             <details class="indepth-criteria-details">
               <summary class="indepth-criteria-summary">Needs Attention statements ({{ na_bullets|length }})</summary>
               <div class="indepth-criteria-body">
-                <ul class="indepth-ja-list">
-                  {% for b in na_bullets %}<li>{{ b.statement }}</li>{% endfor %}
+                <ul class="indepth-ja-list indepth-ja-list--numbered">
+                  {% for b in na_bullets %}<li class="indepth-numbered">{% include "review/includes/indepth_num.html" with ja=b small=True %}<span>{{ b.statement }}</span></li>{% endfor %}
                 </ul>
               </div>
             </details>
             {# A closed details prints only its summary, so the PDF gets its own copy. #}
-            <ul class="print-only indepth-ja-list">
-              {% for b in na_bullets %}<li>{{ b.statement }}</li>{% endfor %}
+            <ul class="print-only indepth-ja-list indepth-ja-list--numbered">
+              {% for b in na_bullets %}<li class="indepth-numbered">{% include "review/includes/indepth_num.html" with ja=b small=True %}<span>{{ b.statement }}</span></li>{% endfor %}
             </ul>
             <div class="indepth-field">
               <label class="indepth-field-label" for="id_needs_attention_comment">
                 Comment on whether, in addition, one or more of the above applies
               </label>
               <textarea id="id_needs_attention_comment" name="needs_attention_comment"
-                        rows="4"{% if not can_edit %} disabled{% endif %}>{{ na_comment }}</textarea>
+                        rows="4" spellcheck="true" lang="en-GB"{% if not can_edit %} disabled{% endif %}>{{ na_comment }}</textarea>
             </div>
           </section>
         {% endif %}
@@ -197,6 +202,31 @@
         <a href="{% url 'review:indepth_review' %}?school={{ school.id }}&year={{ selected_year_value }}&area={{ area.id }}&page=rag">ratings step</a>
         first, then return here to add commentary and next steps.
       </p>
+    {% endif %}
+
+    {% if withdrawn %}
+      <section class="indepth-standard indepth-withdrawn">
+        <header class="indepth-standard-header">
+          <h2 class="indepth-standard-title">Withdrawn statements</h2>
+          <p class="indepth-standard-kept">The Trust has removed these statements from the review. What you wrote is kept here to read, but it can no longer be edited and does not count towards your grade.</p>
+        </header>
+        {% for r in withdrawn %}
+          <div class="indepth-judgement indepth-judgement--withdrawn">
+            <div class="indepth-judgement-statement indepth-numbered">
+              {% include "review/includes/indepth_num.html" with ja=r.judgement_area withdrawn=True %}
+              <span>{{ r.judgement_area.statement }}</span>
+            </div>
+            {% if r.evidence_text %}
+              <p class="indepth-field-label">Commentary</p>
+              <div class="indepth-withdrawn-text">{{ r.evidence_text }}</div>
+            {% endif %}
+            {% if r.next_steps %}
+              <p class="indepth-field-label">Next steps</p>
+              <div class="indepth-withdrawn-text">{{ r.next_steps }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </section>
     {% endif %}
 
   {% endif %}{# end if area #}

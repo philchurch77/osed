@@ -1,0 +1,1 @@
+- [Print/PDF repro harness](print-pdf-repro-harness.md) — Edge headless CDP fires beforeprint; never kiosk-print here (default printer is physical); per-font PDF text decode.

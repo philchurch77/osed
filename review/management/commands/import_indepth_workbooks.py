@@ -103,6 +103,40 @@ def _norm_header(value) -> str:
     return _clean(value).rstrip(":").strip().lower()
 
 
+def workbook_standards(folder=DEFAULT_DIR) -> dict[str, set]:
+    """Map each area a workbook supplies to the standard keys it supplies.
+
+    load_indepth_criteria uses this to leave those standards to this command.
+    Where criteria.json and a workbook word a statement differently, the
+    criteria pass used to swap the workbook's statement out and this pass swap
+    it back on every deploy: fine when both succeed, but a failed workbook
+    import left the criteria wording live and the statements schools had
+    answered withdrawn. Raises CommandError if a workbook cannot be read, so
+    the caller writes nothing rather than guessing which areas it covers.
+    """
+    if openpyxl is None:
+        raise CommandError("openpyxl is required to read the in-depth workbooks.")
+    folder = Path(folder)
+    if not folder.is_dir():
+        return {}
+    provided: dict[str, set] = {}
+    reader = Command()
+    for path in sorted(p for p in folder.glob("*.xlsx") if not p.name.startswith("~$")):
+        try:
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        except Exception as exc:
+            raise CommandError(f"Could not open {path.name}: {exc}") from exc
+        try:
+            area_name = reader._area_name(wb)
+            if not area_name:
+                raise CommandError(f"Could not determine area name in {path.name}.")
+            keys = {SHEET_TO_KEY[t] for t in wb.sheetnames if t in SHEET_TO_KEY}
+            provided.setdefault(area_name, set()).update(keys)
+        finally:
+            wb.close()
+    return provided
+
+
 class Command(BaseCommand):
     help = "Import in-depth review criteria from the per-area .xlsx supporting-tool workbooks."
 
@@ -135,6 +169,7 @@ class Command(BaseCommand):
             raise CommandError("No .xlsx workbooks found to import.")
 
         n_areas = n_standards = n_ja = 0
+        self.n_withdrawn = 0
         for path in paths:
             if not path.exists():
                 raise CommandError(f"Workbook not found: {path}")
@@ -149,6 +184,13 @@ class Command(BaseCommand):
                 f"{n_ja} judgement area(s)/statement(s) from {len(paths)} workbook(s)."
             )
         )
+        if self.n_withdrawn:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Withdrew {self.n_withdrawn} statement(s) no longer in the workbooks "
+                    "that hold school responses — kept, not asked for, not graded."
+                )
+            )
 
     # ── per-workbook ────────────────────────────────────────────────────────
     def _import_workbook(self, path: Path):
@@ -187,8 +229,9 @@ class Command(BaseCommand):
 
                 # Reload in place. A blind delete here cascaded to
                 # InDepthResponse and destroyed written work on every deploy.
-                written, _removed, _kept = sync_judgement_areas(standard, list(jas))
+                written, _removed, kept = sync_judgement_areas(standard, list(jas))
                 n_ja += written
+                self.n_withdrawn += kept
 
             return 1, n_standards, n_ja
         finally:

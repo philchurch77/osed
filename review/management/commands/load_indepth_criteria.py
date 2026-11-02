@@ -23,6 +23,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from review.management.commands._indepth_sync import sync_judgement_areas
+from review.management.commands.import_indepth_workbooks import workbook_standards
 from review.models import (
     InDepthArea,
     InDepthStandard,
@@ -88,12 +89,19 @@ class Command(BaseCommand):
         if not areas:
             raise CommandError("criteria.json contained no 'areas'.")
 
+        # Standards a workbook supplies are import_indepth_workbooks' to load
+        # (the workbook wins). Worked out before anything is written: an
+        # unreadable workbook stops this command, and the database stays as the
+        # last good deploy left it.
+        from_workbooks = workbook_standards()
+
         if opts["clear"]:
             deleted, _ = InDepthStandard.objects.all().delete()
             self.stdout.write(self.style.WARNING(f"Cleared existing standards/judgement areas ({deleted} rows)."))
 
         n_areas = n_standards = n_ja = 0
         n_removed = n_kept = 0
+        n_from_workbook = 0
 
         for a in areas:
             area, _ = InDepthArea.objects.update_or_create(
@@ -109,6 +117,9 @@ class Command(BaseCommand):
                 key = SHEET_TO_KEY.get(sheet_title)
                 if key is None:
                     self.stdout.write(self.style.WARNING(f"  Skipping unknown sheet '{sheet_title}' in {a['name']}"))
+                    continue
+                if key in from_workbooks.get(a["name"], ()):
+                    n_from_workbook += 1
                     continue
 
                 standard, _ = InDepthStandard.objects.update_or_create(
@@ -155,6 +166,8 @@ class Command(BaseCommand):
                 f"Loaded {n_areas} areas, {n_standards} standards, {n_ja} judgement areas/statements."
             )
         )
+        if n_from_workbook:
+            self.stdout.write(f"Left {n_from_workbook} standard(s) to import_indepth_workbooks.")
         if n_removed:
             self.stdout.write(f"Removed {n_removed} retired statement(s) with no written work.")
         if n_kept:

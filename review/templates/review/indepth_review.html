@@ -113,7 +113,7 @@
             <div class="indepth-judgement" data-judgement>
               {{ row.form.judgement_area_id }}
 
-              <div class="indepth-judgement-statement">{{ row.ja.statement }}</div>
+              <div class="indepth-judgement-statement indepth-numbered">{% include "review/includes/indepth_num.html" with ja=row.ja %}<span>{{ row.ja.statement }}</span></div>
 
               {# RAG self-rating #}
               <div class="indepth-rag-section">

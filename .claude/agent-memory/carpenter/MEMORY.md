@@ -1,1 +1,2 @@
 - [OSED project conventions](osed-conventions.md) — house JS style, script-loading pattern, and where the test-claim discipline lives.
+- [In-depth withdrawn statements + spelling review](indepth-withdrawn-spelling-review.md) — no tests for is_active/withdrawn/spelling.py, 3x duplicated label format, orphaned RAG-only responses.

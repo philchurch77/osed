@@ -11,7 +11,8 @@ This module reloads the same data in place instead. A statement whose wording ha
 not changed keeps its pk, so the responses hanging off it survive. A statement that
 has genuinely gone is only deleted when nobody has written against it; if it holds
 written work it is kept and reported, because losing a leader's write-up is worse
-than carrying a retired statement.
+than carrying a retired statement. A kept statement is marked is_active=False
+(withdrawn), so it no longer asks for a rating or counts towards the grade.
 
 The filename starts with an underscore so Django's command discovery skips it.
 """
@@ -53,6 +54,8 @@ def sync_judgement_areas(standard, rows: list[dict]) -> tuple[int, int, int]:
             for field, value in data.items():
                 setattr(match, field, value)
             match.order = order
+            # A statement that returns to the source data comes back into use.
+            match.is_active = True
             match.save()
         written += 1
 
@@ -61,10 +64,13 @@ def sync_judgement_areas(standard, rows: list[dict]) -> tuple[int, int, int]:
     deleted = kept = 0
     for offset, ja in enumerate(leftovers):
         if ja.responses.exists():
-            # Someone has written against this statement. Keep it, and park it
-            # after the current ones so the live statements render in order.
+            # Someone has responded to this statement. Keep it, withdrawn, and
+            # park it after the current ones so the live statements render in
+            # order. Withdrawn, it is neither asked for nor graded; left active,
+            # a statement the Trust removed would still decide a school's grade.
             ja.order = len(rows) + offset + 1
-            ja.save(update_fields=["order"])
+            ja.is_active = False
+            ja.save(update_fields=["order", "is_active"])
             kept += 1
         else:
             ja.delete()

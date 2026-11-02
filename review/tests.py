@@ -1254,6 +1254,227 @@ class InDepthJudgementAreaFlowTests(TestCase):
 		self.assertEqual(kept.evidence_text, "Triangulated evidence.")
 		self.assertEqual(kept.next_steps, "Sustain practice.")
 
+	# ── Withdrawn statements (is_active=False) ───────────────────────────────
+
+	# What a leader actually types: newlines (Windows and Unix), curly quotes,
+	# an accent, an em-dash and an emoji.
+	WITHDRAWN_TEXT = (
+		"Written before the Trust withdrew this statement — keep it.\r\n\r\n"
+		"The Head’s view: “sécurité first” \U0001F4DA\n"
+		"Second paragraph, still ours."
+	)
+
+	def _withdraw(self, ja):
+		ja.is_active = False
+		ja.save(update_fields=["is_active"])
+
+	def _commentary_url(self):
+		return f"{reverse('review:indepth_review')}?area={self.area.id}&page=commentary"
+
+	# Catches: a statement the Trust removed still deciding a school's grade.
+	# A red left on a withdrawn Expected statement used to pin Needs Attention.
+	def test_withdrawn_statement_rating_does_not_count_towards_grade(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "red"), (self.je2, "green")])
+		self.assertEqual(self._review().overall_grade, "needs_attention")
+		self._withdraw(self.je1)
+		# A stale ladder still posts the withdrawn red; it must be ignored.
+		resp = self._rag_post([(self.je1, "red"), (self.je2, "amber")])
+		self.assertEqual(resp.status_code, 302)
+		self.assertEqual(self._review().overall_grade, "expected_standard")
+		# The withdrawn response itself is kept as it was, not deleted.
+		self.assertEqual(
+			InDepthResponse.objects.get(review=self._review(), judgement_area=self.je1).rag,
+			"red",
+		)
+
+	# Catches: a withdrawn write-up rendered as an editable box whose edits the
+	# save loop would silently discard (it skips ids outside ja_ids).
+	def test_withdrawn_statement_text_renders_read_only_on_commentary_page(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		self._commentary_post([
+			(self.je1, "Withdrawn write-up to read back.", "Withdrawn next step."),
+		])
+		self._withdraw(self.je1)
+		resp = self.client.get(self._commentary_url())
+		self.assertEqual(resp.status_code, 200)
+		self.assertContains(
+			resp, '<div class="indepth-withdrawn-text">Withdrawn write-up to read back.</div>'
+		)
+		self.assertContains(
+			resp, '<div class="indepth-withdrawn-text">Withdrawn next step.</div>'
+		)
+		self.assertEqual(
+			[r.judgement_area_id for r in resp.context["withdrawn"]], [self.je1.id]
+		)
+		# Not in the form: no row, no formset entry, no textarea holding the text.
+		rows = [row["ja"].id for block in resp.context["rich_blocks"] for row in block["rows"]]
+		self.assertNotIn(self.je1.id, rows)
+		self.assertNotIn(
+			self.je1.id,
+			[f.initial.get("judgement_area_id") for f in resp.context["formset"]],
+		)
+		for textarea in re.findall(r"<textarea[^>]*>(.*?)</textarea>", resp.content.decode(), re.S):
+			self.assertNotIn("Withdrawn write-up to read back.", textarea)
+
+	# Catches: a save on either page touching a withdrawn response's text or
+	# rating (article 6: the round trip must be byte-identical).
+	def test_save_on_either_page_leaves_withdrawn_response_byte_identical(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		review = self._review()
+		withdrawn = InDepthResponse.objects.get(review=review, judgement_area=self.je1)
+		withdrawn.evidence_text = self.WITHDRAWN_TEXT
+		withdrawn.next_steps = self.WITHDRAWN_TEXT + " (next steps)"
+		withdrawn.save()
+		self._withdraw(self.je1)
+
+		# Ratings page, posted as a stale page would (withdrawn row included).
+		resp = self._rag_post([(self.je1, ""), (self.je2, "amber")])
+		self.assertEqual(resp.status_code, 302)
+		# Commentary page, posted as rendered (the withdrawn text is not a field).
+		page = self.client.get(self._commentary_url())
+		self.assertContains(page, escape(self.WITHDRAWN_TEXT))
+		rows = [row for block in page.context["rich_blocks"] for row in block["rows"]]
+		resp = self._commentary_post([
+			(row["ja"], row["form"]["commentary"].value() or "Expected gaps.", "")
+			for row in rows
+		])
+		self.assertEqual(resp.status_code, 302)
+
+		after = InDepthResponse.objects.get(pk=withdrawn.pk)
+		self.assertEqual(after.evidence_text, self.WITHDRAWN_TEXT)
+		self.assertEqual(after.next_steps, self.WITHDRAWN_TEXT + " (next steps)")
+		self.assertEqual(after.rag, "green")
+
+	# Catches: text typed against a statement withdrawn while the page was open
+	# vanishing under "In-depth review saved" -- and a half-save of the rest.
+	def test_commentary_for_withdrawn_statement_refuses_whole_save_and_keeps_text(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		self.client.get(self._commentary_url())  # the page is opened...
+		self._withdraw(self.je1)  # ...and a deploy lands while it is open
+		other_text = "Year 9 gaps — “closing” by Spring.\r\nSee the tracker \U0001F4C8"
+		resp = self._commentary_post([
+			(self.je1, self.WITHDRAWN_TEXT, "Withdrawn next step."),
+			(self.je2, other_text, "Target year 9."),
+		])
+		self.assertEqual(resp.status_code, 409)
+		self.assertContains(resp, "Nothing has been saved yet", status_code=409)
+		# Both texts are handed back: the refused one read-only, the other in the form.
+		self.assertContains(resp, escape(self.WITHDRAWN_TEXT), status_code=409)
+		self.assertContains(resp, escape(other_text), status_code=409)
+		self.assertEqual(
+			[p["ja"].id for p in resp.context["unsaved_posts"]], [self.je1.id]
+		)
+		# Nothing saved -- not even for the statement that is still active.
+		review = self._review()
+		for ja in (self.je1, self.je2):
+			r = InDepthResponse.objects.get(review=review, judgement_area=ja)
+			self.assertEqual(r.evidence_text, "")
+			self.assertEqual(r.next_steps, "")
+		self.assertFalse(
+			any(m.level_tag == "success" for m in resp.context["messages"])
+		)
+
+	# Catches: a stale page refusing the save only because it posted back, unchanged,
+	# the stored text of a statement withdrawn while it was open. That text is safe.
+	def test_unchanged_stored_text_on_withdrawn_statement_does_not_refuse_save(self):
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		self._commentary_post([(self.je1, self.WITHDRAWN_TEXT, ""), (self.je2, "", "")])
+		self.client.get(self._commentary_url())
+		self._withdraw(self.je1)
+		resp = self._commentary_post([
+			(self.je1, self.WITHDRAWN_TEXT, ""),
+			(self.je2, "Edited only this box.", ""),
+		])
+		self.assertEqual(resp.status_code, 302)
+		review = self._review()
+		self.assertEqual(
+			InDepthResponse.objects.get(review=review, judgement_area=self.je2).evidence_text,
+			"Edited only this box.",
+		)
+		self.assertEqual(
+			InDepthResponse.objects.get(review=review, judgement_area=self.je1).evidence_text,
+			self.WITHDRAWN_TEXT,
+		)
+
+	# Catches: the chip numbering statements by position on a filtered page, so
+	# "Expected Standard 1" on screen is statement 2 in the Trust's document.
+	def test_statement_number_is_stored_order_not_position_on_filtered_commentary_page(self):
+		self.client.force_login(self.staff)
+		# Only je2 rated: the commentary page shows je2 alone, in first position.
+		self._rag_post([(self.je1, ""), (self.je2, "amber")])
+		resp = self.client.get(self._commentary_url())
+		rows = [row["ja"].id for block in resp.context["rich_blocks"] for row in block["rows"]]
+		self.assertEqual(rows, [self.je2.id])
+		chips = re.findall(
+			r'<span class="indepth-num[^"]*"[^>]*>(\d+)</span>', resp.content.decode()
+		)
+		self.assertEqual(chips, ["2"])
+		self.assertContains(resp, "Achievement, Expected Standard 2")
+
+	# ── Spelling warning after a commentary save ─────────────────────────────
+
+	# Catches: the spelling check altering what was typed, or warning without
+	# saying which statement the word is in.
+	def test_spelling_warning_flags_misspelling_names_statement_and_text_is_saved_unchanged(self):
+		from django.contrib.messages import get_messages
+
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		typed = "We recieve pupil voice termly.\r\nLeaders act on it."
+		resp = self._commentary_post([(self.je1, typed, "")])
+		self.assertEqual(resp.status_code, 302)
+		r = InDepthResponse.objects.get(review=self._review(), judgement_area=self.je1)
+		self.assertEqual(r.evidence_text, typed)
+		warnings = [
+			str(m) for m in get_messages(resp.wsgi_request) if m.level_tag == "warning"
+		]
+		self.assertEqual(len(warnings), 1)
+		self.assertIn("recieve", warnings[0])
+		self.assertIn("Expected Standard 1 commentary", warnings[0])
+
+	# Catches: a fault in the spelling check turning a stored save into a 500,
+	# which reads to the user as "my work was lost".
+	def test_spelling_check_failure_never_breaks_a_saved_page(self):
+		from unittest import mock
+
+		self.client.force_login(self.staff)
+		self._rag_post([(self.je1, "green"), (self.je2, "amber")])
+		with mock.patch("review.views.spelling_warning", side_effect=RuntimeError("boom")):
+			with self.assertLogs("review.views", level="ERROR"):
+				resp = self._commentary_post([(self.je1, "Saved despite the checker.", "")])
+		self.assertEqual(resp.status_code, 302)
+		r = InDepthResponse.objects.get(review=self._review(), judgement_area=self.je1)
+		self.assertEqual(r.evidence_text, "Saved despite the checker.")
+
+
+class SpellingCheckTests(TestCase):
+	"""review/spelling.py: false positives are the failure that matters -- a
+	warning on every British spelling or school name trains people to ignore it."""
+
+	# Catches: US-English or jargon-blind dictionary flagging correct school writing.
+	def test_british_spellings_and_school_jargon_not_flagged(self):
+		from .spelling import possible_misspellings, spelling_warning
+
+		text = "colour organise behaviour programme EHCP SENCO wellbeing DSL KS2 pupils’"
+		self.assertEqual(possible_misspellings(text), [])
+		self.assertEqual(spelling_warning([("Met 1 commentary", text)]), "")
+
+	# Catches: every staff, school and place name being reported as a misspelling,
+	# while a real misspelling in the same sentence is still caught.
+	def test_mid_sentence_names_not_flagged(self):
+		from .spelling import possible_misspellings
+
+		text = (
+			"Governors visited Mendlesham with Mrs Hollingsworth and we recieve "
+			"feedback from Bacton each term."
+		)
+		self.assertEqual(possible_misspellings(text), ["recieve"])
+
 
 class GradeOverrideTests(TestCase):
 	"""Over-writing an evaluation grade with the in-depth-review-derived grade."""
@@ -1501,6 +1722,86 @@ class IndepthDeployReloadTests(TestCase):
 			)
 			self._assert_written_work_intact(name)
 
+	@staticmethod
+	def _statement_snapshot(qs):
+		return {
+			ja.pk: (ja.statement, ja.is_active, ja.order)
+			for ja in qs.select_related("standard", "standard__area")
+		}
+
+	# Catches: load_indepth_criteria swapping a workbook's statements for the
+	# criteria.json wording on every deploy -- which, whenever the workbook
+	# import then failed, left the statements schools had answered withdrawn.
+	def test_criteria_reload_leaves_workbook_standards_alone(self):
+		if not self._workbooks_present():
+			self.skipTest("No workbooks present to import.")
+		from django.db.models import Q
+		from .management.commands.import_indepth_workbooks import workbook_standards
+
+		provided = workbook_standards()
+		self.assertIn(self.BLUEPRINTED_AREA, provided)
+		covered = Q(pk__in=[])
+		for area_name, keys in provided.items():
+			covered |= Q(standard__area__name=area_name, standard__key__in=keys)
+		scope = InDepthJudgementArea.objects.filter(covered)
+		before = self._statement_snapshot(scope)
+		self.assertTrue(before)
+
+		call_command("load_indepth_criteria", verbosity=0)
+
+		self.assertEqual(self._statement_snapshot(scope), before)
+		saved = self.written_work[self.BLUEPRINTED_AREA]
+		self.assertTrue(
+			InDepthJudgementArea.objects.get(pk=saved["judgement_area_pk"]).is_active
+		)
+		met = InDepthJudgementArea.objects.filter(
+			standard__area__name=self.BLUEPRINTED_AREA, standard__key="met", is_active=True,
+		)
+		self.assertEqual(met.count(), 7)
+		self.assertFalse(
+			met.filter(
+				statement__icontains="minor safeguarding issues identified during the inspection"
+			).exists()
+		)
+
+	# Catches: an unreadable workbook letting the criteria pass run with no
+	# idea which standards the workbooks own, overwriting them.
+	def test_unreadable_workbook_stops_criteria_load_before_writing(self):
+		import tempfile
+		from unittest import mock
+		from django.core.management.base import CommandError
+		from .management.commands import import_indepth_workbooks
+
+		# A value the criteria pass would reset, so any write is visible.
+		InDepthArea.objects.filter(name=self.UNBLUEPRINTED_AREA).update(order=99)
+		areas_before = list(InDepthArea.objects.order_by("pk").values_list("pk", "name", "order"))
+		standards_before = list(
+			InDepthStandard.objects.order_by("pk").values_list("pk", "area_id", "key", "focus")
+		)
+		statements_before = self._statement_snapshot(InDepthJudgementArea.objects.all())
+
+		with tempfile.TemporaryDirectory() as tmp:
+			(Path(tmp) / "Updated Broken 2026.xlsx").write_bytes(b"this is not a workbook")
+			real = import_indepth_workbooks.workbook_standards
+			with mock.patch(
+				"review.management.commands.load_indepth_criteria.workbook_standards",
+				lambda: real(tmp),
+			):
+				with self.assertRaises(CommandError):
+					call_command("load_indepth_criteria", verbosity=0)
+
+		self.assertEqual(
+			list(InDepthArea.objects.order_by("pk").values_list("pk", "name", "order")),
+			areas_before,
+		)
+		self.assertEqual(
+			list(InDepthStandard.objects.order_by("pk").values_list("pk", "area_id", "key", "focus")),
+			standards_before,
+		)
+		self.assertEqual(
+			self._statement_snapshot(InDepthJudgementArea.objects.all()), statements_before
+		)
+
 
 class SyncJudgementAreasTests(TestCase):
 	"""The shared in-place reload behind both loaders (_indepth_sync)."""
@@ -1572,6 +1873,49 @@ class SyncJudgementAreasTests(TestCase):
 		self.assertTrue(InDepthJudgementArea.objects.filter(pk=retired.pk).exists())
 		response.refresh_from_db()
 		self.assertEqual(response.evidence_text, "Written work that must survive a reload.")
+
+	# Catches: a kept statement left active (still graded after the Trust removed
+	# it), or one that returns to the source data staying withdrawn for good.
+	def test_sync_withdraws_leftover_with_responses_and_reactivates_on_return(self):
+		current = self._ja("Pupils achieve well.", 1)
+		leaving = self._ja("A statement that has been withdrawn.", 2)
+		response = self._response(leaving)
+
+		sync_judgement_areas(self.standard, [{"statement": "Pupils achieve well."}])
+		leaving.refresh_from_db()
+		current.refresh_from_db()
+		self.assertFalse(leaving.is_active)
+		self.assertTrue(current.is_active)
+
+		sync_judgement_areas(self.standard, [
+			{"statement": "Pupils achieve well."},
+			{"statement": "A statement that has been withdrawn."},
+		])
+		leaving.refresh_from_db()
+		self.assertTrue(leaving.is_active)
+		self.assertEqual(leaving.order, 2)
+		response.refresh_from_db()
+		self.assertEqual(response.judgement_area_id, leaving.pk)
+		self.assertEqual(response.evidence_text, "Written work that must survive a reload.")
+
+	# Catches: "holds written work" narrowed to text only, deleting a statement
+	# whose response is a rating alone -- the CASCADE takes the rating with it.
+	def test_sync_never_deletes_statement_holding_rating_only_response(self):
+		self._ja("Pupils achieve well.", 1)
+		rated = self._ja("A statement rated but not written up.", 2)
+		response = InDepthResponse.objects.create(
+			review=self.review, judgement_area=rated, rag="red"
+		)
+
+		written, deleted, kept_count = sync_judgement_areas(
+			self.standard, [{"statement": "Pupils achieve well."}]
+		)
+
+		self.assertEqual((deleted, kept_count), (0, 1))
+		rated.refresh_from_db()
+		self.assertFalse(rated.is_active)
+		response.refresh_from_db()
+		self.assertEqual(response.rag, "red")
 
 
 class RiskMatrixTests(TestCase):
@@ -5096,6 +5440,29 @@ class MultiSchoolPrincipalTests(TestCase):
 		self.assertIn(f"school={self.school_b.id}", response["Location"])
 		self.assertIn("page=rag", response["Location"])
 
+	# Catches: the refused-save page (text against a withdrawn statement)
+	# resolving to the FK school, so the 409 re-render names Bacton and a
+	# second press of Save writes Mendlesham's words there.
+	def test_refused_indepth_save_rerenders_for_the_chosen_school_and_saves_nothing(self):
+		school_a_response = self._seed_school_a_commentary()
+		self._rag_post(self.school_b, [(self.je1, "green"), (self.je2, "amber")])
+		self.je1.is_active = False
+		self.je1.save(update_fields=["is_active"])
+
+		response = self._commentary_post(self.school_b, [
+			(self.je1, self.SCHOOL_B_TEXT, ""),
+			(self.je2, "Mendlesham's other write-up.", ""),
+		])
+
+		self.assertEqual(response.status_code, 409)
+		self.assertEqual(response.context["school"], self.school_b)
+		self.assertContains(response, "Mendlesham Primary School", status_code=409)
+		self.assertContains(response, escape(self.SCHOOL_B_TEXT), status_code=409)
+		for ja in (self.je1, self.je2):
+			self.assertEqual(self._response(self.school_b, ja).evidence_text, "")
+		school_a_response.refresh_from_db()
+		self.assertEqual(school_a_response.evidence_text, self.SCHOOL_A_TEXT)
+
 	# ── 3. the second half of the loop: the commentary page must stay put ────
 
 	# Catches: the commentary page bouncing back to the RAG ladder — with the
@@ -6550,3 +6917,122 @@ class PrintExportTests(TestCase):
 		self.assertRegex(
 			self._html(response), r'<script\b[^>]*\bsrc="[^"]*review/print_export\.js'
 		)
+
+	# ── 9. a cut-off PDF shows that it is cut off ────────────────────────────
+
+	# Catches: the end-of-evaluation line going missing, or moving above the
+	# last row, so a PDF that lost its final page (Edge 153, 29 Sept 2026) is
+	# indistinguishable from a complete one. It must come after the table and
+	# count the rows actually printed.
+	def test_evaluation_prints_an_end_marker_after_the_last_row(self):
+		html = self._html(self._get_evaluation())
+
+		marker = re.search(r'<p class="print-only print-end">([^<]*)</p>', html)
+		self.assertIsNotNone(marker, "end-of-evaluation marker missing")
+		self.assertEqual(marker.group(1), "End of evaluation — 1 area.")
+		self.assertGreater(marker.start(), html.rindex("</table>"))
+
+		css = (
+			Path(__file__).resolve().parent / "static" / "review" / "styles.css"
+		).read_text(encoding="utf-8")
+		print_block = css[css.index("@media print"):]
+		self.assertRegex(print_block, r"\.print-only\s*\{\s*display:\s*block")
+
+
+class EvaluationPreviousTermTests(TestCase):
+	"""Last term's commentary and next steps, shown on the Evaluation page.
+
+	Requested 2 Nov 2026 for Spring opening: a new term's page was empty. The
+	text is shown to refer to or copy in, never pre-filled -- the form posts
+	all eight categories, so a pre-filled page would store last term's words
+	as this term's on the first Save. Two-school fixture: the FK school sorts
+	FIRST, and every assertion is made against the OTHER one.
+	"""
+
+	BOX_RE = r'<textarea[^>]*name="form-0-judgement_evidence"[^>]*>(.*?)</textarea>'
+
+	def setUp(self):
+		self.school_a = School.objects.create(name="Bacton Primary School")
+		self.school_b = School.objects.create(name="Mendlesham Primary School")
+		self.category = Category.objects.create(name="Achievement", order=1, is_active=True)
+
+		self.principal = User.objects.create_user("prev_two_schools", "prev.two@example.com")
+		profile = SchoolProfile.objects.create(user=self.principal, school=self.school_a)
+		profile.schools.add(self.school_a, self.school_b)
+		for codename in ("add_evaluation", "change_evaluation"):
+			self.principal.user_permissions.add(
+				Permission.objects.get(content_type__app_label="review", codename=codename)
+			)
+
+		self.autumn, _ = ReviewPeriod.objects.get_or_create(year=2026, round=1)
+		for school, tag in ((self.school_a, "BACTON"), (self.school_b, "MENDLESHAM")):
+			Evaluation.objects.create(
+				school=school, period=self.autumn, category=self.category, rating=2,
+				judgement_evidence=f"{tag} autumn commentary\nsecond line & more",
+				to_progress=f"{tag} autumn next steps",
+			)
+		self.client.force_login(self.principal)
+
+	def _get(self, school, year="2026-2027", round_="2"):
+		response = self.client.get(
+			reverse("review:evaluation"), {"school": school.id, "year": year, "round": round_}
+		)
+		self.assertEqual(response.status_code, 200)
+		return response.content.decode("utf-8")
+
+	def test_spring_shows_the_chosen_schools_autumn_text(self):
+		html = self._get(self.school_b)
+		self.assertIn("MENDLESHAM autumn commentary", html)
+		self.assertIn("MENDLESHAM autumn next steps", html)
+		self.assertIn("Autumn term 2026/2027 commentary", html)
+		self.assertNotIn("BACTON", html)
+
+	def test_spring_is_not_prefilled_and_nothing_is_saved(self):
+		html = self._get(self.school_b)
+		box = re.search(self.BOX_RE, html, re.S)
+		self.assertIsNotNone(box)
+		self.assertEqual(box.group(1).strip(), "", "Spring box was pre-filled with Autumn text")
+		self.assertNotRegex(html, r'<input[^>]*type="radio"[^>]*\bchecked', "a rating was carried over")
+		spring = ReviewPeriod.objects.get(year=2026, round=2)
+		self.assertFalse(Evaluation.objects.filter(period=spring).exists())
+
+	def test_copy_button_targets_the_box_and_holds_the_exact_text(self):
+		html = self._get(self.school_b)
+		self.assertIn('data-copy-into="id_form-0-judgement_evidence"', html)
+		self.assertIn('id="id_form-0-judgement_evidence"', html)
+		source = re.search(r'<template class="evaluation-previous-source">(.*?)</template>', html, re.S)
+		self.assertEqual(unescape(source.group(1)), "MENDLESHAM autumn commentary\nsecond line & more")
+
+	def test_autumn_shows_the_previous_years_summer(self):
+		summer, _ = ReviewPeriod.objects.get_or_create(year=2026, round=3)
+		Evaluation.objects.create(
+			school=self.school_b, period=summer, category=self.category,
+			judgement_evidence="MENDLESHAM summer commentary",
+		)
+		html = self._get(self.school_b, year="2027-2028", round_="1")
+		self.assertIn("MENDLESHAM summer commentary", html)
+		self.assertIn("Summer term 2026/2027 commentary", html)
+		self.assertNotIn("autumn commentary", html)
+
+	def test_first_term_shows_nothing(self):
+		html = self._get(self.school_b, round_="1")
+		self.assertNotIn("evaluation-previous", html.split("</header>", 1)[1].split("<script", 1)[0])
+
+	def test_read_only_user_sees_the_text_but_no_copy_button(self):
+		reader = User.objects.create_user("prev_reader", "prev.reader@example.com")
+		SchoolProfile.objects.create(user=reader, school=self.school_b)
+		self.client.force_login(reader)
+		html = self._get(self.school_b)
+		self.assertIn("MENDLESHAM autumn commentary", html)
+		self.assertNotIn("evaluation-previous-copy", html)
+		self.assertNotIn("carry_forward.js", html)
+
+	def test_script_is_collectable_and_loaded(self):
+		self.assertIsNotNone(finders.find("review/carry_forward.js"))
+		self.assertRegex(self._get(self.school_b), r'<script\b[^>]*\bsrc="[^"]*review/carry_forward\.js')
+
+	def test_last_terms_text_is_left_out_of_the_pdf(self):
+		css = (Path(__file__).resolve().parent / "static" / "review" / "styles.css").read_text(encoding="utf-8")
+		print_block = css[css.index("@media print {\n  @page"):]
+		hidden = print_block[:print_block.index("display: none !important")]
+		self.assertIn(".evaluation-previous,", hidden)

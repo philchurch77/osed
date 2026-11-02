@@ -1,0 +1,15 @@
+{% comment %}
+  Last term's text for one box on the Evaluation page, to refer to or copy in.
+  Expects: text, target (the textarea's id), what ("commentary"/"next steps"),
+  previous_period, can_edit. The <template> holds the exact text for
+  carry_forward.js; the visible copy is formatted with |linebreaks and would
+  not round-trip. The button stays hidden until the script shows it.
+{% endcomment %}
+<details class="evaluation-previous">
+  <summary>{{ previous_period.term_label }} term {{ previous_period.year }}/{{ previous_period.year|add:1 }} {{ what }}</summary>
+  <div class="evaluation-previous-text">{{ text|linebreaks }}</div>
+  {% if can_edit %}
+    <template class="evaluation-previous-source">{{ text }}</template>
+    <button type="button" class="evaluation-previous-copy" data-copy-into="{{ target }}" hidden>Copy into this term</button>
+  {% endif %}
+</details>

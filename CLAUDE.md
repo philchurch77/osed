@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**290 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**314 tests** in `review/tests.py`; the suite
   takes ~85–130s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -219,7 +219,9 @@ The lesson is the order of operations, because the instinct is to reach for a re
    `-` deleted. **No `-` rows means nothing was deleted, full stop.**
    **"Hidden" has more than one shape**, and a census must ask the page's own filter, not a
    proxy for it: text with no rating, text on a rung the page does not render, text on a
-   deactivated `Category`. If a view decides what to show, reproduce that decision in the
+   deactivated `Category`, a response on a **withdrawn** statement
+   (`InDepthJudgementArea.is_active=False` — its text shows read-only at the foot of the
+   commentary page, but a rating with no text shows nowhere except the admin). If a view decides what to show, reproduce that decision in the
    query or render the page — a count that checks one shape will report `hidden=0` while
    thousands of characters sit unrendered.
 2. **Check whether the text ever existed**, not just whether it exists now — the longest
@@ -457,6 +459,13 @@ page opened without a school silently picked one. That is gone.
   **The script only reads field state** — it never assigns `.value`/`.checked` or uses
   `innerHTML`; `PrintExportTests` goes red if it does. No new route, so no governor or
   scoping work. A saved PDF is outside OSED's access control once downloaded.
+- **The Evaluation page shows last term's text; it never pre-fills it** (2 Nov 2026, asked for
+  at Spring opening). Above each commentary/next-steps box, a closed `details` holds the
+  previous term's text (Autumn's predecessor is Summer of the prior year — `_previous_period`,
+  shared with the Trust Dashboard trend) and a "Copy into this term" button
+  (`carry_forward.js`, editors only). Pre-filling was rejected: the form posts all eight
+  categories, so one Save would record last term's words as this term's for areas nobody
+  reviewed. Ratings are never offered. Hidden in print. `EvaluationPreviousTermTests`.
 - Academic year is stored as a start year (e.g. `2026`) but displayed as `2026-2027`;
   `MIN_ACADEMIC_YEAR_START = 2026`.
 - **Terms**: `ReviewPeriod.round` still stores `1`/`2`/`3`, but is labelled **Autumn /
@@ -515,7 +524,33 @@ up by `import_indepth_workbooks`.
 
 > Ordering matters: `load_indepth_criteria` (from `criteria.json`) runs **before**
 > `import_indepth_workbooks`, so where an area has a workbook, the workbook wins. An
-> area with no workbook keeps its `criteria.json` text.
+> area with no workbook keeps its `criteria.json` text. **Since 29 Sept 2026 the criteria
+> pass does not touch any (area, standard) a workbook supplies at all**
+> (`import_indepth_workbooks.workbook_standards()`), and stops before writing if a workbook
+> cannot be read. The two sources word most statements differently, so the criteria pass used
+> to swap every workbook statement out and the workbook pass swap it back — new pks every
+> deploy for anything unanswered, and a failed workbook import left the criteria wording live.
+
+> **Retiring a statement: remove it from the workbook *and* `criteria.json`, never delete it.**
+> The sync keeps any statement that holds a response and marks it `is_active=False`
+> (withdrawn): not asked for, not graded, its text shown read-only on the commentary page;
+> the importer prints "Withdrew N statement(s)". Grades move only on each school's next save.
+> Safeguarding Met 8 ("…minor safeguarding issues identified during the inspection…") was
+> retired this way on 29 Sept 2026 at the client's request; the client's own master workbook
+> must drop it too, or the next workbook sent brings it back. **Statement numbers are the
+> stored `order`** (chip on both in-depth pages, quoted as "Safeguarding, Met 3"), which the
+> sync sets from the source row, so a statement withdrawn from the middle of a list
+> renumbers those after it — Met 8 was last, so nothing moved.
+
+> **Spelling warning (29 Sept 2026).** Browser red-underlines cannot be read by JavaScript,
+> so after a save on the in-depth commentary page `review/spelling.py` checks against a
+> vendored British list (`review/data/en_GB_words.txt`, SCOWL/ESDB size 60, -ise ∪ -ize)
+> plus `review/data/spelling_allow.txt` — add school words there. It is a
+> `messages.warning` only: it never blocks a save or touches the text, and a failure is
+> logged, not raised. Capitalised words mid-sentence and all-caps acronyms are skipped.
+> A commentary save carrying **changed** text for a statement no longer asked for (a deploy
+> landed mid-edit) is refused with a **409** that shows the text, rather than skipped under
+> a "saved" message.
 
 > `seed_trust_categories` must run **after** `load_indepth_criteria` (it matches the nine
 > areas by name against `InDepthArea`, and warns rather than inventing them if they are

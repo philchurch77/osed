@@ -145,6 +145,9 @@
             {% endcomment %}
             <td class="evaluation-textcell">
               {{ row.form.category_id }}
+              {% if row.previous.judgement_evidence.strip %}
+                {% include "review/includes/evaluation_previous.html" with text=row.previous.judgement_evidence target=row.form.judgement_evidence.auto_id what="commentary" %}
+              {% endif %}
               {% if can_edit %}
                 {{ row.form.judgement_evidence.errors }}
                 {{ row.form.judgement_evidence }}
@@ -155,6 +158,9 @@
               {% endif %}
             </td>
             <td class="evaluation-textcell">
+              {% if row.previous.to_progress.strip %}
+                {% include "review/includes/evaluation_previous.html" with text=row.previous.to_progress target=row.form.to_progress.auto_id what="next steps" %}
+              {% endif %}
               {% if can_edit %}
                 {{ row.form.to_progress.errors }}
                 {{ row.form.to_progress }}
@@ -169,6 +175,14 @@
       </tbody>
     </table>
 
+    {% comment %}
+      Print only. Edge 153 was seen saving a 13-page PDF from a 14-page preview,
+      cutting the last row mid-sentence (Stowupland, 29 Sept 2026; cause not
+      established). This line cannot fix that, but a truncated copy lacks it,
+      so nobody files an incomplete record believing it complete.
+    {% endcomment %}
+    <p class="print-only print-end">End of evaluation — {{ rows|length }} area{{ rows|length|pluralize }}.</p>
+
     <div class="actions">
       {% if can_edit %}
         <button type="submit">Save</button>
@@ -182,5 +196,6 @@
   <script defer src="{% static_v 'review/rag_toggle.js' %}"></script>
   {% if can_edit %}
     <script defer src="{% static_v 'review/unsaved_changes.js' %}"></script>
+    <script defer src="{% static_v 'review/carry_forward.js' %}"></script>
   {% endif %}
 {% endblock %}

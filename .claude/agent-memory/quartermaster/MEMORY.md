@@ -1,1 +1,2 @@
 - [PDF export = client print](decision-pdf-export-is-client-print.md) — window.print + @media print, textarea mirror via beforeprint, no new route; why WeasyPrint was rejected
+- [In-depth statements: number, retire, spell](decision-indepth-statement-retire-number-spell.md) — number = stored order per standard; retire via is_active from sync, never delete; spelling warn-after-save

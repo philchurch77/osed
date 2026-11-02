@@ -1,0 +1,6 @@
+{% comment %}
+Statement number chip, so a statement can be quoted ("Safeguarding, Met 3").
+Takes `ja` (an InDepthJudgementArea) and optional `small` / `withdrawn`. The
+number is the stored order within its standard, never a position on the page;
+the full citation is in the tooltip and read out by screen readers.
+{% endcomment %}<span class="indepth-num{% if small %} indepth-num--small{% endif %}" title="{{ area.name }}, {{ ja.label }}{% if withdrawn %} (withdrawn){% endif %}" aria-hidden="true">{{ ja.order }}</span><span class="visually-hidden">{{ area.name }}, {{ ja.label }}{% if withdrawn %} (withdrawn){% endif %}: </span>

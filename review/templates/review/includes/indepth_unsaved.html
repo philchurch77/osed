@@ -1,0 +1,27 @@
+{% comment %}
+Shown when an in-depth save was refused because the statements changed while
+the page was open (a deploy). Nothing was saved. Entries for statements still
+on the page are back in the form below; these are the ones that are not, shown
+read-only and outside the form so they can be copied and are never posted.
+{% endcomment %}
+{% if unsaved_posts %}
+  <section class="indepth-unsaved" role="alert">
+    <h2 class="indepth-standard-title">Nothing has been saved yet</h2>
+    <p>The review's statements were updated while this page was open. Your other entries are still in the form below, but the ones here belong to statements that have changed or been withdrawn. Copy anything you need from them, then press Save again.</p>
+    {% for p in unsaved_posts %}
+      <div class="indepth-judgement indepth-judgement--withdrawn">
+        <div class="indepth-judgement-statement indepth-numbered">
+          {% if p.ja %}{% include "review/includes/indepth_num.html" with ja=p.ja withdrawn=p.ja.is_active|yesno:",1" %}<span>{{ p.ja.statement }}</span>{% else %}<span>A statement that is no longer part of the review</span>{% endif %}
+        </div>
+        {% if p.commentary %}
+          <p class="indepth-field-label">Commentary</p>
+          <textarea readonly rows="4" aria-label="Unsaved commentary">{{ p.commentary }}</textarea>
+        {% endif %}
+        {% if p.next_steps %}
+          <p class="indepth-field-label">Next steps</p>
+          <textarea readonly rows="3" aria-label="Unsaved next steps">{{ p.next_steps }}</textarea>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </section>
+{% endif %}

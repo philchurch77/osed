@@ -5,10 +5,11 @@
   JS never sees a button that does nothing. data-print-title becomes the PDF's
   default file name. Takes page_label and an optional detail.
   A bound formset here means a save was just rejected (a valid save
-  redirects), so what is on screen was not stored: data-unsaved says so.
+  redirects), so what is on screen was not stored: data-unsaved says so. So
+  does unsaved_posts: an in-depth save refused because statements changed.
 {% endcomment %}
 <div class="export-pdf-bar" hidden>
-  <button type="button" class="export-pdf"{% if formset.is_bound %} data-unsaved="1"{% endif %}
+  <button type="button" class="export-pdf"{% if formset.is_bound or unsaved_posts %} data-unsaved="1"{% endif %}
           data-print-title="OSED – {{ school.name }} – {{ page_label }} – {{ selected_year_value }}{% if detail %} – {{ detail }}{% endif %}">Save as PDF</button>
   <span class="export-pdf-hint">Opens your print window — choose “Save as PDF” as the printer.</span>
 </div>
