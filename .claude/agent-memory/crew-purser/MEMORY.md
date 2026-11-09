@@ -1,0 +1,2 @@
+- [Risk register text and audit](risk-register-text-and-audit.md) — Risk/RiskRating fields, no history on RiskRating, cascades, edit_risk gaps
+- [word_limit.js map](word-limit-js-map.md) — which textareas are JS-only vs server-validated; in-depth NA comment re-render gap

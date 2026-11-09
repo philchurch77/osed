@@ -1,0 +1,7 @@
+# Crew log
+
+## 2026-11-09 — Build: Principals can edit the details of an open risk
+- Files: review/forms.py, review/views.py, review/templates/review/risk.html, review/static/review/styles.css, review/static/review/word_limit.js, review/tests.py, CLAUDE.md
+- Decisions: not a permissions change (OSED Staff already held change_risk), a missing edit path; any open risk on the user's school, not only created_by (register belongs to the school; history records the editor); fields = title, category, mitigation, owner, review point; rating stays in the termly row; closed risks not editable; text edits keep CFO QA, a category change clears QA on the latest rating only; edit form prefixed "edit" to avoid duplicate ids; word_limit.js no longer trims stored text (developer approved).
+- Passed clean: master-at-arms: risk_register edit/close scoping, RiskDetailsForm, risk.html hrefs, word_limit.js (no security relevance). purser: Risk edit text round-trip, max_length vs stored sizes, stale guard. lookout: signed-out/read-only/CFO/governor/two-school Principal walks.
+- Open: in-depth commentary invalid re-render drops typed na_comment, newly reachable when a stored statement exceeds 150 words (views.py ~1508/1627); RiskRating has no simple_history, so cleared QA sign-offs leave no record; Risk page subtitle not via page-subtitle--school and not in MultiSchoolPrincipalTests; _back() echoes raw POST rag (Low).

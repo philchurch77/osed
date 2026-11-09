@@ -1,0 +1,1 @@
+- [Risk edit plan (Nov 2026)](project_risk_edit_plan.md) — edit open risks: scope, fields, QA rule, ?edit= UI, close_risk status hole

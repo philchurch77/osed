@@ -152,20 +152,23 @@ MAX_MITIGATION_WORDS = 150
 MAX_CLOSE_REASON_WORDS = 150
 
 
-class RiskEntryForm(forms.Form):
-    """Log a new risk, or edit an open one.
+class RiskDetailsForm(forms.Form):
+    """The wording of a risk: what it is, where it routes, who owns it.
 
-    Route (TFORS/SIV) is deliberately absent: it is derived from the category.
+    Used on its own to edit an open risk, and as the base of RiskEntryForm. The
+    rating is deliberately absent here: it is set per term on the register's
+    rating row, which is the one place a rating changes (and resets CFO QA).
+
+    Route (TFORS/SIV) is deliberately absent too: it is derived from the category.
     """
 
     risk_id = forms.IntegerField(required=False, widget=forms.HiddenInput)
     title = forms.CharField(
+        label="Risk",
         max_length=255,
         widget=forms.TextInput(attrs={"placeholder": "e.g. Perimeter fencing damaged, site security compromised"}),
     )
     category = forms.ModelChoiceField(queryset=None, empty_label=None)
-    impact = forms.ChoiceField(choices=IMPACT_CHOICES)
-    likelihood = forms.ChoiceField(choices=LIKELIHOOD_CHOICES)
     mitigation = forms.CharField(
         required=False,
         widget=forms.Textarea(attrs={"rows": 3, "data-max-words": str(MAX_MITIGATION_WORDS)}),
@@ -181,6 +184,10 @@ class RiskEntryForm(forms.Form):
         widget=forms.TextInput(attrs={"placeholder": "e.g. Aut 2, Spring 1"}),
     )
 
+    # The fields an edit writes back to the Risk. Nothing else on the record
+    # (status, closure, QA, school) is reachable through this form.
+    DETAIL_FIELDS = ("title", "category", "mitigation", "owner", "review_point")
+
     def __init__(self, *args, categories=None, **kwargs):
         super().__init__(*args, **kwargs)
         from .models import TrustCategory
@@ -193,6 +200,13 @@ class RiskEntryForm(forms.Form):
         value = self.cleaned_data.get("mitigation") or ""
         _validate_max_words(value, max_words=MAX_MITIGATION_WORDS)
         return value
+
+
+class RiskEntryForm(RiskDetailsForm):
+    """Log a new risk: its details plus the first term's rating."""
+
+    impact = forms.ChoiceField(choices=IMPACT_CHOICES)
+    likelihood = forms.ChoiceField(choices=LIKELIHOOD_CHOICES)
 
 
 class RiskRatingForm(forms.Form):

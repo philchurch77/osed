@@ -94,6 +94,38 @@
       {% endif %}
     </p>
 
+    {% if edit_form %}
+      <form method="post" class="risk-add-form risk-edit-form" id="risk-edit">
+        {% csrf_token %}
+        <h3 class="risk-qa-heading">Edit risk details</h3>
+        <p class="risk-card-sub">
+          Changes are recorded with your name and the date.
+          To change this term’s rating, use Impact and Likelihood on the register below.
+          Changing the category re-routes the risk, so its latest rating will need CFO sign-off again.
+        </p>
+        <input type="hidden" name="action" value="edit_risk" />
+        <input type="hidden" name="school_id" value="{{ school.id }}" />
+        <input type="hidden" name="year" value="{{ selected_year_value }}" />
+        <input type="hidden" name="round" value="{{ selected_round }}" />
+        <input type="hidden" name="rag" value="{{ rag_filter }}" />
+        {{ edit_form.risk_id }}
+        <input type="hidden" name="form_rendered_at" value="{% now 'c' %}" />
+
+        {% for field in edit_form.visible_fields %}
+          <div class="form-field{% if field.name == "title" or field.name == "mitigation" %} form-field--wide{% endif %}">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if field.name == "category" %}<p class="form-hint">Routing to TFORS or SIV follows from the category.</p>{% endif %}
+            {% for error in field.errors %}<p class="risk-error" id="{{ field.auto_id }}_error">{{ error }}</p>{% endfor %}
+          </div>
+        {% endfor %}
+        <div class="form-actions">
+          <button type="submit">Save changes</button>
+          <a href="?school={{ school.id }}&amp;year={{ selected_year_value }}&amp;round={{ selected_round }}{% if rag_filter %}&amp;rag={{ rag_filter }}{% endif %}">Cancel</a>
+        </div>
+      </form>
+    {% endif %}
+
     {% if open_rows %}
       <p class="risk-review-intro">
         These risks are already open. Review each one for {{ period.term_label }} term — confirm or
@@ -127,6 +159,9 @@
                   <td class="risk-cell-title">
                     {{ row.risk.title }}
                     {{ row.rating_form.risk_id }}
+                    {% if can_edit %}
+                      <a class="risk-edit-link" href="?school={{ school.id }}&amp;year={{ selected_year_value }}&amp;round={{ selected_round }}{% if rag_filter %}&amp;rag={{ rag_filter }}{% endif %}&amp;edit={{ row.risk.id }}#risk-edit">Edit details</a>
+                    {% endif %}
                   </td>
                   <td>
                     <span class="risk-cat">{{ row.category.name }}</span>

@@ -1,0 +1,12 @@
+{
+  "enabledPlugins": {},
+  "extraKnownMarketplaces": {
+    "crew": {
+      "source": {
+        "source": "github",
+        "repo": "philchurch77/crew"
+      },
+      "autoUpdate": true
+    }
+  }
+}

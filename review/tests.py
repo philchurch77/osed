@@ -2287,6 +2287,354 @@ class RiskRegisterViewTests(TestCase):
 		self.assertEqual(len(response.context["open_rows"]), 1)
 
 
+class RiskEditTests(TestCase):
+	"""Principals edit the details of an open risk on their own school's register.
+
+	The editor holds TWO schools. Bacton is the FK school and sorts first, so any
+	silent fallback lands there; every edit below is made on Mendlesham, and
+	Bacton's risk must come through untouched.
+	"""
+
+	# Newlines, an em-dash, accents, curly quotes and an emoji: what a
+	# Principal actually types. No leading/trailing whitespace, because Django's
+	# CharField strips that on every save (add or edit), by design.
+	LONG_TEXT = (
+		"Contractor booked for the half-term — fencing on the north side first.\r\n\r\n"
+		"Site Manager’s note: “café entrance” gate is the weak point. \U0001F6A7\n"
+		"Interim: daily walk-round logged at 8am."
+	)
+
+	def setUp(self):
+		call_command("ensure_osed_staff_group")
+		call_command("ensure_risk_qa_group")
+		self.env = _risk_env()
+		self.category = self.env["category"]
+		self.other_category = TrustCategory.objects.create(
+			group=TrustCategory.Group.OPERATIONS_DOMAIN,
+			domain_key="estates",
+			domain_name="Estates",
+			routes_to=TrustCategory.Route.TFORS,
+			order=20,
+		)
+		self.school_a = School.objects.create(name="Bacton Primary School", phase="PRIMARY")
+		self.school_b = School.objects.create(name="Mendlesham Primary School", phase="PRIMARY")
+		self.outside = School.objects.create(name="Woolpit High School", phase="SECONDARY")
+
+		self.principal = User.objects.create_user("two_schools", "two@x.test", "pw123456")
+		profile = SchoolProfile.objects.create(user=self.principal, school=self.school_a)
+		profile.schools.add(self.school_a, self.school_b)
+		self.principal.groups.add(Group.objects.get(name="OSED Staff"))
+
+		self.risk_a = Risk.objects.create(
+			school=self.school_a, category=self.category, title="Bacton boiler",
+			mitigation="Bacton's own mitigation.", owner="COO",
+		)
+		self.risk_b = Risk.objects.create(
+			school=self.school_b, category=self.category, title="Mendlesham fence",
+			mitigation="Old wording.", owner="Site Manager", review_point="Aut 2",
+		)
+		self.risk_out = Risk.objects.create(
+			school=self.outside, category=self.category, title="Not yours",
+		)
+		self.period = self.env["autumn"]
+
+	def _edit_url(self, school, risk):
+		return f"/review/risk/?school={school.id}&year=2026-2027&round=1&edit={risk.id}"
+
+	# The edit form is prefixed so its ids do not collide with the add form's.
+	FORM_FIELDS = ("risk_id", "title", "category", "mitigation", "owner", "review_point")
+
+	def _post(self, risk, school, **overrides):
+		fields = {
+			"risk_id": risk.id,
+			"title": "Mendlesham fence — north side",
+			"category": self.category.id,
+			"mitigation": self.LONG_TEXT,
+			"owner": "Principal",
+			"review_point": "Spring 1",
+		}
+		page = {
+			"action": "edit_risk",
+			"school_id": school.id,
+			"year": "2026-2027",
+			"round": "1",
+		}
+		for key, value in overrides.items():
+			(fields if key in self.FORM_FIELDS else page)[key] = value
+		data = {f"edit-{key}": value for key, value in fields.items()}
+		data.update(page)
+		return self.client.post("/review/risk/", data)
+
+	def _snapshot(self, risk):
+		risk.refresh_from_db()
+		return (
+			risk.title, risk.category_id, risk.mitigation,
+			risk.owner, risk.review_point, risk.status,
+		)
+
+	def test_two_school_principal_edits_the_other_school_and_lands_back_on_it(self):
+		before_a = self._snapshot(self.risk_a)
+		self.client.force_login(self.principal)
+
+		response = self._post(self.risk_b, self.school_b)
+
+		self.assertEqual(response.status_code, 302)
+		self.assertIn(f"school={self.school_b.id}", response["Location"])
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.title, "Mendlesham fence — north side")
+		self.assertEqual(self.risk_b.mitigation, self.LONG_TEXT)
+		self.assertEqual(self.risk_b.owner, "Principal")
+		self.assertEqual(self.risk_b.review_point, "Spring 1")
+		self.assertEqual(self._snapshot(self.risk_a), before_a)
+
+		followed = self.client.get(response["Location"])
+		self.assertEqual(followed.context["school"], self.school_b)
+		self.assertContains(followed, "Risk updated on Mendlesham Primary School")
+
+	def test_a_risk_outside_the_users_schools_is_refused_on_get_and_post(self):
+		before = self._snapshot(self.risk_out)
+		self.client.force_login(self.principal)
+
+		# The outside risk's id, posted against a school the user does hold...
+		self._post(self.risk_out, self.school_b)
+		self.assertEqual(self._snapshot(self.risk_out), before)
+		# ...and against the outside school itself.
+		self._post(self.risk_out, self.outside)
+		self.assertEqual(self._snapshot(self.risk_out), before)
+
+		response = self.client.get(self._edit_url(self.school_b, self.risk_out))
+		self.assertEqual(response.status_code, 200)
+		self.assertIsNone(response.context["edit_form"])
+		self.assertNotContains(response, "Not yours")
+
+	def test_a_risk_on_the_users_other_school_is_not_editable_through_the_wrong_school(self):
+		# Bacton's risk, posted while working on Mendlesham: the lookup is by
+		# the resolved school, so it is not found and not changed.
+		before = self._snapshot(self.risk_a)
+		self.client.force_login(self.principal)
+		self._post(self.risk_a, self.school_b)
+		self.assertEqual(self._snapshot(self.risk_a), before)
+
+	def test_read_only_qa_only_and_governor_accounts_cannot_edit(self):
+		viewer = _make_user("viewer", school=self.school_b)
+		cfo = _make_user("cfo", school=self.school_b, group_name="Risk QA")
+		governor = User.objects.create_user("gov", "gov@x.test", "pw123456")
+		gov_profile = SchoolProfile.objects.create(
+			user=governor, school=self.school_b, role=SchoolProfile.Role.GOVERNOR
+		)
+		gov_profile.schools.add(self.school_b)
+		# Even holding the editor group, a governor cannot save.
+		governor.groups.add(Group.objects.get(name="OSED Staff"))
+		before = self._snapshot(self.risk_b)
+
+		for user in (viewer, cfo, governor):
+			self.client.force_login(user)
+			response = self._post(self.risk_b, self.school_b)
+			if user is governor:
+				self.assertEqual(response.status_code, 403)
+			self.assertEqual(self._snapshot(self.risk_b), before, user.username)
+
+		self.client.force_login(cfo)
+		response = self.client.get(self._edit_url(self.school_b, self.risk_b))
+		self.assertIsNone(response.context["edit_form"])
+		self.assertNotContains(response, "Edit details")
+
+	def test_a_closed_risk_cannot_be_edited_or_closed_again(self):
+		qa_user = _make_user("cfo", school=self.school_b, group_name="Risk QA")
+		closed_at = timezone.now() - timedelta(days=3)
+		self.risk_b.status = Risk.Status.CLOSED
+		self.risk_b.closed_at = closed_at
+		self.risk_b.close_reason = "Fence replaced."
+		self.risk_b.close_qa_by = qa_user
+		self.risk_b.close_qa_at = closed_at
+		self.risk_b.save()
+		before = self._snapshot(self.risk_b)
+		self.client.force_login(self.principal)
+
+		# Closed mid-edit: refused, but what was typed is still on screen.
+		response = self._post(self.risk_b, self.school_b)
+		self.assertEqual(self._snapshot(self.risk_b), before)
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, "may have been closed since you opened it")
+		self.assertContains(response, escape(self.LONG_TEXT))
+		response = self.client.get(self._edit_url(self.school_b, self.risk_b))
+		self.assertIsNone(response.context["edit_form"])
+
+		self.client.post(
+			"/review/risk/",
+			{
+				"action": "close_risk",
+				"school_id": self.school_b.id,
+				"year": "2026-2027",
+				"round": "1",
+				"risk_id": self.risk_b.id,
+				"close_reason": "Overwriting the recorded reason.",
+			},
+		)
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.close_reason, "Fence replaced.")
+		self.assertEqual(self.risk_b.close_qa_by, qa_user)
+		self.assertEqual(self.risk_b.closed_at, closed_at)
+
+	def test_a_stale_edit_is_refused_and_keeps_the_typed_text_on_screen(self):
+		self.client.force_login(self.principal)
+		opened_at = (timezone.now() - timedelta(minutes=10)).isoformat()
+		# A colleague saved after this form was opened.
+		Risk.objects.filter(pk=self.risk_b.pk).update(
+			mitigation="Colleague's newer wording.", updated_at=timezone.now()
+		)
+
+		response = self._post(self.risk_b, self.school_b, form_rendered_at=opened_at)
+
+		self.assertEqual(response.status_code, 200)
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.mitigation, "Colleague's newer wording.")
+		self.assertContains(response, "Someone else changed this risk")
+		self.assertContains(response, escape(self.LONG_TEXT))
+
+	def test_long_text_round_trips_byte_for_byte_through_the_edit_form(self):
+		self.client.force_login(self.principal)
+		self._post(self.risk_b, self.school_b)
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.mitigation, self.LONG_TEXT)
+
+		response = self.client.get(self._edit_url(self.school_b, self.risk_b))
+		self.assertEqual(response.context["edit_form"].initial["mitigation"], self.LONG_TEXT)
+		self.assertContains(response, escape(self.LONG_TEXT))
+
+		# Re-save with nothing changed: not a byte moves.
+		self._post(self.risk_b, self.school_b, form_rendered_at=timezone.now().isoformat())
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.mitigation, self.LONG_TEXT)
+
+	def test_category_change_clears_this_terms_sign_off_and_a_text_edit_keeps_it(self):
+		cfo = _make_user("cfo", school=self.school_b, group_name="Risk QA")
+		signed_at = timezone.now()
+		rating = RiskRating.objects.create(
+			risk=self.risk_b, period=self.period, impact="High", likelihood="Possible",
+			qa_by=cfo, qa_at=signed_at,
+		)
+		earlier, _ = ReviewPeriod.objects.get_or_create(year=2025, round=3)
+		earlier_rating = RiskRating.objects.create(
+			risk=self.risk_b, period=earlier, impact="High", likelihood="Possible",
+			qa_by=cfo, qa_at=signed_at,
+		)
+		self.client.force_login(self.principal)
+
+		self._post(self.risk_b, self.school_b)
+		rating.refresh_from_db()
+		self.assertEqual(rating.qa_by, cfo, "A text-only edit must keep the sign-off")
+
+		self._post(self.risk_b, self.school_b, category=self.other_category.id)
+		rating.refresh_from_db()
+		earlier_rating.refresh_from_db()
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.category, self.other_category)
+		self.assertIsNone(rating.qa_by)
+		self.assertIsNone(rating.qa_at)
+		self.assertEqual(earlier_rating.qa_by, cfo, "Earlier terms are not re-opened")
+
+	def test_category_change_while_viewing_an_earlier_term_clears_the_latest_sign_off_only(self):
+		cfo = _make_user("cfo", school=self.school_b, group_name="Risk QA")
+		signed_at = timezone.now()
+		autumn = RiskRating.objects.create(
+			risk=self.risk_b, period=self.env["autumn"], impact="High",
+			likelihood="Possible", qa_by=cfo, qa_at=signed_at,
+		)
+		spring = RiskRating.objects.create(
+			risk=self.risk_b, period=self.env["spring"], impact="High",
+			likelihood="Possible", qa_by=cfo, qa_at=signed_at,
+		)
+		self.client.force_login(self.principal)
+
+		# Viewing Autumn (round 1) while Spring holds the rating in force.
+		self._post(self.risk_b, self.school_b, category=self.other_category.id)
+
+		autumn.refresh_from_db()
+		spring.refresh_from_db()
+		self.assertEqual(autumn.qa_by, cfo, "A past term's sign-off is not erased")
+		self.assertIsNone(spring.qa_by)
+
+	def test_an_edit_records_a_history_row_naming_the_editor(self):
+		self.client.force_login(self.principal)
+		self._post(self.risk_b, self.school_b)
+		latest = self.risk_b.history.order_by("-history_date").first()
+		self.assertEqual(latest.history_type, "~")
+		self.assertEqual(latest.history_user, self.principal)
+		self.assertEqual(latest.prev_record.mitigation, "Old wording.")
+
+	def test_an_over_limit_mitigation_is_rejected_with_the_text_kept(self):
+		too_long = " ".join(["word"] * 151)
+		self.client.force_login(self.principal)
+		response = self._post(self.risk_b, self.school_b, mitigation=too_long)
+		self.assertEqual(response.status_code, 200)
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.mitigation, "Old wording.")
+		self.assertContains(response, too_long)
+
+	def test_the_edit_link_and_form_render_for_an_editor(self):
+		self.client.force_login(self.principal)
+		response = self.client.get(
+			f"/review/risk/?school={self.school_b.id}&year=2026-2027&round=1"
+		)
+		self.assertContains(response, f"edit={self.risk_b.id}#risk-edit")
+		self.assertNotContains(response, f"edit={self.risk_a.id}#")
+		response = self.client.get(self._edit_url(self.school_b, self.risk_b))
+		self.assertContains(response, "Edit risk details")
+		self.assertContains(response, 'name="form_rendered_at"')
+		self.assertContains(response, f'name="edit-risk_id" value="{self.risk_b.id}"')
+		# Its ids are its own: the add form's labels still point at the add form.
+		html = response.content.decode()
+		for name in ("title", "category", "mitigation", "owner", "review_point"):
+			self.assertEqual(html.count(f'id="id_{name}"'), 1, name)
+			self.assertEqual(html.count(f'id="id_edit-{name}"'), 1, name)
+
+	def test_a_refused_save_keeps_the_filter_and_names_the_field_as_labelled(self):
+		self.client.force_login(self.principal)
+		response = self._post(self.risk_b, self.school_b, title="", rag="red")
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.context["rag_filter"], "red")
+		self.assertContains(response, 'name="rag" value="red"')
+		self.assertContains(response, 'id="id_edit-title_error"')
+
+	def test_closing_an_already_closed_risk_says_so(self):
+		self.risk_b.status = Risk.Status.CLOSED
+		self.risk_b.close_reason = "Fence replaced."
+		self.risk_b.save()
+		self.client.force_login(self.principal)
+		response = self.client.post(
+			"/review/risk/",
+			{
+				"action": "close_risk",
+				"school_id": self.school_b.id,
+				"year": "2026-2027",
+				"round": "1",
+				"risk_id": self.risk_b.id,
+				"close_reason": "Again.",
+			},
+			follow=True,
+		)
+		self.assertContains(response, "it was not closed")
+		self.risk_b.refresh_from_db()
+		self.assertEqual(self.risk_b.close_reason, "Fence replaced.")
+
+
+class WordLimitScriptTests(TestCase):
+	"""word_limit.js must never cut stored text it did not just watch being typed."""
+
+	def test_the_script_does_not_trim_on_load_or_collapse_newlines(self):
+		source = Path(finders.find("review/word_limit.js")).read_text(encoding="utf-8")
+		init_body = source[source.index("function init()"):]
+		before_listeners = init_body[: init_body.index("addEventListener")]
+		code_only = "\n".join(
+			line for line in before_listeners.splitlines()
+			if not line.strip().startswith("//")
+		)
+		self.assertNotIn("enforce(", code_only, "No trim when the page loads")
+		self.assertIn("if (!loadedOverLimit) enforce(", source)
+		self.assertNotIn('.join(" ")', source, "A trim must not collapse newlines")
+
+
 class RiskQaPermissionTests(TestCase):
 	def setUp(self):
 		call_command("ensure_osed_staff_group")

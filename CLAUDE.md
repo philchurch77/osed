@@ -50,7 +50,7 @@ python manage.py runserver
 
 - Local dev uses **SQLite** (`db.sqlite3`) and `DEBUG=1` via a gitignored `.env`
   (copy from `.env.example`). Production uses **Postgres** via `DATABASE_URL`.
-- Run tests: `python manage.py test review` (**314 tests** in `review/tests.py`; the suite
+- Run tests: `python manage.py test review` (**329 tests** in `review/tests.py`; the suite
   takes ~85–130s because some tests load the in-depth criteria). Capture to a file and
   grep for `^Ran \|^OK\|^FAILED` — stdout/stderr interleave through a pipe and `tail`
   will show seed-command chatter instead of the verdict.
@@ -125,6 +125,17 @@ python manage.py runserver
   it. It is a setting, not code, because the client expects to revisit it.
 - The term view opens on **"your open risks, review each one"** with an add form below —
   never a blank form.
+- **Editors can edit an open risk's details** (9 Nov 2026, client request): "Edit details"
+  on each row opens `RiskDetailsForm` (prefix `edit`, so its ids do not collide with the add
+  form) for title, category, mitigation, owner and review point — any open risk on a school
+  the user holds, not only ones they created. The rating is **not** in it: the termly row stays
+  the one place a rating changes. Lookups are `school=` **and** `status=OPEN`, so closed risks
+  are never editable — and since the same day `close_risk` filters `OPEN` too (a hand-posted
+  id used to re-close a closed risk, overwriting its reason and clearing close QA). Text edits
+  keep CFO sign-off; a **category** change clears it on the risk's **latest** rating (it
+  re-routes TFORS/SIV), never on earlier terms. Stale saves (`form_rendered_at` vs
+  `Risk.updated_at`) and a risk closed mid-edit re-render with the typed text kept. Guarded
+  by `RiskEditTests`.
 
 ## Operations & Resources tab (pilot)
 
@@ -771,7 +782,14 @@ packs.
   fallback is gone (`2dd979f`). Kept here only as a pointer: the governor case that
   sharpened it — "quotes the wrong school's judgements in a governors' meeting" — is the
   reason the fix is worth defending if anyone proposes reinstating a default.
-- **`word_limit.js` trims stored text on page load, and the next Save persists the trim.**
+- ~~**`word_limit.js` trims stored text on page load, and the next Save persists the trim.**~~
+  **Resolved 9 Nov 2026**: no init-time trim; a textarea that loads over its limit is never
+  trimmed on input either; the trim slices the original string, keeping newlines
+  (`WordLimitScriptTests`). Consequence: a stored in-depth statement over 150 words now makes
+  that page's save **fail validation** instead of being silently cut — and the invalid
+  re-render takes `na_comment` from the database, not the POST (Purser, open). Four
+  JS-only-limited fields (in-depth `needs_attention_comment`, reflection, operations commentary
+  and "anything else") can now be saved over 300 words if they loaded over it. Original note:
   `enforce(el, maxWords)` runs at init, before the user touches anything, and
   `trimToMaxWords` both drops the tail and collapses newlines into single spaces. Reachable
   for text entered via the admin or `import_indepth_workbooks`, with JS disabled, or if a

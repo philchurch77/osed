@@ -2607,6 +2607,19 @@ summary:focus-visible {
 .risk-add-form textarea { width: 100%; }
 .risk-add-form .form-actions { flex: 1 1 100%; }
 
+/* The edit form reuses the add form's layout; its heading and note span the row. */
+.risk-edit-form {
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid var(--colour-border);
+  border-radius: 6px;
+}
+.risk-edit-form > .risk-qa-heading,
+.risk-edit-form > .risk-card-sub,
+.risk-edit-form > .messages { flex: 1 1 100%; margin: 0; }
+.risk-edit-form .form-actions a { margin-left: 12px; }
+.risk-edit-link { display: block; margin-top: 4px; font-size: 0.8rem; }
+
 .form-hint {
   margin: 4px 0 0;
   font-size: 0.76rem;

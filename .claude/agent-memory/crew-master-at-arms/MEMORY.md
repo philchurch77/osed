@@ -1,0 +1,1 @@
+- [Risk register access pattern](risk-register-access-pattern.md) — how risk_register scopes school and gates edit/QA; risk-edit audit clean 2026-11-09

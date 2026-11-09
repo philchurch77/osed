@@ -26,6 +26,7 @@ from .forms import (
 	RATING_CHOICES_DEFAULT,
 	RATING_CHOICES_SAFEGUARDING,
 	RiskCloseForm,
+	RiskDetailsForm,
 	RiskEntryForm,
 	RiskRatingForm,
 )
@@ -1831,7 +1832,11 @@ def _resolve_term(request: HttpRequest, *, include_post: bool = True) -> int:
 
 
 def _resolve_rag_filter(request: HttpRequest) -> tuple[str, int]:
-	raw = (request.GET.get("rag") or "all").strip().lower()
+	# POST too: a refused save re-renders the page, and must keep the filter
+	# the user was working under rather than dropping them onto "all".
+	raw = (
+		request.GET.get("rag") or request.POST.get("rag") or "all"
+	).strip().lower()
 	for option in RAG_FILTER_OPTIONS:
 		if option["value"] == raw:
 			return option["value"], option["min_severity"]
@@ -1908,6 +1913,11 @@ def _escalated_risk_rows(schools, *, year: int, round_number: int) -> list[dict]
 	return escalating
 
 
+# The edit form shares field names with the add form on the same page; the
+# prefix keeps their element ids (and so their labels) apart.
+RISK_EDIT_PREFIX = "edit"
+
+
 @login_required
 @governor_denied
 def risk_register(request: HttpRequest) -> HttpResponse:
@@ -1962,6 +1972,39 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 	entry_form = RiskEntryForm(categories=categories)
 	close_forms: dict[int, RiskCloseForm] = {}
 	action = request.POST.get("action") if request.method == "POST" else None
+
+	# Editing an open risk's details. Looked up by school AND status, so an id
+	# from another school's register, or a closed risk, simply is not found.
+	edit_form: RiskDetailsForm | None = None
+	edit_risk: Risk | None = None
+	if can_edit and request.method == "GET":
+		try:
+			edit_id = int(request.GET.get("edit") or 0)
+		except (TypeError, ValueError):
+			edit_id = 0
+		if edit_id:
+			edit_risk = Risk.objects.filter(
+				id=edit_id, school=school, status=Risk.Status.OPEN
+			).first()
+			if edit_risk is None:
+				messages.error(
+					request,
+					f"That risk is not an open risk on {school.name}'s register, so "
+					"it cannot be edited here.",
+				)
+			else:
+				edit_form = RiskDetailsForm(
+					prefix=RISK_EDIT_PREFIX,
+					categories=categories,
+					initial={
+						"risk_id": edit_risk.id,
+						"title": edit_risk.title,
+						"category": edit_risk.category_id,
+						"mitigation": edit_risk.mitigation,
+						"owner": edit_risk.owner,
+						"review_point": edit_risk.review_point,
+					},
+				)
 
 	if action == "add_risk" and can_edit and period_db is not None:
 		entry_form = RiskEntryForm(request.POST, categories=categories)
@@ -2033,11 +2076,82 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 			return _back()
 		messages.error(request, "Set both impact and likelihood, or neither.")
 
+	elif action == "edit_risk" and can_edit:
+		posted_form = RiskDetailsForm(
+			request.POST, prefix=RISK_EDIT_PREFIX, categories=categories
+		)
+		try:
+			posted_id = int(request.POST.get(posted_form.add_prefix("risk_id")) or 0)
+		except (TypeError, ValueError):
+			posted_id = 0
+		edit_risk = Risk.objects.filter(
+			id=posted_id, school=school, status=Risk.Status.OPEN
+		).first()
+		if edit_risk is None:
+			# Most often a colleague closed it mid-edit. Re-render rather than
+			# redirect, so the words typed into the form are not thrown away.
+			edit_form = posted_form
+			posted_form.is_valid()
+			messages.error(
+				request,
+				f"That risk is not an open risk on {school.name}'s register (it may "
+				"have been closed since you opened it), so your edit was not saved. "
+				"Your text is still below if you need it.",
+			)
+		elif _is_stale_write(edit_risk, _form_rendered_at(request)):
+			# One record, one person's words: keep what they typed on screen
+			# rather than either overwriting a colleague or discarding it.
+			edit_form = posted_form
+			posted_form.is_valid()
+			messages.error(
+				request,
+				"Someone else changed this risk after you opened it, so your edit "
+				"was not saved. Your text is still below — compare it with the "
+				"register, then save again.",
+			)
+		elif posted_form.is_valid():
+			data = posted_form.cleaned_data
+			category_changed = data["category"].id != edit_risk.category_id
+			with transaction.atomic():
+				for field in RiskDetailsForm.DETAIL_FIELDS:
+					setattr(edit_risk, field, data[field])
+				edit_risk.save()
+				if category_changed:
+					# The category decides TFORS/SIV routing, so a sign-off given
+					# under the old category no longer covers the rating now in
+					# force: the risk's most recent one, whichever term is being
+					# viewed. Earlier terms' sign-offs stand.
+					latest = (
+						RiskRating.objects.filter(risk=edit_risk)
+						.order_by("-period__year", "-period__round")
+						.first()
+					)
+					if latest is not None and latest.qa_by_id is not None:
+						latest.qa_by = None
+						latest.qa_at = None
+						latest.save(update_fields=["qa_by", "qa_at"])
+			if category_changed:
+				messages.success(
+					request,
+					f"Risk updated on {school.name}'s register. Its category changed, "
+					"so its latest rating now awaits CFO sign-off again.",
+				)
+			else:
+				messages.success(request, f"Risk updated on {school.name}'s register.")
+			return _back()
+		else:
+			edit_form = posted_form
+			messages.error(request, "The risk was not saved — see the errors below.")
+
 	elif action == "close_risk" and can_edit:
 		close_form = RiskCloseForm(request.POST)
 		if close_form.is_valid():
+			# OPEN only: re-closing a closed risk would overwrite its recorded
+			# reason and clear the CFO's sign-off on the closure.
 			risk = Risk.objects.filter(
-				id=close_form.cleaned_data["risk_id"], school=school
+				id=close_form.cleaned_data["risk_id"],
+				school=school,
+				status=Risk.Status.OPEN,
 			).first()
 			if risk is not None:
 				risk.status = Risk.Status.CLOSED
@@ -2051,6 +2165,12 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 					request,
 					f"Risk closed for {school.name}. It stays on the register and "
 					"now awaits CFO sign-off.",
+				)
+			else:
+				messages.error(
+					request,
+					f"That risk is not an open risk on {school.name}'s register, so "
+					"it was not closed.",
 				)
 			return _back()
 		try:
@@ -2126,6 +2246,7 @@ def risk_register(request: HttpRequest) -> HttpResponse:
 			"closed_rows": closed_rows,
 			"rating_formset": rating_formset,
 			"entry_form": entry_form,
+			"edit_form": edit_form,
 			"rag_filter": rag_filter,
 			"rag_filter_options": RAG_FILTER_OPTIONS,
 			"can_edit": can_edit,
